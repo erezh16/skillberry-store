@@ -375,7 +375,7 @@ export function VNFSServersPage() {
               <Tr>
                 <Th select={{ onSelect: (_e, isSelected) => handleSelectAll(isSelected), isSelected: selectedServers.length === totalFiltered && totalFiltered > 0 }} />
                 <Th sort={getSortParams(0)} width={15}>Name</Th>
-                <Th sort={getSortParams(1)} width={25} modifier="truncate">Description</Th>
+                <Th sort={getSortParams(1)} width={25}>Description</Th>
                 <Th sort={getSortParams(2)} width={10}>State</Th>
                 <Th width={10}>Tags</Th>
                 <Th sort={getSortParams(3)} width={10}>Port</Th>
@@ -389,7 +389,7 @@ export function VNFSServersPage() {
                 <Tr key={server.uuid}>
                   <Td select={{ rowIndex: index, onSelect: (_e, isSelected) => handleSelectServer(server.name, isSelected), isSelected: selectedServers.includes(server.name) }} />
                   <Td dataLabel="Name" onClick={() => navigate(`/vnfs-servers/${server.uuid}`)} style={{ cursor: 'pointer' }}>{server.name}</Td>
-                  <Td dataLabel="Description" modifier="truncate" onClick={() => navigate(`/vnfs-servers/${server.uuid}`)} style={{ cursor: 'pointer' }}>{server.description || 'No description'}</Td>
+                  <Td dataLabel="Description" onClick={() => navigate(`/vnfs-servers/${server.uuid}`)} style={{ cursor: 'pointer' }}><span className="description-clamp" title={server.description || undefined}>{server.description || 'No description'}</span></Td>
                   <Td dataLabel="State" onClick={() => navigate(`/vnfs-servers/${server.uuid}`)} style={{ cursor: 'pointer' }}>{server.state || '-'}</Td>
                   <Td dataLabel="Tags" onClick={() => navigate(`/vnfs-servers/${server.uuid}`)} style={{ cursor: 'pointer' }}>
                     {server.tags && server.tags.length > 0 ? (

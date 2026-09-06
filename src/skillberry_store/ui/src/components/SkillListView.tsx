@@ -35,7 +35,7 @@ export function SkillListView({
             }}
           />
           <Th sort={getSortParams(0)} width={20}>Name</Th>
-          <Th sort={getSortParams(1)} width={35} modifier="truncate">Description</Th>
+          <Th sort={getSortParams(1)} width={35}>Description</Th>
           <Th width={15}>Tags</Th>
           <Th width={10}>Tools</Th>
           <Th width={10}>Snippets</Th>
@@ -61,11 +61,12 @@ export function SkillListView({
             </Td>
             <Td
               dataLabel="Description"
-              modifier="truncate"
               onClick={() => navigate(`/skills/${skill.uuid}`)}
               style={{ cursor: 'pointer' }}
             >
-              {skill.description || 'No description'}
+              <span className="description-clamp" title={skill.description || undefined}>
+                {skill.description || 'No description'}
+              </span>
             </Td>
             <Td
               dataLabel="Tags"

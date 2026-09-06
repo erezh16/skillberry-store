@@ -468,7 +468,7 @@ export function VMCPServersPage() {
                   }}
                 />
                 <Th sort={getSortParams(0)} width={15}>Name</Th>
-                <Th sort={getSortParams(1)} width={30} modifier="truncate">Description</Th>
+                <Th sort={getSortParams(1)} width={30}>Description</Th>
                 <Th sort={getSortParams(2)} width={10}>State</Th>
                 <Th width={15}>Tags</Th>
                 <Th sort={getSortParams(3)} width={10}>Port</Th>
@@ -495,11 +495,12 @@ export function VMCPServersPage() {
                   </Td>
                   <Td
                     dataLabel="Description"
-                    modifier="truncate"
                     onClick={() => navigate(`/vmcp-servers/${server.uuid}`)}
                     style={{ cursor: 'pointer' }}
                   >
-                    {server.description || 'No description'}
+                    <span className="description-clamp" title={server.description || undefined}>
+                      {server.description || 'No description'}
+                    </span>
                   </Td>
                   <Td
                     dataLabel="State"

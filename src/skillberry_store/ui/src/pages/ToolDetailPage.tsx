@@ -352,7 +352,7 @@ export function ToolDetailPage() {
                           <Thead>
                             <Tr>
                               <Th width={20}>Name</Th>
-                              <Th width={40} modifier="truncate">Description</Th>
+                              <Th width={40}>Description</Th>
                               <Th width={10}>State</Th>
                               <Th width={10}>Tags</Th>
                               <Th width={10}>Module Name</Th>
@@ -384,11 +384,12 @@ export function ToolDetailPage() {
                                   </Td>
                                   <Td
                                     dataLabel="Description"
-                                    modifier="truncate"
                                     onClick={() => navigate(`/tools/${depUuid}`)}
                                     style={{ cursor: 'pointer' }}
                                   >
-                                    {depTool.description || 'No description'}
+                                    <span className="description-clamp" title={depTool.description || undefined}>
+                                      {depTool.description || 'No description'}
+                                    </span>
                                   </Td>
                                   <Td
                                     dataLabel="State"
