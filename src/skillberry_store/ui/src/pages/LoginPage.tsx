@@ -17,6 +17,8 @@ import {
   StackItem,
 } from '@patternfly/react-core';
 import { useAuth } from '@/contexts/AuthContext';
+import { LoginBanner } from '@/components/LoginBanner';
+import { readBannerFromDocument } from '@/types/loginBanner';
 
 export function LoginPage() {
   const { signIn, mode, token } = useAuth();
@@ -37,6 +39,11 @@ export function LoginPage() {
         .querySelector('meta[name="sbs-login-info"]')
         ?.getAttribute('content') || null
   );
+  // The rich banner (`format: rich`), from its own tag and read the same way.
+  // Null covers every "not rich, or not usable" case — no tag, malformed JSON,
+  // an unknown payload version — and the plain Alert below then renders
+  // instead, so a login screen always appears. See docs/design/login-banner.md.
+  const [loginBanner] = useState(() => readBannerFromDocument());
 
   // Already signed in: redirect out of the login page.
   if (mode === 'disabled' || token) {
@@ -62,12 +69,25 @@ export function LoginPage() {
 
   return (
     <Bullseye style={{ minHeight: '100vh', padding: '2rem' }}>
-      <Card style={{ minWidth: 360, maxWidth: 420, width: '100%' }}>
+      {/* A rich banner gets a wider card: headings and pills need the room, and
+          a banner squeezed into the form's width stops looking deliberate. */}
+      <Card
+        style={{
+          minWidth: 360,
+          maxWidth: loginBanner ? 560 : 420,
+          width: '100%',
+        }}
+      >
         <CardTitle>Sign in to Skillberry Store</CardTitle>
         <CardBody>
           <Form onSubmit={submit}>
             <Stack hasGutter>
-              {loginInfo && (
+              {loginBanner && (
+                <StackItem>
+                  <LoginBanner banner={loginBanner} />
+                </StackItem>
+              )}
+              {!loginBanner && loginInfo && (
                 <StackItem>
                   {/* Rendered verbatim: no heading, no label, no splitting.
                       PatternFly's Alert requires a `title`, so the whole
