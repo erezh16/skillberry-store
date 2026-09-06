@@ -109,9 +109,11 @@
   }
 }
 
-.sbs-banner-anim-pulse-border {
-  animation: sbs-banner-pulse-border 2.1s ease-in-out infinite;
-}
+/* The `animation` shorthand for the four element-level effects is composed as
+   one comma-separated list in LoginBanner.tsx, because a second CSS class
+   setting `animation` on the same element replaces the first instead of adding
+   to it. Only the keyframes and the properties an animation needs alongside it
+   live here. */
 
 /* A light sweep travelling across the banner. Drawn on a pseudo-element so it
    never affects the layout or the text's own color. */
@@ -126,7 +128,7 @@
 }
 
 .sbs-banner-anim-shimmer::after {
-  content: '';
+  content: "";
   position: absolute;
   top: 0;
   bottom: 0;
@@ -152,10 +154,6 @@
   }
 }
 
-.sbs-banner-anim-float {
-  animation: sbs-banner-float 3.4s ease-in-out infinite;
-}
-
 @keyframes sbs-banner-glow-breathe {
   0%,
   100% {
@@ -164,10 +162,6 @@
   50% {
     box-shadow: var(--sbs-banner-glow-max, none);
   }
-}
-
-.sbs-banner-anim-glow-breathe {
-  animation: sbs-banner-glow-breathe 2.8s ease-in-out infinite;
 }
 
 /* Slides the configured gradient across itself. Needs the oversized
@@ -182,9 +176,9 @@
   }
 }
 
+/* The oversized background the gradient-shift keyframes slide around in. */
 .sbs-banner-anim-gradient-shift {
   background-size: 220% 220%;
-  animation: sbs-banner-gradient-shift 7s ease-in-out infinite;
 }
 
 /* --- Span-level motion -------------------------------------------------- */
@@ -225,7 +219,9 @@
     text-shadow: 0 0 4px currentColor;
   }
   50% {
-    text-shadow: 0 0 14px currentColor, 0 0 26px currentColor;
+    text-shadow:
+      0 0 14px currentColor,
+      0 0 26px currentColor;
   }
 }
 
@@ -267,10 +263,12 @@
  * bright band across the banner would read as a rendering fault.
  */
 @media (prefers-reduced-motion: reduce) {
-  .sbs-banner-anim-pulse-border,
-  .sbs-banner-anim-float,
-  .sbs-banner-anim-glow-breathe,
-  .sbs-banner-anim-gradient-shift,
+  /* `!important` only here, and only because the element-level animations are
+     an inline style that a stylesheet cannot otherwise outrank. */
+  .sbs-login-banner {
+    animation: none !important;
+  }
+
   .sbs-span-anim-pulse,
   .sbs-span-anim-blink,
   .sbs-span-anim-glow,

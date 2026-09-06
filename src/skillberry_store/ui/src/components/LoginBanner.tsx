@@ -46,6 +46,27 @@ const SHADOW: Record<string, string> = {
   lg: '0 10px 30px rgba(0, 0, 0, 0.35)',
 };
 
+/**
+ * Element-level animations, composed into one `animation` shorthand.
+ *
+ * They cannot be four CSS classes: `animation` is a shorthand, so a second
+ * class setting it on the same element replaces the first rather than adding to
+ * it, and `animate: [pulse-border, gradient-shift]` would silently run only
+ * whichever rule came last in the stylesheet. Built here as a comma-separated
+ * list instead — which is the one form CSS does compose — and overridden with
+ * `!important` in the reduced-motion block, since a media query cannot
+ * otherwise outrank an inline style.
+ *
+ * `shimmer` is absent on purpose: it animates a `::after` pseudo-element, which
+ * is a different element and so has no conflict to resolve.
+ */
+const ELEMENT_ANIMATIONS: Record<string, string> = {
+  'pulse-border': 'sbs-banner-pulse-border 2.1s ease-in-out infinite',
+  float: 'sbs-banner-float 3.4s ease-in-out infinite',
+  'glow-breathe': 'sbs-banner-glow-breathe 2.8s ease-in-out infinite',
+  'gradient-shift': 'sbs-banner-gradient-shift 7s ease-in-out infinite',
+};
+
 /** `#rrggbb` → `rgba(r, g, b, alpha)`; named colors fall back unchanged. */
 function withAlpha(color: string, alpha: number): string {
   const hex = color.replace('#', '');
@@ -102,6 +123,11 @@ function bannerStyle(style: BannerStyle): CSSProperties {
     layers.push(`0 0 42px ${withAlpha(style.glow, 0.28)}`);
   }
   if (layers.length) css.boxShadow = layers.join(', ');
+
+  const animations = (style.animate ?? [])
+    .map((name) => ELEMENT_ANIMATIONS[name])
+    .filter(Boolean);
+  if (animations.length) css.animation = animations.join(', ');
 
   return css;
 }
