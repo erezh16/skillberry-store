@@ -12,6 +12,13 @@ from typing import Any, Iterable, List, Optional, Set, TYPE_CHECKING
 
 import yaml
 
+from skillberry_store.access_control.login_banner import (
+    BANNER_MAX_CHARS,
+    BANNER_MAX_LINES,
+    LoginBanner,
+    build_banner,
+)
+
 if TYPE_CHECKING:
     from skillberry_store.access_control.pdp import Subject
 
@@ -60,6 +67,12 @@ DEFAULT_PLUGIN_TOKEN_TTL_SECONDS = 900  # 15m
 # would push the login form out of the viewport and bloat the injected HTML.
 LOGIN_INFO_MAX_CHARS = 1024
 LOGIN_INFO_MAX_LINES = 10
+
+# `format:` selects between the plain message and the rich banner. The default
+# is `plain`, so a config written before the rich layer existed resolves to
+# exactly the value it always did (docs/design/login-banner.md §11).
+LOGIN_INFO_FORMATS = ("plain", "rich")
+DEFAULT_LOGIN_INFO_FORMAT = "plain"
 
 # Truthy spellings accepted for config booleans, matching the convention
 # already used for env-var flags elsewhere in the repo (``main.py``,
@@ -120,7 +133,16 @@ class AccessControlConfig:
     # nothing". The gate being off, a malformed/absent message, and any mode
     # other than ``standalone`` all collapse into ``None``, so no surface
     # needs a gate check of its own — see §5 of docs/design/login-info.md.
+    #
+    # In ``format: rich`` this is the *degraded* text — the same message with
+    # the markup resolved away — which is what keeps ``sbs login`` and the
+    # ``GET /auth/whoami`` 401 plain by construction, no matter how elaborate
+    # the banner gets (docs/design/login-banner.md §8).
     login_info: Optional[str] = None
+    # The parsed rich banner, set only under ``format: rich``. The UI renders
+    # this when present and falls back to ``login_info`` when it is not; every
+    # other surface ignores it entirely.
+    login_info_banner: Optional[LoginBanner] = None
     # Deployment-wide fallback identity for plugin work that no per-plugin
     # owner covers (plugin-identity §5.1). Precedence is: per-plugin owner
     # recorded by PATCH /plugins/{name} → this → none, and P5 applies.
@@ -183,7 +205,9 @@ class AccessControlConfig:
         return False
 
 
-def _binding_matches(b: RoleBinding, tenant_id: Optional[str], groups: Set[str]) -> bool:
+def _binding_matches(
+    b: RoleBinding, tenant_id: Optional[str], groups: Set[str]
+) -> bool:
     for s in b.subjects:
         if s.kind == "tenant" and tenant_id is not None and s.name == tenant_id:
             return True
@@ -242,9 +266,7 @@ _DEFAULT_UNAUTH_PATHS = [
 
 def _resolve_config_path(path: Optional[str]) -> str:
     return (
-        path
-        or os.environ.get("SBS_ACCESS_CONTROL_CONFIG")
-        or DEFAULT_CONFIG_FILENAME
+        path or os.environ.get("SBS_ACCESS_CONTROL_CONFIG") or DEFAULT_CONFIG_FILENAME
     )
 
 
@@ -272,9 +294,7 @@ def _resolve_plugin_token_ttl(yaml_value: Optional[int]) -> int:
         try:
             return int(env_val)
         except ValueError:
-            logger.warning(
-                "SBS_PLUGIN_TOKEN_TTL=%r is not an int; ignoring", env_val
-            )
+            logger.warning("SBS_PLUGIN_TOKEN_TTL=%r is not an int; ignoring", env_val)
     if yaml_value is not None:
         try:
             return int(yaml_value)
@@ -347,7 +367,9 @@ def load_config(path: Optional[str] = None) -> AccessControlConfig:
         )
     session_ttl = _resolve_session_ttl(standalone.get("session_ttl_seconds"))
     users = _parse_users(standalone.get("users") or [], cfg_path)
-    login_info = _parse_login_info(standalone.get("login_info"), cfg_path, mode)
+    login_info, login_info_banner = _parse_login_info(
+        standalone.get("login_info"), cfg_path, mode
+    )
 
     plugins_block = raw.get("plugins") or {}
     if not isinstance(plugins_block, dict):
@@ -359,9 +381,7 @@ def load_config(path: Optional[str] = None) -> AccessControlConfig:
         str(plugin_owner_tenant).strip() or None if plugin_owner_tenant else None
     )
     plugin_owner_groups = [str(g) for g in (plugins_block.get("owner_groups") or [])]
-    plugin_token_ttl = _resolve_plugin_token_ttl(
-        plugins_block.get("token_ttl_seconds")
-    )
+    plugin_token_ttl = _resolve_plugin_token_ttl(plugins_block.get("token_ttl_seconds"))
 
     roles = _parse_roles(raw.get("roles") or [], cfg_path)
     bindings = _parse_bindings(raw.get("bindings") or [], cfg_path)
@@ -390,6 +410,7 @@ def load_config(path: Optional[str] = None) -> AccessControlConfig:
         roles=roles,
         bindings=bindings,
         login_info=login_info,
+        login_info_banner=login_info_banner,
         plugin_owner_tenant=plugin_owner_tenant,
         plugin_owner_groups=plugin_owner_groups,
         plugin_token_ttl_seconds=plugin_token_ttl,
@@ -415,21 +436,52 @@ def _coerce_login_info_enabled(raw: Any, cfg_path: str) -> bool:
     if isinstance(raw, str) and raw.strip().lower() in _TRUTHY:
         return True
     logger.warning(
-        "standalone.login_info.enabled=%r in %s is not a boolean; treating as "
-        "false",
+        "standalone.login_info.enabled=%r in %s is not a boolean; treating as " "false",
         raw,
         cfg_path,
     )
     return False
 
 
-def _sanitize_login_info(message: str, cfg_path: str) -> str:
+def _coerce_login_info_format(raw: Any, cfg_path: str) -> str:
+    """Coerce ``login_info.format`` to ``plain`` or ``rich``.
+
+    An unrecognized value falls back to ``plain`` rather than dropping the
+    message: an operator who typos ``format: rish`` wants their text shown,
+    just without the presentation.
+    """
+    if raw is None:
+        return DEFAULT_LOGIN_INFO_FORMAT
+    if isinstance(raw, str) and raw.strip().lower() in LOGIN_INFO_FORMATS:
+        return raw.strip().lower()
+    logger.warning(
+        "standalone.login_info.format=%r in %s is not one of %s; treating as %r",
+        raw,
+        cfg_path,
+        ", ".join(LOGIN_INFO_FORMATS),
+        DEFAULT_LOGIN_INFO_FORMAT,
+    )
+    return DEFAULT_LOGIN_INFO_FORMAT
+
+
+def _sanitize_login_info(
+    message: str,
+    cfg_path: str,
+    max_chars: int = LOGIN_INFO_MAX_CHARS,
+    max_lines: int = LOGIN_INFO_MAX_LINES,
+) -> str:
     """Normalize, strip control characters from, and cap a login message.
 
     Steps 3-6 of §5 in docs/design/login-info.md. The result is safe to
     ``print()`` to a TTY: the only control character that survives is
     ``\n``, so a configured ANSI escape sequence cannot reposition the
     cursor or recolor the terminal.
+
+    The caps are arguments because a rich message spends characters on markup
+    (and possibly on an inline image) before any of them reach the reader, so
+    it gets a larger budget — while the *degraded* text is re-capped at the
+    plain limits, keeping the CLI's contract unchanged
+    (docs/design/login-banner.md §5).
     """
     # Step 3: normalize line endings (a config edited on Windows carries CRLF).
     message = message.replace("\r\n", "\n").replace("\r", "\n")
@@ -445,36 +497,45 @@ def _sanitize_login_info(message: str, cfg_path: str) -> str:
     )
 
     # Step 5: cap length and line count, warning about whichever limit hit.
-    if len(message) > LOGIN_INFO_MAX_CHARS:
+    if len(message) > max_chars:
         logger.warning(
             "standalone.login_info.message in %s exceeds the %d-character "
             "limit (%d); truncating",
             cfg_path,
-            LOGIN_INFO_MAX_CHARS,
+            max_chars,
             len(message),
         )
-        message = message[:LOGIN_INFO_MAX_CHARS]
+        message = message[:max_chars]
     lines = message.split("\n")
-    if len(lines) > LOGIN_INFO_MAX_LINES:
+    if len(lines) > max_lines:
         logger.warning(
             "standalone.login_info.message in %s exceeds the %d-line limit "
             "(%d); truncating",
             cfg_path,
-            LOGIN_INFO_MAX_LINES,
+            max_lines,
             len(lines),
         )
-        message = "\n".join(lines[:LOGIN_INFO_MAX_LINES])
+        message = "\n".join(lines[:max_lines])
 
     # Step 6.
     return message.strip()
 
 
-def _parse_login_info(raw: Any, cfg_path: str, mode: str) -> Optional[str]:
-    """Resolve ``standalone.login_info`` to a canonical message or ``None``.
+def _parse_login_info(
+    raw: Any, cfg_path: str, mode: str
+) -> tuple[Optional[str], Optional[LoginBanner]]:
+    """Resolve ``standalone.login_info`` to ``(plain message, rich banner)``.
 
-    ``None`` is the only "off" state and every drop condition collapses into
-    it, so the UI, CLI and REST surfaces carry no gate or mode checks of
-    their own (§5 of docs/design/login-info.md).
+    ``(None, None)`` is the only "off" state and every drop condition
+    collapses into it, so the UI, CLI and REST surfaces carry no gate or mode
+    checks of their own (§5 of docs/design/login-info.md).
+
+    Under the default ``format: plain`` the second element is always ``None``
+    and the first is byte-for-byte what it has always been. Under
+    ``format: rich`` the message is parsed into a banner and the first element
+    becomes its plain-text degradation — so every surface but the UI keeps
+    receiving a plain string, and the CLI needs no knowledge of the rich
+    layer at all (docs/design/login-banner.md §8).
 
     Never raises. A banner must not be able to stop the server from booting,
     so every malformed shape is warned about and dropped rather than turned
@@ -493,25 +554,24 @@ def _parse_login_info(raw: Any, cfg_path: str, mode: str) -> Optional[str]:
                 cfg_path,
                 mode,
             )
-        return None
+        return None, None
 
     if raw is None:
-        return None
+        return None, None
     if not isinstance(raw, dict):
         logger.warning(
             "standalone.login_info in %s must be a mapping, got %r; ignoring",
             cfg_path,
             raw,
         )
-        return None
+        return None, None
 
     enabled = _coerce_login_info_enabled(raw.get("enabled"), cfg_path)
     message = raw.get("message")
 
     if message is not None and not isinstance(message, str):
         logger.warning(
-            "standalone.login_info.message in %s must be a string, got %r; "
-            "ignoring",
+            "standalone.login_info.message in %s must be a string, got %r; " "ignoring",
             cfg_path,
             message,
         )
@@ -527,7 +587,24 @@ def _parse_login_info(raw: Any, cfg_path: str, mode: str) -> Optional[str]:
                 "false; not showing it",
                 cfg_path,
             )
-        return None
+        return None, None
+
+    fmt = _coerce_login_info_format(raw.get("format"), cfg_path)
+    if fmt == "rich":
+        resolved = _parse_rich_login_info(message, raw.get("style"), cfg_path)
+        if resolved is not None:
+            return resolved
+        # Nothing renderable came out of the markup. Fall through to the plain
+        # path so the operator's text is still shown -- and so the "enabled but
+        # empty" warning below is reached when there was no text either.
+    elif raw.get("style") is not None:
+        # Not a warning: a `style:` block staged next to `format: plain` is the
+        # same "set it before switching it on" pattern as `enabled` (§4.1).
+        logger.debug(
+            "standalone.login_info.style in %s is ignored under format=%s",
+            cfg_path,
+            fmt,
+        )
 
     sanitized = _sanitize_login_info(message, cfg_path) if message else ""
     if not sanitized:
@@ -537,8 +614,40 @@ def _parse_login_info(raw: Any, cfg_path: str, mode: str) -> Optional[str]:
             "shown",
             cfg_path,
         )
+        return None, None
+    return sanitized, None
+
+
+def _parse_rich_login_info(
+    message: Optional[str], raw_style: Any, cfg_path: str
+) -> Optional[tuple[Optional[str], LoginBanner]]:
+    """Parse a ``format: rich`` message into ``(plain text, banner)``.
+
+    ``None`` -- as opposed to a tuple whose first element is ``None`` -- means
+    the markup produced nothing renderable, and the caller should treat the
+    message as plain. A tuple with a ``None`` first element is the legitimate
+    case of a banner that is *only* presentation (a bare logo image, say):
+    there the UI has something to draw and the CLI correctly has nothing to
+    print.
+    """
+    if not message:
         return None
-    return sanitized
+    # The rich caps apply to the source markup; the control-character strip is
+    # the same pass the plain path uses, so a configured escape sequence still
+    # cannot reach a terminal through the degraded text.
+    source = _sanitize_login_info(message, cfg_path, BANNER_MAX_CHARS, BANNER_MAX_LINES)
+    banner = build_banner(source, raw_style, cfg_path) if source else None
+    if banner is None:
+        logger.warning(
+            "standalone.login_info in %s has format=rich but the message "
+            "produced no renderable content; treating it as plain text",
+            cfg_path,
+        )
+        return None
+    # Re-capped at the plain limits: what the CLI is shown must not grow just
+    # because the UI banner did.
+    plain = _sanitize_login_info(banner.to_plain_text(), cfg_path)
+    return (plain or None), banner
 
 
 def _parse_users(raw_users: Iterable, cfg_path: str) -> List[User]:
@@ -608,9 +717,7 @@ def _filter_tokens(
         if t in allowed:
             result.append(t)
         else:
-            logger.warning(
-                "Dropping unknown %s '%s' in %s", kind, t, context
-            )
+            logger.warning("Dropping unknown %s '%s' in %s", kind, t, context)
     return result
 
 
@@ -631,9 +738,7 @@ def _parse_bindings(raw_bindings: Iterable, cfg_path: str) -> List[RoleBinding]:
             kind = s.get("kind")
             s_name = s.get("name")
             if kind not in ("tenant", "group") or not s_name:
-                logger.warning(
-                    "Skipping invalid subject in binding '%s': %r", name, s
-                )
+                logger.warning("Skipping invalid subject in binding '%s': %r", name, s)
                 continue
             subjects.append(Subject(kind=str(kind), name=str(s_name)))
         roles = [str(r) for r in (raw.get("roles") or [])]
