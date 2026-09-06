@@ -21,6 +21,7 @@ before, ETag / Last-Modified / Range support intact.
 from __future__ import annotations
 
 import html
+import json
 import logging
 import re
 from pathlib import Path
@@ -29,12 +30,21 @@ from typing import Optional
 from fastapi import Request
 from fastapi.responses import Response
 
+from skillberry_store.access_control.login_banner import LoginBanner
+
 logger = logging.getLogger(__name__)
 
 # The tag name the SPA looks for. LoginPage.tsx queries this same literal, and
 # `test_the_built_bundle_reads_the_meta_name_the_server_writes` pins the pair
 # together — nothing else keeps them in step.
 LOGIN_INFO_META_NAME = "sbs-login-info"
+
+# The rich banner's payload, injected alongside — never instead of — the plain
+# tag above (docs/design/login-banner.md §6). Two tags rather than one because
+# they answer different questions: the plain one is the message, the rich one
+# is how to present it, and a bundle that cannot read the second still has the
+# first to fall back to.
+LOGIN_BANNER_META_NAME = "sbs-login-banner"
 
 _HEAD_CLOSE_RE = re.compile(r"</head\s*>", re.IGNORECASE)
 
@@ -56,14 +66,51 @@ def render_login_info_meta(message: str) -> str:
     )
 
 
-def inject_login_info(index_html: bytes, message: str) -> bytes:
-    """Return ``index_html`` with the login-info ``<meta>`` tag before ``</head>``.
+def render_login_banner_meta(banner: LoginBanner) -> str:
+    """Return the ``<meta>`` tag carrying the rich banner's JSON payload.
+
+    Same reasoning as :func:`render_login_info_meta`, and for the same reason
+    the payload is JSON in an attribute rather than a ``<script
+    type="application/json">`` block: ``html.escape`` makes an attribute inert
+    in one step, whereas escaping for a script context means worrying about
+    ``</script>`` and ``<!--`` inside the data.
+
+    The payload is already validated — every value in it came off an
+    allow-list in ``access_control/login_banner.py`` — so this function only
+    has to serialize and escape. ``ensure_ascii`` stays on so an emoji in an
+    icon or a message survives a bundle served as anything but UTF-8.
+    """
+    payload = json.dumps(banner.to_dict(), separators=(",", ":"), ensure_ascii=True)
+    return (
+        f'<meta name="{LOGIN_BANNER_META_NAME}" '
+        f'content="{html.escape(payload, quote=True)}">'
+    )
+
+
+def inject_login_info(
+    index_html: bytes,
+    message: Optional[str] = None,
+    banner: Optional[LoginBanner] = None,
+) -> bytes:
+    """Return ``index_html`` with the login ``<meta>`` tag(s) before ``</head>``.
 
     Matched case-insensitively on the first occurrence; the Vite-generated
     entry point always has one. HTML with no ``</head>`` is returned unchanged
     with a warning — a banner is not worth failing a page load over.
+
+    A rich banner adds a second tag rather than replacing the first: the plain
+    message is the SPA's fallback if the payload is unusable, and the two are
+    independent (a banner made only of presentation has no plain text, and a
+    plain message has no banner).
     """
-    tag = render_login_info_meta(message)
+    tags = []
+    if message:
+        tags.append(render_login_info_meta(message))
+    if banner:
+        tags.append(render_login_banner_meta(banner))
+    if not tags:
+        return index_html
+    tag = "".join(tags)
     text = index_html.decode("utf-8")
     injected, count = _HEAD_CLOSE_RE.subn(lambda m: tag + m.group(0), text, count=1)
     if not count:
@@ -108,13 +155,29 @@ class LoginInfoPage:
         self._body = body
 
     @classmethod
-    def build(cls, ui_root: Path, message: Optional[str]) -> "LoginInfoPage":
-        """Render the entry point for ``message``, or an inert instance."""
+    def build(
+        cls,
+        ui_root: Path,
+        message: Optional[str],
+        banner: Optional[LoginBanner] = None,
+    ) -> "LoginInfoPage":
+        """Render the entry point for ``message``/``banner``, or an inert instance.
+
+        Either is enough to make the page active: a rich banner need not have
+        plain text (a bare logo has none), and a plain message need not have a
+        banner (``format: plain``, which is the default).
+        """
         index_path = (ui_root / _INDEX_FILENAME).resolve()
-        if not message or not index_path.is_file():
+        if not (message or banner) or not index_path.is_file():
             return cls(index_path, None)
-        logger.info("Login message will be injected into %s", index_path)
-        return cls(index_path, inject_login_info(index_path.read_bytes(), message))
+        logger.info(
+            "Login %s will be injected into %s",
+            "banner" if banner else "message",
+            index_path,
+        )
+        return cls(
+            index_path, inject_login_info(index_path.read_bytes(), message, banner)
+        )
 
     @property
     def active(self) -> bool:

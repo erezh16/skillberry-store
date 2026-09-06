@@ -471,10 +471,14 @@ class SBS(FastAPI):
             _INDEX_CACHE_CONTROL = "no-cache, must-revalidate"
             ui_root = ui_dist.resolve()
 
-            # Operator login message, rendered into index.html once at startup
-            # and inert when none is configured (fast_api/login_info.py).
+            # Operator login message — and, under `format: rich`, the parsed
+            # banner that presents it — rendered into index.html once at
+            # startup and inert when neither is configured
+            # (fast_api/login_info.py).
             login_info_page = LoginInfoPage.build(
-                ui_root, getattr(self.state.acl_cfg, "login_info", None)
+                ui_root,
+                getattr(self.state.acl_cfg, "login_info", None),
+                getattr(self.state.acl_cfg, "login_info_banner", None),
             )
 
             # GET *and* HEAD: FastAPI's @app.get registers GET only (unlike
