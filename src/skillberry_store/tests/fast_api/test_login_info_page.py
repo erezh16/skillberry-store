@@ -11,21 +11,25 @@ See §6.1-6.2 of docs/design/login-info.md.
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 from html import unescape
 
 import pytest
 
 from skillberry_store.fast_api.login_info import (
+    LOGIN_BANNER_META_NAME,
     LOGIN_INFO_META_NAME,
     LoginInfoPage,
     inject_login_info,
+    render_login_banner_meta,
     render_login_info_meta,
 )
 
 MESSAGE = "Shared eval box — do not store secrets."
 INDEX_HTML = (
-    b'<!doctype html><html><head><title>t</title></head>'
+    b"<!doctype html><html><head><title>t</title></head>"
     b"<body><div id='root'></div></body></html>"
 )
 
@@ -49,13 +53,14 @@ def bundle(tmp_path):
 # render_login_info_meta
 # --------------------------------------------------------------------------- #
 
+
 def test_meta_tag_carries_the_agreed_name():
     assert f'name="{LOGIN_INFO_META_NAME}"' in render_login_info_meta(MESSAGE)
 
 
 def test_meta_tag_escapes_quotes_and_angle_brackets():
     """The value must not be able to terminate the attribute or the tag."""
-    raw = 'he said "hi" <b>&</b> \'x\''
+    raw = "he said \"hi\" <b>&</b> 'x'"
     tag = render_login_info_meta(raw)
 
     content = tag.split('content="', 1)[1].rsplit('">', 1)[0]
@@ -68,6 +73,7 @@ def test_meta_tag_escapes_quotes_and_angle_brackets():
 # --------------------------------------------------------------------------- #
 # inject_login_info
 # --------------------------------------------------------------------------- #
+
 
 def test_injection_lands_immediately_before_head_close():
     out = inject_login_info(INDEX_HTML, MESSAGE).decode("utf-8")
@@ -105,6 +111,7 @@ def test_html_without_a_head_close_is_returned_unchanged_with_a_warning(caplog):
 # --------------------------------------------------------------------------- #
 # LoginInfoPage
 # --------------------------------------------------------------------------- #
+
 
 def test_no_message_builds_an_inert_page(bundle):
     page = LoginInfoPage.build(bundle, None)
@@ -167,3 +174,87 @@ def test_head_reports_the_get_length_without_a_body(bundle):
     assert get is not None and head is not None
     assert head.body == b""
     assert head.headers["content-length"] == str(len(get.body))
+
+
+# --------------------------------------------------------------------------- #
+# The rich banner's tag (docs/design/login-banner.md §6)
+# --------------------------------------------------------------------------- #
+
+
+def _banner(message: str = "# [Hi]{color=gold}", style=None):
+    from skillberry_store.access_control.login_banner import build_banner
+
+    banner = build_banner(message, style, "test.yaml")
+    assert banner is not None
+    return banner
+
+
+def _banner_content(html_text: str) -> str | None:
+    """The decoded JSON text of the banner tag's content attribute, if present."""
+    match = re.search(
+        rf'<meta name="{LOGIN_BANNER_META_NAME}" content="([^"]*)">', html_text
+    )
+    return unescape(match.group(1)) if match else None
+
+
+def test_banner_tag_carries_the_agreed_name_and_valid_json():
+    tag = render_login_banner_meta(_banner(style={"icon": "rocket"}))
+
+    assert f'name="{LOGIN_BANNER_META_NAME}"' in tag
+    payload = json.loads(_banner_content(tag))
+    assert payload["style"]["icon"] == "\U0001f680"
+    assert payload["blocks"][0]["kind"] == "h1"
+
+
+def test_banner_tag_escapes_the_json_out_of_attribute_syntax():
+    """JSON is all quotes; unescaped it would close the attribute immediately."""
+    tag = render_login_banner_meta(_banner('[a "b" <c>]{color=red}'))
+    content = tag.split('content="', 1)[1].rsplit('">', 1)[0]
+
+    for ch in ('"', "<", ">"):
+        assert ch not in content
+    assert json.loads(unescape(content))["blocks"][0]["spans"][0]["text"] == 'a "b" <c>'
+
+
+def test_the_banner_payload_is_ascii_only():
+    """So an emoji survives a bundle served as anything but UTF-8."""
+    tag = render_login_banner_meta(_banner(":rocket: go"))
+
+    tag.encode("ascii")  # raises if not
+
+
+def test_both_tags_are_injected_before_head_close():
+    injected = inject_login_info(INDEX_HTML, MESSAGE, _banner()).decode()
+
+    assert injected.index(LOGIN_INFO_META_NAME) < injected.index("</head>")
+    assert injected.index(LOGIN_BANNER_META_NAME) < injected.index("</head>")
+    assert "<title>t</title>" in injected
+
+
+def test_a_banner_alone_is_enough_to_make_the_page_active(bundle):
+    """An image-only banner has no plain text, and must still render."""
+    page = LoginInfoPage.build(bundle, None, _banner())
+
+    assert page.active is True
+    body = page.response_for_fallback(_FakeRequest(), "c").body.decode()
+    assert LOGIN_BANNER_META_NAME in body
+    assert LOGIN_INFO_META_NAME not in body
+
+
+def test_a_message_alone_injects_no_banner_tag(bundle):
+    page = LoginInfoPage.build(bundle, MESSAGE)
+
+    body = page.response_for_fallback(_FakeRequest(), "c").body.decode()
+    assert LOGIN_INFO_META_NAME in body
+    assert LOGIN_BANNER_META_NAME not in body
+
+
+def test_neither_message_nor_banner_leaves_the_page_inert(bundle):
+    page = LoginInfoPage.build(bundle, None, None)
+
+    assert page.active is False
+    assert page.response_for_fallback(_FakeRequest(), "c") is None
+
+
+def test_injecting_nothing_returns_the_html_unchanged():
+    assert inject_login_info(INDEX_HTML, None, None) == INDEX_HTML

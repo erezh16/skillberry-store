@@ -121,3 +121,68 @@ describe('LoginPage login-information message', () => {
     expect(screen.getByLabelText(/password/i)).not.toBeNull();
   });
 });
+
+// The rich banner (`format: rich`) arrives in its own tag alongside the plain
+// one. See docs/design/login-banner.md §7.4 — the point of these tests is which
+// of the two the page chooses, not how the banner itself renders (that is
+// components/LoginBanner.test.tsx).
+
+const BANNER_META_NAME = 'sbs-login-banner';
+
+function setLoginBannerMeta(content: string) {
+  const meta = document.createElement('meta');
+  meta.setAttribute('name', BANNER_META_NAME);
+  meta.setAttribute('content', content);
+  document.head.appendChild(meta);
+}
+
+const VALID_BANNER = JSON.stringify({
+  version: 1,
+  style: { border_color: 'gold' },
+  blocks: [{ kind: 'h1', spans: [{ kind: 'text', text: 'Rich banner', bold: true }] }],
+});
+
+afterEach(() => {
+  document.head
+    .querySelectorAll(`meta[name="${BANNER_META_NAME}"]`)
+    .forEach((el) => el.remove());
+});
+
+describe('LoginPage rich banner', () => {
+  it('renders the banner instead of the plain alert when both tags are present', () => {
+    setLoginInfoMeta('Plain fallback text.');
+    setLoginBannerMeta(VALID_BANNER);
+    renderLoginPage();
+
+    expect(screen.getByTestId('login-banner')).not.toBeNull();
+    expect(screen.queryByTestId('login-info')).toBeNull();
+    expect(screen.getByText('Rich banner')).not.toBeNull();
+  });
+
+  it('falls back to the plain alert when the banner payload is unusable', () => {
+    // The whole reason the server injects both tags: a login screen must appear.
+    setLoginInfoMeta('Plain fallback text.');
+    setLoginBannerMeta('{not json');
+    renderLoginPage();
+
+    expect(screen.queryByTestId('login-banner')).toBeNull();
+    expect(screen.getByTestId('login-info')).not.toBeNull();
+    expect(screen.getByText('Plain fallback text.')).not.toBeNull();
+  });
+
+  it('renders the banner even with no plain tag at all', () => {
+    setLoginBannerMeta(VALID_BANNER);
+    renderLoginPage();
+
+    expect(screen.getByTestId('login-banner')).not.toBeNull();
+    expect(screen.queryByTestId('login-info')).toBeNull();
+  });
+
+  it('still renders the sign-in form alongside the banner', () => {
+    setLoginBannerMeta(VALID_BANNER);
+    renderLoginPage();
+
+    expect(screen.getByLabelText(/username/i)).not.toBeNull();
+    expect(screen.getByLabelText(/password/i)).not.toBeNull();
+  });
+});
