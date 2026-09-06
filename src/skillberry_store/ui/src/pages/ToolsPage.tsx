@@ -401,7 +401,7 @@ export function ToolsPage() {
                   }}
                 />
                 <Th sort={getSortParams(0)} width={20}>Name</Th>
-                <Th sort={getSortParams(1)} width={40} modifier="truncate">Description</Th>
+                <Th sort={getSortParams(1)} width={40}>Description</Th>
                 <Th sort={getSortParams(2)} width={10}>State</Th>
                 <Th width={10}>Tags</Th>
                 <Th sort={getSortParams(3)} width={10}>Module Name</Th>
@@ -427,11 +427,12 @@ export function ToolsPage() {
                   </Td>
                   <Td
                     dataLabel="Description"
-                    modifier="truncate"
                     onClick={() => navigate(`/tools/${tool.uuid}`)}
                     style={{ cursor: 'pointer' }}
                   >
-                    {tool.description || 'No description'}
+                    <span className="description-clamp" title={tool.description || undefined}>
+                      {tool.description || 'No description'}
+                    </span>
                   </Td>
                   <Td
                     dataLabel="State"

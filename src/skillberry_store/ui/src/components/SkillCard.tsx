@@ -72,15 +72,11 @@ export function SkillCard({ skill, isSelected, onSelect }: SkillCardProps) {
         </div>
 
         {/* Description — 3-line clamp */}
-        <p style={{
+        <p className="description-clamp" style={{
           color: '#151515',
           margin: '0 0 10px',
           lineHeight: '1.5',
           fontSize: '13px',
-          display: '-webkit-box',
-          WebkitLineClamp: 3,
-          WebkitBoxOrient: 'vertical',
-          overflow: 'hidden',
           paddingLeft: '22px',
         }}>
           {skill.description || 'No description'}

@@ -119,6 +119,21 @@ code[style*="backgroundColor"],
   white-space: nowrap;
 }
 
+/*
+ * Description cells in list/table views: wrap onto multiple lines, but cap the
+ * height so row heights stay uniform. Matches the 3-line clamp used by the
+ * card views (see SkillCard). Pair with a `title` attribute so the full text
+ * remains reachable on hover.
+ */
+.description-clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  /* Keep an unbreakable token (long URL, identifier) from widening the column. */
+  overflow-wrap: anywhere;
+}
+
 /* Loading spinner container */
 .loading-container {
   display: flex;

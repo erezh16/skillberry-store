@@ -445,7 +445,7 @@ export function SnippetsPage() {
                   }}
                 />
                 <Th sort={getSortParams(0)} width={20}>Name</Th>
-                <Th sort={getSortParams(1)} width={35} modifier="truncate">Description</Th>
+                <Th sort={getSortParams(1)} width={35}>Description</Th>
                 <Th sort={getSortParams(2)} width={10}>State</Th>
                 <Th width={15}>Tags</Th>
                 <Th sort={getSortParams(3)} width={10}>Content Type</Th>
@@ -471,11 +471,12 @@ export function SnippetsPage() {
                   </Td>
                   <Td
                     dataLabel="Description"
-                    modifier="truncate"
                     onClick={() => navigate(`/snippets/${snippet.uuid}`)}
                     style={{ cursor: 'pointer' }}
                   >
-                    {snippet.description || 'No description'}
+                    <span className="description-clamp" title={snippet.description || undefined}>
+                      {snippet.description || 'No description'}
+                    </span>
                   </Td>
                   <Td
                     dataLabel="State"
