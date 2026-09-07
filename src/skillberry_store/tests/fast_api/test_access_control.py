@@ -104,14 +104,14 @@ bindings:
 
 def _standalone_yaml() -> str:
     return (
-        DEFAULT_STANDALONE_YAML
-        .replace("__ALICE_HASH__", _hash("alice-pw"))
+        DEFAULT_STANDALONE_YAML.replace("__ALICE_HASH__", _hash("alice-pw"))
         .replace("__BOB_HASH__", _hash("bob-pw"))
         .replace("__ROOT_HASH__", _hash("root-pw"))
     )
 
 
 # ------------------ disabled mode ---------------------------------------- #
+
 
 def test_disabled_mode_all_endpoints_open(fresh_sbs_factory):
     client = fresh_sbs_factory("mode: disabled\n")
@@ -124,9 +124,7 @@ def test_disabled_mode_all_endpoints_open(fresh_sbs_factory):
 
 def test_disabled_mode_auth_endpoints_return_503(fresh_sbs_factory):
     client = fresh_sbs_factory("mode: disabled\n")
-    login = client.post(
-        "/auth/login", json={"username": "alice", "password": "x"}
-    )
+    login = client.post("/auth/login", json={"username": "alice", "password": "x"})
     assert login.status_code == 503
     assert login.json()["detail"] == "auth_disabled"
 
@@ -199,14 +197,13 @@ def test_disabled_mode_ignores_bearer_on_normal_endpoints(fresh_sbs_factory):
     behaves identically whether or not an Authorization header is sent."""
     client = fresh_sbs_factory("mode: disabled\n")
     no_auth = client.get("/skills/")
-    with_auth = client.get(
-        "/skills/", headers={"Authorization": "Bearer whatever"}
-    )
+    with_auth = client.get("/skills/", headers={"Authorization": "Bearer whatever"})
     assert no_auth.status_code == 200
     assert with_auth.status_code == 200
 
 
 # ------------------ standalone: identity & allow-list -------------------- #
+
 
 def test_standalone_missing_auth_returns_401(fresh_sbs_factory):
     client = fresh_sbs_factory(_standalone_yaml())
@@ -221,13 +218,12 @@ def test_standalone_unauth_allowlist_reachable(fresh_sbs_factory):
     assert client.get("/health/ready").status_code in (200, 500)
     assert client.get("/openapi.json").status_code == 200
     # Login endpoint reachable without any token.
-    r = client.post(
-        "/auth/login", json={"username": "alice", "password": "alice-pw"}
-    )
+    r = client.post("/auth/login", json={"username": "alice", "password": "alice-pw"})
     assert r.status_code == 200
 
 
 # ------------------ login / logout / whoami ------------------------------ #
+
 
 def test_login_good_and_bad_creds(fresh_sbs_factory):
     client = fresh_sbs_factory(_standalone_yaml())
@@ -240,15 +236,11 @@ def test_login_good_and_bad_creds(fresh_sbs_factory):
     assert body["token"]
     assert body["expires_at"]
 
-    bad_pw = client.post(
-        "/auth/login", json={"username": "alice", "password": "wrong"}
-    )
+    bad_pw = client.post("/auth/login", json={"username": "alice", "password": "wrong"})
     assert bad_pw.status_code == 401
     assert bad_pw.json()["detail"] == "invalid_credentials"
 
-    unknown = client.post(
-        "/auth/login", json={"username": "ghost", "password": "x"}
-    )
+    unknown = client.post("/auth/login", json={"username": "ghost", "password": "x"})
     assert unknown.status_code == 401
     assert unknown.json() == bad_pw.json()  # identical body (no enumeration)
 
@@ -286,7 +278,9 @@ def test_whoami_missing_token_returns_401(fresh_sbs_factory):
 
 def test_expired_token_rejected(fresh_sbs_factory):
     client = fresh_sbs_factory(
-        _standalone_yaml().replace("session_ttl_seconds: 3600", "session_ttl_seconds: 1")
+        _standalone_yaml().replace(
+            "session_ttl_seconds: 3600", "session_ttl_seconds: 1"
+        )
     )
     token = client.post(
         "/auth/login", json={"username": "alice", "password": "alice-pw"}
@@ -297,6 +291,7 @@ def test_expired_token_rejected(fresh_sbs_factory):
 
 
 # ------------------ RBAC grant/deny -------------------------------------- #
+
 
 def test_reader_can_list_but_cannot_create(fresh_sbs_factory):
     client = fresh_sbs_factory(_standalone_yaml())
@@ -350,18 +345,14 @@ def test_admin_verb_gated(fresh_sbs_factory):
     bob = client.post(
         "/auth/login", json={"username": "bob", "password": "bob-pw"}
     ).json()["token"]
-    r = client.delete(
-        "/admin/purge-all", headers={"Authorization": f"Bearer {bob}"}
-    )
+    r = client.delete("/admin/purge-all", headers={"Authorization": f"Bearer {bob}"})
     assert r.status_code == 403
 
     # root is bound to the admin role via the 'admins' group.
     root = client.post(
         "/auth/login", json={"username": "root", "password": "root-pw"}
     ).json()["token"]
-    r = client.delete(
-        "/admin/purge-all", headers={"Authorization": f"Bearer {root}"}
-    )
+    r = client.delete("/admin/purge-all", headers={"Authorization": f"Bearer {root}"})
     assert r.status_code == 200
 
 
@@ -548,10 +539,76 @@ def test_422_bodies_are_untouched_with_the_feature_on(fresh_sbs_factory):
 
 def test_disabled_mode_whoami_still_503_with_a_populated_block(fresh_sbs_factory):
     """§9: nothing in `disabled` mode — there is no login to annotate."""
-    client = fresh_sbs_factory(
-        "mode: disabled\nstandalone:\n" + LOGIN_INFO_BLOCK
-    )
+    client = fresh_sbs_factory("mode: disabled\nstandalone:\n" + LOGIN_INFO_BLOCK)
     r = client.get("/auth/whoami")
     assert r.status_code == 503
     assert r.json() == {"detail": "auth_disabled"}
     assert client.app.state.acl_cfg.login_info is None
+
+
+# ------------------ the REST surface stays plain -------------------------- #
+# docs/design/login-banner.md §8. The rich banner is a UI-only presentation
+# layer: the 401 that `sbs login` reads must carry the same plain string it has
+# always carried, so the CLI needs no knowledge of the feature at all. These
+# tests are the contract, and they are why sdk_cli.py is untouched.
+
+RICH_LOGIN_INFO_BLOCK = """  login_info:
+    enabled: true
+    format: rich
+    style:
+      gradient: ["#1b1141", "#4c1d72"]
+      icon: rocket
+      animate: [pulse-border, shimmer]
+    message: |
+      # [!!!]{color=#ff7b7b} Shared eval box [DEMO]{bg=gold color=navy pill bold}
+      Do not store secrets here. See [the docs](https://example.com/docs).
+"""
+
+RICH_PLAIN_TEXT = (
+    "!!! Shared eval box DEMO\n"
+    "Do not store secrets here. See the docs (https://example.com/docs)."
+)
+
+
+def _standalone_with_rich_login_info() -> str:
+    return _standalone_yaml().replace(
+        "  session_ttl_seconds: 3600\n",
+        "  session_ttl_seconds: 3600\n" + RICH_LOGIN_INFO_BLOCK,
+    )
+
+
+def test_whoami_401_carries_only_plain_text_under_format_rich(fresh_sbs_factory):
+    """The exact body the CLI parses: `detail` plus a plain string, nothing else.
+
+    No `login_info_banner` key, no JSON payload, no markup and no escape
+    sequence — a terminal must never be handed presentation.
+    """
+    client = fresh_sbs_factory(_standalone_with_rich_login_info())
+    r = client.get("/auth/whoami")
+
+    assert r.status_code == 401
+    assert r.json() == {
+        "detail": "missing_authorization",
+        "login_info": RICH_PLAIN_TEXT,
+    }
+    # Scoped to the value: the braces in `r.text` are JSON's own.
+    for marker in ("{", "}", "**", "](", "\x1b", "\x07"):
+        assert marker not in r.json()["login_info"]
+
+
+def test_the_rich_banner_is_resolved_but_never_serialized_into_the_401(
+    fresh_sbs_factory,
+):
+    """The banner exists in the config; it simply has no REST representation."""
+    client = fresh_sbs_factory(_standalone_with_rich_login_info())
+
+    assert client.app.state.acl_cfg.login_info_banner is not None
+    assert "banner" not in client.get("/auth/whoami").text
+
+
+def test_login_401_body_is_untouched_under_format_rich(fresh_sbs_factory):
+    client = fresh_sbs_factory(_standalone_with_rich_login_info())
+    r = client.post("/auth/login", json={"username": "bob", "password": "wrong"})
+
+    assert r.status_code == 401
+    assert r.json() == {"detail": "invalid_credentials"}

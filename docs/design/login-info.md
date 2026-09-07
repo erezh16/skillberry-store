@@ -4,7 +4,7 @@ Status: **Implemented**
 Owner: skillberry-store
 Scope: `skillberry-store` — an operator-configurable informational message shown to users at login time in `standalone` access-control mode, across the UI, the CLI, and the REST surface.
 
-Related: [access-control.md](access-control.md) (§5.1 schema, §5.2 validation, §7.2 `standalone` auth, §10.1 CLI, §10.4 UI).
+Related: [access-control.md](access-control.md) (§5.1 schema, §5.2 validation, §7.2 `standalone` auth, §10.1 CLI, §10.4 UI), [login-banner.md](login-banner.md) (the `format: rich` presentation layer built on this one).
 
 ---
 
@@ -22,7 +22,7 @@ Related: [access-control.md](access-control.md) (§5.1 schema, §5.2 validation,
 
 * Not a per-tenant, per-user, or localized message. One string, one deployment.
 * Not a post-login banner, MOTD, or in-app notification surface.
-* Not rich content. Plain text with line breaks; no HTML, Markdown, or links-as-links.
+* Not rich content **at this layer**. Plain text with line breaks; no HTML, Markdown, or links-as-links. Presentation is a separate, opt-in layer on top of this one — see [login-banner.md](login-banner.md), which adds `format: rich` for the UI banner while leaving everything in this document, including the CLI and REST surfaces, exactly as specified here.
 * Not live-reloadable. The value is read at config load, so changing it needs the same server restart that changing `mode` or adding a user already needs (access-control.md §5.4).
 * Not shown after a failed sign-in. The message is a pre-attempt banner on every surface (§2).
 * Nothing in `disabled` or `delegated` mode — neither has an in-store login (§4.1, §9).

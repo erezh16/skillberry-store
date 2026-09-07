@@ -20,7 +20,10 @@ bundle has been built.
 
 from __future__ import annotations
 
+import json
 import re
+import textwrap
+from html import unescape
 
 import pytest
 from fastapi.testclient import TestClient
@@ -87,7 +90,11 @@ def test_index_html_by_name_is_served_for_head_too(ui_client):
 
 @pytest.mark.parametrize(
     "path",
-    ["/ui/assets/index-abc12345.js", "/ui/assets/index-abc12345.css", "/ui/favicon.svg"],
+    [
+        "/ui/assets/index-abc12345.js",
+        "/ui/assets/index-abc12345.css",
+        "/ui/favicon.svg",
+    ],
 )
 def test_content_hashed_assets_are_cached_forever(ui_client, path):
     """The immutable directive must survive the fix — it is correct for hashed names."""
@@ -105,7 +112,9 @@ def test_bundle_root_serves_index_with_revalidation(ui_client):
     assert "id='root'" in resp.text
 
 
-@pytest.mark.parametrize("path", ["/ui/skills", "/ui/tools/some-uuid", "/ui/does/not/exist"])
+@pytest.mark.parametrize(
+    "path", ["/ui/skills", "/ui/tools/some-uuid", "/ui/does/not/exist"]
+)
 def test_spa_deep_links_fall_back_to_index(ui_client, path):
     """React Router owns client-side routes: unknown paths get index.html, not 404."""
     resp = ui_client.get(path)
@@ -153,9 +162,7 @@ def test_no_staticfiles_mount_is_registered(ui_client):
 
 def test_assets_are_served_with_byte_range_support(ui_client):
     """Dropping the mount must not cost Range support — FileResponse handles it."""
-    resp = ui_client.get(
-        "/ui/assets/index-abc12345.js", headers={"Range": "bytes=0-6"}
-    )
+    resp = ui_client.get("/ui/assets/index-abc12345.js", headers={"Range": "bytes=0-6"})
 
     assert resp.status_code == 206, "byte-range requests must be honoured"
     assert resp.headers["content-range"].startswith("bytes 0-6/")
@@ -277,10 +284,12 @@ def test_real_bundle_entry_point_and_deep_link(real_bundle_client):
         resp = real_bundle_client.get(path)
         assert resp.status_code == 200, path
         assert resp.headers["cache-control"] == INDEX_CACHE, path
-        assert "<div id=\"root\"></div>" in resp.text, path
+        assert '<div id="root"></div>' in resp.text, path
 
 
-@pytest.mark.parametrize("method,path", [("GET", "/"), ("GET", "/ui*"), ("HEAD", "/ui*")])
+@pytest.mark.parametrize(
+    "method,path", [("GET", "/"), ("GET", "/ui*"), ("HEAD", "/ui*")]
+)
 def test_ui_paths_are_on_the_unauthenticated_allow_list(method, path):
     """The bundle must load before login, so /ui and the root redirect bypass ACL.
 
@@ -288,9 +297,9 @@ def test_ui_paths_are_on_the_unauthenticated_allow_list(method, path):
     allow-list is what makes the RBAC startup audit pass for these routes.
     """
     cfg = get_acl_config()
-    assert f"{method} {path}" in cfg.unauthenticated_paths, (
-        f"{method} {path} is not allow-listed; the SPA would 401 before login"
-    )
+    assert (
+        f"{method} {path}" in cfg.unauthenticated_paths
+    ), f"{method} {path} is not allow-listed; the SPA would 401 before login"
 
 
 def test_every_ui_route_is_allow_listed_for_all_its_methods(ui_client):
@@ -309,9 +318,9 @@ def test_every_ui_route_is_allow_listed_for_all_its_methods(ui_client):
     assert ui_routes, "no /ui routes registered even though a bundle is mounted"
     for route in ui_routes:
         for method in sorted(route.methods):
-            assert cfg.is_unauthenticated(method, route.path), (
-                f"{method} {route.path} requires auth: the SPA cannot load before login"
-            )
+            assert cfg.is_unauthenticated(
+                method, route.path
+            ), f"{method} {route.path} requires auth: the SPA cannot load before login"
 
 
 # --------------------------------------------------------------------------- #
@@ -322,9 +331,7 @@ def test_every_ui_route_is_allow_listed_for_all_its_methods(ui_client):
 # route rather than inspecting the bundle.
 
 LOGIN_INFO_MESSAGE = "Shared eval box — do not store secrets."
-META_RE = re.compile(
-    r'<meta name="sbs-login-info" content="(?P<content>[^"]*)">'
-)
+META_RE = re.compile(r'<meta name="sbs-login-info" content="(?P<content>[^"]*)">')
 
 
 def _login_info_content(html_text: str) -> str | None:
@@ -459,9 +466,7 @@ def test_head_on_the_injected_index_reports_the_length_without_a_body(
 def test_hashed_assets_still_byte_range_with_the_feature_on(ui_client_factory):
     """Only index.html leaves FileResponse; assets keep Range support."""
     client = ui_client_factory(message=LOGIN_INFO_MESSAGE)
-    resp = client.get(
-        "/ui/assets/index-abc12345.js", headers={"Range": "bytes=0-6"}
-    )
+    resp = client.get("/ui/assets/index-abc12345.js", headers={"Range": "bytes=0-6"})
 
     assert resp.status_code == 206
     assert resp.text == "console"
@@ -490,6 +495,7 @@ def test_missing_head_close_tag_warns_and_still_serves(ui_client_factory, caplog
 # --------------------------------------------------------------------------- #
 # End-to-end: the real bundle, the real injection, the real meta name
 # --------------------------------------------------------------------------- #
+
 
 @requires_built_bundle
 def test_the_built_bundle_reads_the_meta_name_the_server_writes():
@@ -545,3 +551,147 @@ def test_the_real_bundle_entry_point_gets_the_message_injected(tmp_path, monkeyp
         object_handler.clear_object_handlers()
         registry.clear_services()
         acl_config.reset_config_cache()
+
+
+# --------------------------------------------------------------------------- #
+# The rich banner through the real route (docs/design/login-banner.md §6)
+# --------------------------------------------------------------------------- #
+
+RICH_MESSAGE = (
+    "# [!!!]{color=#ff7b7b} Store [LIVE DEMO]{bg=gold color=navy pill bold caps}\n"
+    "[github.com/x/y](https://github.com/x/y){bold}"
+)
+RICH_PLAIN = "!!! Store LIVE DEMO\nhttps://github.com/x/y"
+
+BANNER_META_RE = re.compile(
+    r'<meta name="sbs-login-banner" content="(?P<content>[^"]*)">'
+)
+
+
+def _banner_payload(html_text: str):
+    """The parsed banner payload from the injected tag, or None if absent."""
+    match = BANNER_META_RE.search(html_text)
+    return json.loads(unescape(match.group("content"))) if match else None
+
+
+@pytest.fixture
+def rich_ui_client(tmp_path, monkeypatch):
+    """A /ui-serving app whose login banner is configured with `format: rich`.
+
+    Deliberately a second fixture rather than a parameter on `ui_client_factory`:
+    a rich config needs a block scalar and a `style` mapping, which the plain
+    fixture's one-line double-quoted scalar cannot express.
+    """
+    from skillberry_store.access_control import config as acl_config
+    from skillberry_store.modules import object_handler
+    from skillberry_store.services import registry
+
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text(INDEX_HTML)
+    (dist / "assets" / "index-abc12345.js").write_text("console.log('bundle')")
+    monkeypatch.setattr(server_module, "ui_dist_dir", lambda d=dist: d)
+
+    cfg_path = tmp_path / "acl.yaml"
+    cfg_path.write_text(textwrap.dedent("""\
+            mode: standalone
+            standalone:
+              users: []
+              login_info:
+                enabled: true
+                format: rich
+                style:
+                  gradient: ["#1b1141", "#4c1d72"]
+                  border_color: gold
+                  icon: rocket
+                  animate: [pulse-border, shimmer]
+                message: |
+            """) + textwrap.indent(RICH_MESSAGE, "      ") + "\n")
+    monkeypatch.setenv("SBS_ACCESS_CONTROL_CONFIG", str(cfg_path))
+    acl_config.reset_config_cache()
+
+    clean_test_tmp_dir()
+    object_handler.clear_object_handlers()
+    registry.clear_services()
+    client = TestClient(SBS())
+    yield client
+    object_handler.clear_object_handlers()
+    registry.clear_services()
+    acl_config.reset_config_cache()
+
+
+@pytest.mark.parametrize("path", ["/ui/", "/ui/index.html", "/ui/login"])
+def test_both_tags_are_injected_on_every_html_path(rich_ui_client, path):
+    """Covering only one path would show the banner on /ui/login but not on the
+    literal /ui/index.html, which is what a bookmark or an ingress rewrite sends."""
+    resp = rich_ui_client.get(path)
+
+    assert resp.status_code == 200, path
+    assert _login_info_content(resp.text) == RICH_PLAIN, path
+    payload = _banner_payload(resp.text)
+    assert payload is not None, path
+    assert payload["style"]["icon"] == "\U0001f680"
+    assert payload["style"]["animate"] == ["pulse-border", "shimmer"]
+    assert [b["kind"] for b in payload["blocks"]] == ["h1", "p"]
+
+
+def test_the_plain_tag_carries_the_degraded_text_not_the_markup(rich_ui_client):
+    """The SPA's fallback, and the same string the whoami 401 hands the CLI."""
+    text = rich_ui_client.get("/ui/login").text
+
+    plain = _login_info_content(text)
+    for marker in ("{", "}", "**", "]("):
+        assert marker not in plain
+
+
+def test_the_banner_json_survives_html_escaping_intact(rich_ui_client):
+    text = rich_ui_client.get("/ui/login").text
+
+    raw = BANNER_META_RE.search(text).group("content")
+    for ch in ('"', "<", ">"):
+        assert ch not in raw, "unescaped attribute syntax in the payload"
+    # spans: the red "!!!", the plain " Store ", then the pill.
+    pill = _banner_payload(text)["blocks"][0]["spans"][2]
+    assert pill == {
+        "kind": "text",
+        "text": "LIVE DEMO",
+        "bg": "gold",
+        "bold": True,
+        "caps": True,
+        "color": "navy",
+        "pill": True,
+    }
+
+
+def test_head_on_the_rich_index_reports_the_length_without_a_body(rich_ui_client):
+    get = rich_ui_client.get("/ui/index.html")
+    head = rich_ui_client.head("/ui/index.html")
+
+    assert head.status_code == 200
+    assert head.content == b""
+    assert head.headers["content-length"] == str(len(get.content))
+
+
+def test_no_banner_tag_when_the_message_is_plain(ui_client_factory):
+    """`format: plain` must be byte-identical to its behavior before this feature."""
+    client = ui_client_factory(message=LOGIN_INFO_MESSAGE)
+    text = client.get("/ui/login").text
+
+    assert _login_info_content(text) == LOGIN_INFO_MESSAGE
+    assert "sbs-login-banner" not in text
+
+
+@requires_built_bundle
+def test_the_built_bundle_reads_the_banner_meta_name_the_server_writes():
+    """Same seam as the plain tag, same lack of anything else keeping it honest."""
+    from skillberry_store.fast_api.login_info import LOGIN_BANNER_META_NAME
+
+    bundled_js = "".join(
+        p.read_text(errors="replace") for p in (REAL_DIST / "assets").glob("*.js")
+    )
+
+    assert bundled_js, "no JS in the built bundle"
+    assert LOGIN_BANNER_META_NAME in bundled_js, (
+        f"the SPA never looks for meta[name={LOGIN_BANNER_META_NAME!r}]; the "
+        "server's injected banner payload would be dead HTML"
+    )

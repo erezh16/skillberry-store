@@ -36,8 +36,11 @@ standalone:
   # Informational message shown at login (UI sign-in screen and `sbs login`).
   # Both controls are independent: `enabled` gates the display, `message` holds
   # the text, so a message can be committed here ahead of being switched on.
-  # Plain text only — line breaks via the `|` block scalar, capped at 1024
-  # characters / 10 lines. See docs/design/login-info.md.
+  # `format` picks the presentation: `plain` (the default — one string, shown
+  # verbatim, 1024 chars / 10 lines) or `rich`, which adds Markdown-flavoured
+  # markup plus a `style` block for the UI banner's own chrome and raises the cap
+  # to 8192 chars / 40 lines. `sbs login` and GET /auth/whoami get plain text
+  # either way. See docs/design/login-info.md and docs/design/login-banner.md.
   #
   # WARNING: this message is served PRE-AUTHENTICATION to anyone who can reach
   # /ui/ or GET /auth/whoami. It must contain NO SECRETS. That it sits in the
@@ -48,6 +51,24 @@ standalone:
   #   message: |
   #     This is a shared evaluation deployment — do not store secrets here.
   #     Access requests: ops@example.com
+  #
+  # The same notice as a rich banner:
+  #
+  # login_info:
+  #   enabled: false
+  #   format: rich
+  #   style:
+  #     background: "#fff4e5"
+  #     text_color: "#4a3a1a"
+  #     border_color: "#e0a63c"
+  #     border_width: 2
+  #     radius: 10
+  #     padding: md
+  #     icon: warning
+  #   message: |
+  #     ## [Shared evaluation deployment]{color=#a8600a bold}
+  #     Do not store secrets here.
+  #     Access requests: [ops@example.com](mailto:ops@example.com)
 
 # --- RBAC ---------------------------------------------------------------
 roles:

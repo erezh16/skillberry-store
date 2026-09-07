@@ -1,0 +1,287 @@
+/* Copyright 2025 IBM Corp. */
+/* Licensed under the Apache License, Version 2.0 */
+
+/*
+ * Rich login banner — the motion and the few rules that inline styles cannot
+ * express (keyframes, pseudo-elements, a media query). Everything that varies
+ * per operator config is an inline style on the element; everything here is
+ * fixed and only switched on by a class the config asked for.
+ *
+ * See docs/design/login-banner.md §7.3. Every animation is opt-in via
+ * `style.animate`, and the reduced-motion block at the bottom is what makes
+ * that safe to offer: a viewer who has asked their OS for less motion gets the
+ * full design, standing still.
+ */
+
+.sbs-login-banner {
+  position: relative;
+  overflow: hidden;
+  box-sizing: border-box;
+  width: 100%;
+  /* Overrides global.css's `p, span, div { color: … }`, which would otherwise
+     win over the inherited banner text color by specificity. */
+  line-height: 1.45;
+}
+
+.sbs-login-banner,
+.sbs-login-banner p,
+.sbs-login-banner span,
+.sbs-login-banner div,
+.sbs-login-banner li {
+  color: inherit;
+}
+
+.sbs-login-banner p {
+  margin: 0.2rem 0;
+}
+
+.sbs-login-banner a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.sbs-login-banner a:hover {
+  text-decoration-thickness: 2px;
+}
+
+/* `mono` spans: the global `code` rule paints a light color for dark code
+   blocks, which is the wrong choice inside a banner that sets its own ground. */
+.sbs-login-banner code {
+  color: inherit;
+  background: rgba(127, 127, 127, 0.22);
+  border-radius: 4px;
+  padding: 0.05em 0.35em;
+  font-size: 0.92em;
+}
+
+.sbs-login-banner-pill {
+  display: inline-block;
+  padding: 0.1em 0.6em;
+  border-radius: 999px;
+  line-height: 1.35;
+}
+
+.sbs-login-banner-quote {
+  border-left: 3px solid currentColor;
+  padding-left: 0.6rem;
+  opacity: 0.92;
+}
+
+.sbs-login-banner-rule {
+  border: 0;
+  border-top: 1px solid currentColor;
+  opacity: 0.35;
+  margin: 0.5rem 0;
+  width: 100%;
+}
+
+.sbs-login-banner-spacer {
+  height: 0.5rem;
+}
+
+.sbs-login-banner-list {
+  margin: 0.2rem 0;
+  padding-left: 1.2rem;
+}
+
+.sbs-login-banner-icon {
+  display: block;
+  line-height: 1;
+  margin-bottom: 0.35rem;
+}
+
+.sbs-login-banner-image {
+  display: block;
+  max-width: 100%;
+  margin: 0 auto 0.5rem;
+}
+
+/* --- Motion ------------------------------------------------------------- */
+
+@keyframes sbs-banner-pulse-border {
+  0%,
+  100% {
+    border-color: var(--sbs-banner-border, currentColor);
+  }
+  50% {
+    border-color: var(--sbs-banner-pulse-to, rgba(255, 255, 255, 0.85));
+  }
+}
+
+/* The `animation` shorthand for the four element-level effects is composed as
+   one comma-separated list in LoginBanner.tsx, because a second CSS class
+   setting `animation` on the same element replaces the first instead of adding
+   to it. Only the keyframes and the properties an animation needs alongside it
+   live here. */
+
+/* A light sweep travelling across the banner. Drawn on a pseudo-element so it
+   never affects the layout or the text's own color. */
+@keyframes sbs-banner-shimmer {
+  0% {
+    transform: translateX(-120%) skewX(-18deg);
+  }
+  60%,
+  100% {
+    transform: translateX(320%) skewX(-18deg);
+  }
+}
+
+.sbs-banner-anim-shimmer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 28%;
+  pointer-events: none;
+  background: linear-gradient(
+    100deg,
+    transparent,
+    rgba(255, 255, 255, 0.28),
+    transparent
+  );
+  animation: sbs-banner-shimmer 3.6s ease-in-out infinite;
+}
+
+@keyframes sbs-banner-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-3px);
+  }
+}
+
+@keyframes sbs-banner-glow-breathe {
+  0%,
+  100% {
+    box-shadow: var(--sbs-banner-glow-min, none);
+  }
+  50% {
+    box-shadow: var(--sbs-banner-glow-max, none);
+  }
+}
+
+/* Slides the configured gradient across itself. Needs the oversized
+   background-size that the component sets inline alongside the gradient. */
+@keyframes sbs-banner-gradient-shift {
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+/* The oversized background the gradient-shift keyframes slide around in. */
+.sbs-banner-anim-gradient-shift {
+  background-size: 220% 220%;
+}
+
+/* --- Span-level motion -------------------------------------------------- */
+
+@keyframes sbs-span-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.06);
+  }
+}
+
+.sbs-span-anim-pulse {
+  display: inline-block;
+  animation: sbs-span-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes sbs-span-blink {
+  0%,
+  44% {
+    opacity: 1;
+  }
+  55%,
+  99% {
+    opacity: 0.28;
+  }
+}
+
+.sbs-span-anim-blink {
+  animation: sbs-span-blink 1.3s steps(1, end) infinite;
+}
+
+@keyframes sbs-span-glow {
+  0%,
+  100% {
+    text-shadow: 0 0 4px currentColor;
+  }
+  50% {
+    text-shadow:
+      0 0 14px currentColor,
+      0 0 26px currentColor;
+  }
+}
+
+.sbs-span-anim-glow {
+  animation: sbs-span-glow 2.2s ease-in-out infinite;
+}
+
+/* A moving highlight across the text itself. `background-clip: text` needs a
+   background, so this one paints over the span's own color. */
+@keyframes sbs-span-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.sbs-span-anim-shimmer {
+  background-image: linear-gradient(
+    100deg,
+    currentColor 0%,
+    currentColor 38%,
+    rgba(255, 255, 255, 0.95) 50%,
+    currentColor 62%,
+    currentColor 100%
+  );
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: sbs-span-shimmer 3.2s linear infinite;
+}
+
+/*
+ * Motion is decoration here — never the only carrier of meaning — so a viewer
+ * who has asked for less of it loses nothing but the movement. The shimmer
+ * pseudo-element is removed outright rather than paused, since a stationary
+ * bright band across the banner would read as a rendering fault.
+ */
+@media (prefers-reduced-motion: reduce) {
+  /* `!important` only here, and only because the element-level animations are
+     an inline style that a stylesheet cannot otherwise outrank. */
+  .sbs-login-banner {
+    animation: none !important;
+  }
+
+  .sbs-span-anim-pulse,
+  .sbs-span-anim-blink,
+  .sbs-span-anim-glow,
+  .sbs-span-anim-shimmer {
+    animation: none;
+  }
+
+  .sbs-banner-anim-shimmer::after {
+    content: none;
+  }
+
+  .sbs-span-anim-shimmer {
+    background-image: none;
+    -webkit-text-fill-color: currentColor;
+  }
+}
