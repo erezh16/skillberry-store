@@ -96,10 +96,16 @@ SPAN_FLAGS = ("bold", "italic", "underline", "strike", "mono", "caps", "pill")
 # Colour-valued attributes.
 _COLOR_ATTRS = ("color", "bg", "glow")
 
-# `:name:` shortcodes. Resolved to an emoji rather than to an icon component so
-# that the rich banner and the plain CLI text show the same glyph, and so the
+# `:name:` shortcodes. Resolved to a glyph rather than to an icon component so
+# that the rich banner and the plain CLI text show the same thing, and so the
 # renderer needs no icon font or sprite on a pre-authentication page.
+#
+# Most are emoji; `code` is the store's own `</>` wordmark, which is ASCII. That
+# it renders as a glyph and not as markup is guaranteed the same way every other
+# character in a message is — it is escaped into an attribute and then rendered
+# as a React text child, never parsed as HTML.
 ICONS = {
+    "code": "</>",
     "rocket": "🚀",
     "star": "⭐",
     "sparkles": "✨",
@@ -471,6 +477,10 @@ class BannerStyle:
     shadow: Optional[str] = None
     glow: Optional[str] = None
     icon: Optional[str] = None
+    # The mark is often not the same colour as the words beside it — the store's
+    # own masthead puts a blue `</>` next to a white wordmark — so the icon gets
+    # its own colour rather than inheriting the banner's.
+    icon_color: Optional[str] = None
     image: Optional[str] = None
     image_height: Optional[int] = None
     animate: List[str] = field(default_factory=list)
@@ -895,7 +905,7 @@ def parse_style(raw: Any, where: str = "the login banner") -> BannerStyle:
 
     for key, value in raw.items():
         key = str(key)
-        if key in ("background", "text_color", "border_color", "glow"):
+        if key in ("background", "text_color", "border_color", "glow", "icon_color"):
             setattr(style, key, validate_color(value, ctx, key))
         elif key == "gradient":
             style.gradient = _parse_gradient(value, ctx)
@@ -947,7 +957,19 @@ def _parse_gradient(raw: Any, ctx: _Ctx) -> List[str]:
 
 
 def _parse_icon(raw: Any, ctx: _Ctx) -> Optional[str]:
-    """An allow-listed ``:name:`` shortcode or a literal emoji, as one glyph."""
+    """An allow-listed ``:name:`` shortcode or a literal glyph.
+
+    A glyph is any short run of printable characters — an emoji, or a wordmark
+    like ``</>``. The length cap is what makes this a glyph rather than a second
+    message: chrome is a mark, and prose belongs in ``message``.
+
+    ASCII is deliberately allowed. It is tempting to bar ``<`` and ``>`` here
+    on the theory that they are dangerous, but that would be defending the
+    wrong thing — the value is escaped into an attribute and rendered as a React
+    text child, exactly like every other character in a message, and no
+    character is special in either position. Barring them would only mean the
+    store could not show its own wordmark.
+    """
     if not isinstance(raw, str):
         ctx.warn("icon=%r is not a string; ignoring", raw)
         return None
@@ -955,13 +977,14 @@ def _parse_icon(raw: Any, ctx: _Ctx) -> Optional[str]:
     if value in ICONS:
         return ICONS[value]
     literal = raw.strip()
-    # A short run of non-ASCII, non-control characters is an emoji (possibly
-    # with a variation selector or a ZWJ sequence); anything longer is text
-    # that belongs in the message, not in the chrome.
-    if literal and len(literal) <= 8 and all(ord(ch) > 0x7F for ch in literal):
+    if literal and len(literal) <= 8 and not any(_is_control(ch) for ch in literal):
         return literal
-    ctx.warn("icon=%r is not a known name or an emoji; ignoring", raw)
+    ctx.warn("icon=%r is not a known name and is too long for a glyph; ignoring", raw)
     return None
+
+
+def _is_control(ch: str) -> bool:
+    return "\x00" <= ch <= "\x1f" or "\x7f" <= ch <= "\x9f"
 
 
 def _parse_animations(raw: Any, ctx: _Ctx) -> List[str]:

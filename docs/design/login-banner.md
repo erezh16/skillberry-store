@@ -72,7 +72,8 @@ standalone:
       font_size: lg                  # sm | md | lg | xl — the banner's base scale
       shadow: lg                     # none | sm | md | lg
       glow: "#ffd166"                # coloured outer glow
-      icon: rocket                   # allow-listed name, or a literal emoji
+      icon: code                     # allow-listed name, or a literal glyph
+      icon_color: "#0066cc"          # the mark need not match the words
       image: "https://…/logo.png"    # chrome image above the text
       image_height: 48               # 8-256 px
       animate: [pulse-border, shimmer]   # off unless named; §7.3
@@ -172,9 +173,13 @@ A block's attributes are inherited by every span on the line, so `**a** and *b* 
 
 ### 4.5 Icons
 
-`:name:` resolves to an emoji from a fixed table (`rocket`, `star`, `sparkles`, `fire`, `warning`, `lock`, `party`, `zap`, … — see `ICONS` in [`login_banner.py`](../../src/skillberry_store/access_control/login_banner.py)). An unknown name stays literal text.
+`:name:` resolves to a glyph from a fixed table (`rocket`, `star`, `sparkles`, `fire`, `warning`, `lock`, `party`, `zap`, … plus `code` for the store's own `</>` wordmark — see `ICONS` in [`login_banner.py`](../../src/skillberry_store/access_control/login_banner.py)). An unknown name stays literal text.
 
-Emoji rather than an icon component, for two reasons: the same glyph then appears in the UI *and* in the plain text a terminal receives, and a pre-authentication page needs no icon font or sprite to render it.
+Glyphs rather than an icon component, for two reasons: the same glyph then appears in the UI *and* in the plain text a terminal receives, and a pre-authentication page needs no icon font or sprite to render it.
+
+`style.icon` also takes a literal glyph, and it may be **ASCII** — `icon: "</>"` is the same value `icon: code` resolves to. It is tempting to bar `<` and `>` in a style value on the theory that they are dangerous, but that would be defending the wrong thing: the value is escaped into an attribute and then rendered as a React text child, where no character is special, exactly like every other character in a message. Barring them would only mean the store could not show its own wordmark. The real check is a length cap plus "no control characters" — chrome is a mark, and prose belongs in `message`.
+
+`style.icon_color` colours the mark independently of `text_color`, because a logotype and the words beside it are often not the same colour — the store's masthead paints a blue `</>` next to a white wordmark, and a banner that matches it needs both.
 
 ---
 

@@ -497,8 +497,47 @@ def test_a_literal_emoji_is_accepted_as_an_icon():
     assert parse_style({"icon": "🎉"}, "test.yaml").icon == "🎉"
 
 
-@pytest.mark.parametrize("value", ["not-an-icon", "a whole sentence of text", 42])
+def test_an_ascii_wordmark_is_accepted_as_an_icon():
+    """`</>` is the store's own mark, so ASCII glyphs cannot be barred.
+
+    It is tempting to reject `<` and `>` in a style value on the theory that
+    they are dangerous. They are not, here: the icon is escaped into an
+    attribute and rendered as a React text child, where no character is
+    special. Barring them would only stop the store showing its own logo.
+    """
+    assert parse_style({"icon": "</>"}, "test.yaml").icon == "</>"
+
+
+def test_the_code_shortcode_resolves_to_the_wordmark():
+    assert parse_style({"icon": "code"}, "test.yaml").icon == "</>"
+    assert parse_style({"icon": ":code:"}, "test.yaml").icon == "</>"
+
+
+def test_an_icon_carries_its_own_colour():
+    """The masthead paints a blue mark beside white words; so can a banner."""
+    style = parse_style(
+        {"icon": "code", "icon_color": "#0066CC", "text_color": "white"}, "test.yaml"
+    )
+    assert (style.icon, style.icon_color, style.text_color) == (
+        "</>",
+        "#0066cc",
+        "white",
+    )
+
+
+def test_an_unusable_icon_colour_is_dropped_and_the_icon_kept(caplog):
+    with caplog.at_level(logging.WARNING):
+        style = parse_style({"icon": "code", "icon_color": "red;x:y"}, "test.yaml")
+    assert style.icon == "</>" and style.icon_color is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["not-an-icon", "a whole sentence of text", 42, "a\x1bb", ""],
+    ids=["too-long", "prose", "not-a-string", "control-char", "empty"],
+)
 def test_a_bad_icon_is_dropped(value, caplog):
+    """Length and control characters are the whole check: chrome is a mark."""
     with caplog.at_level(logging.WARNING):
         assert parse_style({"icon": value}, "test.yaml").icon is None
 

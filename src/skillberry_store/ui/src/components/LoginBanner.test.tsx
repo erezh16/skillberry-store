@@ -321,6 +321,44 @@ describe('LoginBanner rendering', () => {
     expect(img.style.height).toBe('40px');
   });
 
+  it('renders an ASCII wordmark icon as text, in its own colour', () => {
+    // `</>` is the store's mark. It must survive validation — a ban on `<`/`>`
+    // would be defending the wrong thing, since React escapes a text child —
+    // and it must be able to differ in colour from the words beside it, the way
+    // the masthead paints a blue mark next to a white wordmark.
+    render(
+      <LoginBanner
+        banner={payload({ style: { icon: '</>', icon_color: '#0066cc', text_color: 'white' } })}
+      />
+    );
+    const icon = banner().querySelector('[aria-hidden="true"]') as HTMLElement;
+    expect(icon.textContent).toBe('</>');
+    expect(icon.style.color).toBe('rgb(0, 102, 204)');
+    // Text, not markup: no element was created from the angle brackets.
+    expect(icon.children).toHaveLength(0);
+    expect(banner().querySelector('slash, br')).toBeNull();
+  });
+
+  it('drops an icon that is too long or carries a control character', () => {
+    const parsed = parseBannerPayload(
+      JSON.stringify({
+        version: BANNER_PAYLOAD_VERSION,
+        style: { icon: 'a whole sentence' },
+        blocks: [{ kind: 'p', spans: [{ kind: 'text', text: 'x' }] }],
+      })
+    );
+    expect(parsed?.style.icon).toBeUndefined();
+
+    const withControl = parseBannerPayload(
+      JSON.stringify({
+        version: BANNER_PAYLOAD_VERSION,
+        style: { icon: 'a\u001bb' },
+        blocks: [{ kind: 'p', spans: [{ kind: 'text', text: 'x' }] }],
+      })
+    );
+    expect(withControl?.style.icon).toBeUndefined();
+  });
+
   it('hides the decorative icon and chrome image from assistive tech', () => {
     render(
       <LoginBanner

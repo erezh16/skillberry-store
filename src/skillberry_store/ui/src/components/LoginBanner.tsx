@@ -299,7 +299,16 @@ export function LoginBanner({ banner }: LoginBannerProps): ReactNode {
         <span
           className="sbs-login-banner-icon"
           aria-hidden="true"
-          style={{ fontSize: '1.7em' }}
+          style={{
+            fontSize: '1.7em',
+            // The mark carries its own colour when given one, so a banner can
+            // reproduce a masthead's blue logo above white words.
+            color: style.icon_color,
+            // A wordmark like `</>` is glyphs, not a pictograph, so it wants the
+            // weight and tracking of a logotype rather than of body text.
+            fontWeight: 700,
+            letterSpacing: '-0.04em',
+          }}
         >
           {style.icon}
         </span>

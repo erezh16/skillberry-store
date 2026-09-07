@@ -72,6 +72,7 @@ export interface BannerStyle {
   shadow?: 'none' | 'sm' | 'md' | 'lg';
   glow?: string;
   icon?: string;
+  icon_color?: string;
   image?: string;
   image_height?: number;
   animate?: BannerAnimation[];
@@ -234,12 +235,19 @@ function safeStyle(raw: unknown): BannerStyle {
     font_size: oneOf(r.font_size, SIZES),
     shadow: oneOf(r.shadow, SHADOWS),
     glow: safeColor(r.glow),
-    // An icon is a glyph, not markup: length-capped and stripped of anything
-    // that could be read as a tag even though React would escape it anyway.
+    // An icon is a glyph, not a second message, so the check is a length cap
+    // plus "no control characters". Notably NOT a ban on `<` and `>`: the value
+    // is rendered as a React text child, where no character is special, and
+    // barring them would stop the store showing its own `</>` wordmark.
     icon:
-      typeof r.icon === 'string' && r.icon.length <= 8 && !/[<>&]/.test(r.icon)
+      typeof r.icon === 'string' &&
+      r.icon.length > 0 &&
+      r.icon.length <= 8 &&
+      // eslint-disable-next-line no-control-regex
+      !/[\u0000-\u001f\u007f-\u009f]/.test(r.icon)
         ? r.icon
         : undefined,
+    icon_color: safeColor(r.icon_color),
     image: safeImageSrc(r.image),
     image_height: r.image_height === undefined ? undefined : safeInt(r.image_height, 8, 256),
     animate: Array.isArray(r.animate)
