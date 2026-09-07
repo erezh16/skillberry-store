@@ -795,21 +795,37 @@ def test_an_empty_style_block_is_omitted_from_the_payload():
     assert "style" not in payload
 
 
-def test_the_demo_config_ships_a_rich_banner_whose_plain_text_is_unchanged():
-    """The shipped demo is the worked example, so pin what it promises.
+def test_dressing_a_message_up_leaves_its_plain_text_identical(tmp_path):
+    """§8 made concrete on a realistic banner, not a single construct.
 
-    The message is deliberately written so that its degradation is exactly the
-    four lines the config carried before the rich layer existed — which is the
-    whole claim of §8 made concrete.
+    A message can be given a heading, a badge, colours, an embedded link and
+    code chips and still degrade to *exactly* the lines it started as — which is
+    what lets an operator enrich the UI banner without touching what `sbs login`
+    prints. Written inline rather than read off a config file on disk, so the
+    property is pinned by the test and not by a deployment's local edits.
     """
-    from pathlib import Path
-
-    path = Path(__file__).resolve().parents[4] / "access_control_config.yaml"
-    cfg = load_config(str(path))
-    assert cfg.login_info_banner is not None
-    assert cfg.login_info == (
+    before = (
         "!!! Skillberry Store LIVE DEMO !!!\n"
         "Visit us and drop us a star!\n"
         "https://github.com/skillberry-ai/skillberry-store\n"
         "Sign in as `skillberry` with password `skillberry`."
     )
+    dressed = (
+        "# [!!!]{color=#ff7b7b size=lg} Skillberry Store "
+        "[LIVE DEMO]{bg=#ffd166 color=#2a1e00 pill bold caps glow=#ffd166} "
+        "[!!!]{color=#ff7b7b size=lg}\n"
+        "## [**Visit us** and *drop us a star!*]{color=#ffe9a8}\n"
+        "[https://github.com/skillberry-ai/skillberry-store]"
+        "(https://github.com/skillberry-ai/skillberry-store)"
+        "{bold color=#8ee6ff underline}\n"
+        "Sign in as `skillberry` with password `skillberry`. {size=md color=#cfc4ee}"
+    )
+
+    cfg = load_config(_write(tmp_path, _rich_config(dressed)))
+
+    assert cfg.login_info == before
+    # ...while the UI gets the whole dressed-up tree.
+    assert [b.kind for b in cfg.login_info_banner.blocks] == ["h1", "h2", "p", "p"]
+    # spans: the red "!!!", the plain title, then the badge.
+    pill = cfg.login_info_banner.blocks[0].spans[2].to_dict()
+    assert pill["pill"] is True and pill["bg"] == "#ffd166"
