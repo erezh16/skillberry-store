@@ -38,15 +38,28 @@ standalone:
       groups: []
 
   # Informational message shown at login (UI sign-in screen and `sbs login`).
-  # Both controls are independent: `enabled` gates the display, `message` holds
-  # the text. Plain text only — line breaks via the `|` block scalar, capped at
-  # 1024 characters / 10 lines. See docs/design/login-info.md.
+  # `enabled` gates the display, `message` holds the text, and `format` picks the
+  # presentation — so a message can be committed, and dressed, ahead of being
+  # switched on. `plain` (the default) is one string shown verbatim, capped at
+  # 1024 characters / 10 lines; `rich` adds Markdown-flavoured markup and the
+  # commented-out `style` block below, capped at 8192 / 40. `sbs login` and
+  # GET /auth/whoami get plain text either way. See docs/design/login-info.md and
+  # docs/design/login-banner.md.
   #
   # WARNING: this message is served PRE-AUTHENTICATION to anyone who can reach
   # /ui/ or GET /auth/whoami. It must contain NO SECRETS. That it sits in the
   # same file as the bcrypt password hashes does not make it confidential.
   login_info:
     enabled: false
+    # format: rich
+    # style:
+    #   background: "#fff4e5"
+    #   text_color: "#4a3a1a"
+    #   border_color: "#e0a63c"
+    #   border_width: 2
+    #   radius: 10
+    #   padding: md
+    #   icon: warning
     message: |
       Demo deployment with well-known passwords — do not store secrets here.
       Sign in as `skillberry` or `skillberry-admin`.
