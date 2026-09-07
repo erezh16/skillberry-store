@@ -33,6 +33,54 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   edit. `standalone` mode only: neither `disabled` nor `delegated` has an
   in-store login. See `docs/design/login-info.md`.
 
+- **Rich login banner.** The same message can be presented as a banner nobody
+  can miss, by adding `format: rich` and an optional `style:` block:
+
+  ```yaml
+  standalone:
+    login_info:
+      enabled: true
+      format: rich
+      style:
+        gradient: ["#1b1141", "#4c1d72", "#0d1b3e"]
+        border_color: "#ffd166"
+        glow: "#ffd166"
+        icon: rocket
+        align: center
+        animate: [pulse-border, shimmer]
+      message: |
+        # Store [LIVE DEMO]{bg=#ffd166 color=navy pill bold caps}
+        ## [**Visit us** and *drop us a star!*]{color=#ffe9a8}
+        [github.com/x/y](https://github.com/x/y){bold color=#8ee6ff}
+  ```
+
+  The markup is Markdown-flavoured — `**bold**`, `*italic*`, `` `code` ``,
+  `~~strike~~`, `==mark==`, headings, bullets, quotes, rules, `[text](url)`
+  links, `![alt](src)` images, `:rocket:` icons, bare-URL autolinking — plus a
+  `[text]{color=… size=xl bold pill}` attribute span for per-span colour, size
+  and badges, and `style:` for the banner's ground, frame, glow, icon, image and
+  opt-in motion (all of which stops under `prefers-reduced-motion`).
+
+  **`format` defaults to `plain`, so no existing config changes behavior.**
+
+  **`sbs login` and `GET /auth/whoami` are unchanged and still plain.** A rich
+  message degrades back to text with the markup resolved away, at the same
+  1024-character cap as before, so a terminal never sees markup and never sees
+  an escape sequence — and no SDK regeneration is needed. The rich message
+  itself is capped at 8192 characters / 40 lines.
+
+  Every colour, size, URL scheme, attribute and animation name is matched
+  against an allow-list at config load and again in the browser; anything else
+  is warned about and dropped with the surrounding text kept, and nothing in the
+  block can fail a server boot. The message is parsed server-side into a
+  validated tree and rendered as React elements, so no operator text reaches an
+  HTML parser: `javascript:`, `data:text/html` and `image/svg+xml` are rejected,
+  and markup in the message stays visible text.
+
+  A **UI rebuild is required once** to ship the renderer (`make ui-build`);
+  editing the config afterwards still needs only a restart. See
+  `docs/design/login-banner.md`.
+
 ### Breaking
 
 - **Every plugin API route must now declare `@requires(resource, verb)`.** The startup

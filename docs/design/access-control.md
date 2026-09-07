@@ -164,9 +164,11 @@ standalone:
   # See docs/design/login-info.md.
   login_info:
     enabled: false                      # master gate; default false
+    format: plain                       # plain (default) | rich; see login-banner.md
     message: |                          # plain text; `|` preserves line breaks
       This is a shared evaluation deployment — do not store secrets here.
       Access requests: ops@example.com
+    # style: {...}                      # rich only: ground, frame, glow, icon, motion
 
 # --- RBAC ------------------------------------------------------------
 # Roles are pure (resources, verbs) permission bundles. No object-selection
@@ -256,6 +258,7 @@ Notes:
 * Unknown resource / verb names in rules → warning, rule dropped (fail-safe, does not brick startup for a typo).
 * `"*"` is supported for both `resources` and `verbs`.
 * Malformed `standalone.login_info` (not a mapping, non-string `message`, non-boolean `enabled`, or `enabled: true` with no usable text) → warning, value dropped, **server still boots**. A login banner must never be able to fail the server closed, so this key follows the warn-and-drop convention above rather than the fail-closed one. `login_info` outside `standalone` mode is dropped at debug level, since the same file is routinely shared across deployments that differ only in `mode`. See [login-info.md](login-info.md) §4.2.
+* Malformed `standalone.login_info.format` / `style`, or any unusable value inside a `format: rich` message → warning, that value dropped, the surrounding text kept, **server still boots**. Same warn-and-drop reasoning as the row above, applied to every level of the rich layer: no colour, URL, attribute or animation name from the config can fail a boot, and none of them reaches the browser without matching an allow-list. See [login-banner.md](login-banner.md) §3.2 for the full table.
 
 ### 5.3 Environment variable precedence
 
