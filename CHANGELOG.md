@@ -10,6 +10,30 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Baked container env vars.** Application environment variables can be given
+  fixed values that ship inside the image, by adding them to `container.env` at
+  the repo root:
+
+  ```
+  SBS_BASE_DIR=/app/store-data
+  OBSERVABILITY=false
+  ```
+
+  `make docker-build` copies the file to `/app/.env`, where the service already
+  picks it up at startup through python-dotenv — so the values are set under a
+  plain `docker run <image>`, with no `--env-file` flag, no `make` in the loop,
+  and no Dockerfile edit (a Dockerfile `ENV` name cannot be computed, so that
+  route costs one line per variable). They are *defaults*: an already-set
+  variable wins, so `docker run -e`, `--env-file` and Kubernetes
+  `env:`/`envFrom:` still override them, exactly as they would a Dockerfile
+  `ENV`. The values are baked into the image, so it must hold **no secrets** —
+  pass those at run time. Build against a different file with `make docker-build
+  CONTAINER_ENV_FILE=prod.env`; if the file is absent the build skips it. Any
+  `EXTRA_COPY_FILES` pair passed on the command line is kept alongside it.
+  Readable under the arbitrary UID OpenShift assigns, and — because the loading
+  happens inside the application rather than in an entrypoint script — it
+  survives a Kubernetes `command:` override. See `docs/config-env-vars.md`.
+
 - **Login information message.** An operator can show a short informational
   message at login — the `/etc/issue.net` tradition — by setting
   `standalone.login_info` in `access_control_config.yaml`:
