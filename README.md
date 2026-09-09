@@ -16,6 +16,10 @@ This service implements a smart skills repository for agentic workflows. Manage,
 
 ▶ [Watch full highlights video](https://github.com/user-attachments/assets/eab2f9f1-1196-4858-b4ca-72d6c664d9f3)
 
+[Inroduction blog](https://itnext.io/skillberry-store-the-open-source-control-plane-for-agent-skills-99be3aab6229?postPublishedType=repub)
+
+[Live Demo](https://skillberry-store-demo-adv.onrender.com)
+
 ## Features ✨
 
 - **Manage tools for agentic workloads**: Add (Persist), Remove, Update, and Delete tools.
