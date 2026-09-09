@@ -98,6 +98,46 @@ ui-dev: $(UI_NM_STAMP) ## Run the Vite dev server with HMR (uses file watchers)
 	@cd $(UI_DIR) && npx vite --host 0.0.0.0 --port $${VITE_UI_PORT:-8002}
 
 
+##@ Container environment
+
+# Application env vars baked into the image, from $(CONTAINER_ENV_FILE).
+#
+# The service picks them up because tools/configure.py calls python-dotenv's
+# load_dotenv() at import time, and its search walks up from the package
+# directory to /app/.env. That places the values in os.environ before any
+# setting is read, so they are set under a plain `docker run <image>`, under a
+# k8s/OpenShift `command:` override, and without going through `make run` --
+# none of which is true of a value exported by a makefile.
+#
+# load_dotenv() does not override an already-set variable, so `docker run -e`,
+# `--env-file` and a k8s `env:` entry still win, exactly as they do over a
+# Dockerfile ENV. The file is a source of deployment *defaults*, not an
+# override, and it must hold no secrets: it is baked into the image.
+#
+# The image cannot just carry the repo's own .env -- that name is in
+# .dockerignore (and .gitignore), so it never enters the build context. Hence a
+# separate, version-controlled file copied to /app/.env via the EXTRA_COPY_FILES
+# hook, which also grants gid 0 the owner's access -- what makes the file
+# readable under the arbitrary UID OpenShift assigns.
+CONTAINER_ENV_FILE ?= container.env
+
+# A literal comma cannot appear unescaped in a $(if ...) argument.
+_cef_comma := ,
+
+# Guarded on the file existing: stage-extra-copy.sh fails hard on a missing
+# source, so an absent (or renamed) env file must drop out of the spec rather
+# than break every image build.
+#
+# `override`, and the existing value folded in, because EXTRA_COPY_FILES is
+# itself a documented user-facing knob: a plain assignment here would be
+# silently discarded by `make docker-build EXTRA_COPY_FILES=<pair>` -- and the
+# env file would then vanish from the image just because the caller also asked
+# to copy something else.
+ifneq ($(wildcard $(CONTAINER_ENV_FILE)),)
+override EXTRA_COPY_FILES := $(EXTRA_COPY_FILES)$(if $(strip $(EXTRA_COPY_FILES)),$(_cef_comma))./$(CONTAINER_ENV_FILE):/app/.env
+endif
+
+
 ##@ Docker image variants
 
 # The default image is core-only (Dockerfile sets ARG PLUGIN_EXTRAS= empty).

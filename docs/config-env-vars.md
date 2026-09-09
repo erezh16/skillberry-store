@@ -105,3 +105,72 @@ non-anonymous import, the host matching the fetched URL is resolved in order:
 3. Neither — fall back to the `gh` CLI token in `~/.config/gh/hosts.yml`, if
    present (when `gh` stores it in the OS keyring it is not in the file, so this
    falls through to anonymous).
+
+## Setting these variables in a container
+
+Every variable in the tables above can be given a value that is **baked into the
+image**, so it is set under a plain `docker run <image>` with no `--env-file`
+flag, no `make` in the loop, and no Dockerfile edit.
+
+Put it in [`container.env`](../container.env) at the repo root:
+
+```sh
+# container.env
+SBS_BASE_DIR=/app/store-data
+SBS_VDB=faiss
+OBSERVABILITY=false
+```
+
+Then build and run normally:
+
+```sh
+make docker-build
+docker run -d --network=host ghcr.io/skillberry-ai/skillberry-store:latest
+```
+
+`make docker-build` copies the file to `/app/.env` inside the image (through the
+`EXTRA_COPY_FILES` hook — any pair you pass on the command line is kept as
+well), and the service loads it at startup with python-dotenv. Build against a
+different file with `make docker-build CONTAINER_ENV_FILE=prod.env`; if the file
+is absent the build simply skips it.
+
+### Precedence
+
+Highest wins:
+
+1. `docker run -e VAR=…` / `docker run --env-file …`, and Kubernetes `env:` /
+   `envFrom:` — per-deployment overrides.
+2. The image's own Dockerfile `ENV` (`APP_HOME`, `APP_DATA_DIR`, …).
+3. `container.env`, baked to `/app/.env` — deployment defaults.
+4. The default in the tables above, compiled into the code.
+
+So `container.env` behaves like a Dockerfile `ENV` would: it supplies a default
+and never fights a value the deployment sets explicitly. `make docker-run`
+additionally passes the host's own (git-ignored) `.env` with `--env-file`, which
+therefore overrides `container.env` — use the host `.env` for local, throwaway
+values and `container.env` for what should ship with the image.
+
+> **Never put secrets in `container.env`.** The values ride inside the image, so
+> anyone who can pull it can read them. Pass secrets at run time: `-e`, or a k8s
+> Secret via `envFrom:`.
+
+### Kubernetes and OpenShift
+
+Both are supported with no extra work:
+
+- **`env:` / `envFrom:` still override**, per the precedence above, so a
+  ConfigMap or Secret behaves exactly as it would against a Dockerfile `ENV`.
+- **Arbitrary UIDs (OpenShift) work.** The file is staged with the group given
+  the owner's access and lands under `$APP_HOME`, which the image `chgrp 0`s and
+  `chmod g=u`s — so the random UID OpenShift assigns (always in gid 0) can read
+  it. Verified by running the image as `--user 1000670000:0`.
+- **A `command:` override still gets the variables**, because the loading
+  happens inside the application rather than in an entrypoint script — unlike an
+  `ENTRYPOINT` wrapper, which `command:` replaces.
+- **`readOnlyRootFilesystem: true` is fine** — the file is only ever read.
+
+Two limits worth knowing: the variables reach the *application* process (and
+anything it spawns), so an interactive `docker exec … sh` will not see them; and
+a variable consumed at Python *import* time by a module imported before
+`skillberry_store.tools.configure` would miss them. Use a Dockerfile `ENV` for
+either case.
