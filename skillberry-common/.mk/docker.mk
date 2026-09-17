@@ -67,15 +67,19 @@ LATEST_TAG = latest$(IMAGE_TAG_SUFFIX)
 IMAGE_TAGS = $(IMAGE_TAG) $(LATEST_TAG)
 # Tag that docker-pull fetches from the registry.
 PULL_TAG = $(LATEST_TAG)
-# Suffix keeping the build stamps of one tagging scheme apart from another's.
-TAG_STAMP_SFX = $(IMAGE_TAG_SUFFIX)
 else
 IMAGE_TAG = $(CUSTOM_TAG)
 LATEST_TAG = $(CUSTOM_TAG)
 IMAGE_TAGS = $(IMAGE_TAG)
 PULL_TAG = $(CUSTOM_TAG)
-TAG_STAMP_SFX = -$(CUSTOM_TAG)
 endif
+
+# Suffix that keeps one tagging scheme's build stamps apart from another's, and
+# at the same time scopes them to the current git label (concept 3): the primary
+# image tag is $(BUILD_VERSION)$(IMAGE_TAG_SUFFIX) by default and $(CUSTOM_TAG)
+# when that is set, so keying the stamps on it makes "the stamp is present" mean
+# "an image at exactly this tag was produced" in both schemes.
+TAG_STAMP_SFX = -$(IMAGE_TAG)
 
 # Tags other than the primary one, applied on top of it after the build.
 SECONDARY_IMAGE_TAGS = $(filter-out $(IMAGE_TAG),$(IMAGE_TAGS))
@@ -145,9 +149,6 @@ else
 DOCKER_ARCH := unknown
 endif
 
-# Print the value of DOCKER
-@echo "Using Docker: $(DOCKER)"
-
 # Check whether docker is aliased to podman
 # It is assumed that the user is using zsh or bash and alias is defined in ~/.zshrc or ~/.bashrc
 # Check that either Docker or Podman is installed
@@ -177,15 +178,24 @@ else ifeq ($(DBT),registry)
 	DB_ARCH := $(SUPPORTED_ARCHS)
 	DB_ACTION := push
 else
-	@echo "Invalid DBT value: $(DBT). Supported values: local, registry"
-	@exit 1
+$(error Invalid DBT value: $(DBT). Supported values: local, registry)
 endif
 
-.PHONY: base-image-build 
-base-image-build: multiarch-check .stamps/base-image-build-$(DBT)	## Build skillberry base image (DBT=registry to build & push multi-arch)
+# Parse-time reconciler: if the local image at the current primary tag has been
+# removed (e.g., `docker rmi` outside of `make docker-rmi`), invalidate the
+# stamps that claim it exists so the next build/get restores the invariant
+# (concept 3). The tag is passed rather than BUILD_VERSION because it is what
+# the image actually carries and what the stamps are keyed on -- under
+# CUSTOM_TAG the label does not appear in the tag at all.
+_docker_reconcile := $(shell $(SB_COMMON_PATH)/scripts/docker-reconcile-stamp.sh \
+    $(DOCKER) $(FULL_IMAGE_NAME) $(IMAGE_TAG) $(DBT))
 
-# Build base multi-arch image if it does not exist
-.stamps/base-image-build-$(DBT): 
+.PHONY: base-image-build
+base-image-build: multiarch-check .stamps/base-image-build-$(DBT)-$(BASE_IMAGE_TAG)	## Build skillberry base image (DBT=registry to build & push multi-arch)
+
+# Build base multi-arch image if it does not exist. Stamp includes DBT and
+# BASE_IMAGE_TAG so different variants never share a stamp (concept 3).
+.stamps/base-image-build-$(DBT)-$(BASE_IMAGE_TAG):
 	@echo "Building Base Image using $(DOCKER) version: $(shell $(DOCKER) --version)"
 	@echo "Supported Architectures: $(DB_ARCH)"
 	@echo "Base Image Name: $(BASE_IMAGE_FULL_NAME):$(BASE_IMAGE_TAG)"
@@ -199,7 +209,7 @@ base-image-build: multiarch-check .stamps/base-image-build-$(DBT)	## Build skill
 		--$(DB_ACTION) \
 		. \
 		|| exit 1; \
-		touch .stamps/base-image-build-$(DBT); \
+		touch .stamps/base-image-build-$(DBT)-$(BASE_IMAGE_TAG); \
 	elif [ "$(DOCKER)" = "podman" ]; then \
 		if [ "$(DBT)" = "registry" ]; then \
 			$(DOCKER) build --no-cache=true \
@@ -218,7 +228,7 @@ base-image-build: multiarch-check .stamps/base-image-build-$(DBT)	## Build skill
 			-t $(BASE_IMAGE_FULL_NAME):$(BASE_IMAGE_TAG) \
 			. || exit 1; \
 		fi; \
-		touch .stamps/base-image-build-$(DBT); \
+		touch .stamps/base-image-build-$(DBT)-$(BASE_IMAGE_TAG); \
     else \
 		echo "Unsupported Docker version: $(DOCKER)"; \
 		echo "Please use Docker or Podman"; \
@@ -236,13 +246,17 @@ base-image-build: multiarch-check .stamps/base-image-build-$(DBT)	## Build skill
 base-image-rm: docker-check ## Remove the local base image
 	@echo "Removing BASE image: $(BASE_IMAGE_FULL_NAME):$(BASE_IMAGE_TAG)"
 	$(DOCKER) rmi -f $(BASE_IMAGE_FULL_NAME):$(BASE_IMAGE_TAG) > /dev/null 2>&1 || true
-	rm -f .stamps/base-image-build*
+	rm -f .stamps/base-image-build-*-$(BASE_IMAGE_TAG)
 
-.PHONY: docker-build 
-docker-build: docker-check update-git-version .stamps/docker-build-$(DBT)$(TAG_STAMP_SFX)	## Build docker image (DBT=registry for multi-arch & push, EXTRA_COPY_FILES for extra files & folders, CUSTOM_TAG for a single custom tag)
+.PHONY: docker-build
+docker-build: docker-check .stamps/docker-build-$(DBT)$(TAG_STAMP_SFX)	## Build docker image (DBT=registry for multi-arch & push, EXTRA_COPY_FILES for extra files & folders, CUSTOM_TAG for a single custom tag)
 
-# We actually build a new image only if the code changed by checking code-scan stamp
-.stamps/docker-build-$(DBT)$(TAG_STAMP_SFX): .stamps/ssh-agent.env .stamps/code-scan
+# Rebuild only when the tag-scoped stamp is missing (concept 3). The
+# prerequisite is the git-state manifest: its mtime updates precisely when
+# repository state changes (concepts 2 + 4), and it exists in every project
+# regardless of whether VERSION_LOCATION is defined. It replaces the former
+# .stamps/code-scan file scan, which duplicated what git already tracks.
+.stamps/docker-build-$(DBT)$(TAG_STAMP_SFX): .stamps/git-version-manifest .stamps/ssh-agent.env
 	@echo "Building for $(DB_ARCH) using $(DOCKER) version: $(shell $(DOCKER) --version)"
 	@echo "Building Docker image with tag(s): $(foreach tag,$(IMAGE_TAGS),$(FULL_IMAGE_NAME):$(tag))"
 	@echo "Build version: $(BUILD_VERSION)"
@@ -339,6 +353,8 @@ docker-pull: docker-check ## Pull the latest docker image from registry
 		exit 1; \
 	fi
 
+# The get-stamp encodes concept 3's invariant: "an image at the current label
+# is present locally". Either a local build or a successful pull satisfies it.
 .PHONY: docker-get
 docker-get: .stamps/docker-get$(TAG_STAMP_SFX)
 	@true

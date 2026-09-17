@@ -7,9 +7,11 @@ Background (PR #308 review, issue #6): every push run died at
 the registry ``:latest`` never flipped to the core-only image (and issue #4 stayed
 masked). From run 32854430424 the agent starts fine ("Starting SSH agent" /
 "Agent pid 10184") and the step then fails with no diagnostic at all: the recipe
-runs ``ssh-add $(SSH_KEY)`` where ``SSH_KEY ?= ~/.ssh/id_rsa 2>/dev/null``, a
+ran ``ssh-add $(SSH_KEY)`` where ``SSH_KEY ?= ~/.ssh/id_rsa 2>/dev/null``, a
 GitHub runner has no ``~/.ssh/id_rsa``, and the redirect baked into the variable
-swallows the error message.
+swallowed the error message. The redirect is gone (``SSH_KEY ?=
+$(HOME)/.ssh/id_rsa``): a variable holding a path should hold a path, and the
+diagnostic belongs on the recipe's own terms, below.
 
 Adding a key is therefore best-effort now. Docker still receives the agent socket
 via ``--ssh default=$SSH_AUTH_SOCK``; a keyless agent simply resolves no private
@@ -66,6 +68,12 @@ def _stamp_recipe_as_shell() -> str:
     script = "\n".join(lines)
     # Make -> shell: $$VAR is a shell variable, $(SSH_KEY) is a make variable.
     script = script.replace("$(SSH_KEY)", _make_variable("SSH_KEY"))
+    # SSH_KEY no longer carries the `2>/dev/null` redirect that swallowed
+    # ssh-add's error message (that is the bug this file is about); it is now
+    # `$(HOME)/.ssh/id_rsa`. Hand $(HOME) to the shell as $HOME so it resolves
+    # to the sandbox HOME the recipe is executed under — which is where "this
+    # checkout has no private key" is arranged.
+    script = script.replace("$(HOME)", "$HOME")
     script = script.replace("$$", "$")
     assert "$(" not in script, f"unexpanded make variable in recipe:\n{script}"
     return script
