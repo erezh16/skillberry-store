@@ -321,9 +321,14 @@ def _hash_objects(paths: list[str]) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 def cmd_update(version: str, manifest_path: str, version_location: str) -> int:
-    if not _in_repo():
-        print("Skipping git-state update: not inside a Git repository.", file=sys.stderr)
-        return 0
+    # Outside a git repository — a source tarball, or the runtime image's build,
+    # which has neither git nor a .git directory — the manifest is still written,
+    # in compute_manifest()'s constant "HEAD: unknown" form. Skipping it left the
+    # pivot of the stamp graph permanently absent, and make treats a prerequisite
+    # that its recipe fails to create as newer than any target, so every
+    # docker-build fired again. A constant manifest is exactly what a state that
+    # cannot change should produce.
+    in_repo = _in_repo()
 
     # Observability levels:
     #   - no state change              → no output
@@ -342,6 +347,12 @@ def cmd_update(version: str, manifest_path: str, version_location: str) -> int:
         _print_observability(version, True, old_manifest, new_manifest, verbose)
     else:
         _print_observability(version, False, "", new_manifest, verbose)
+
+    if not in_repo:
+        print(
+            "    (not inside a Git repository - recording an empty git state)",
+            file=sys.stderr,
+        )
 
     mp.parent.mkdir(parents=True, exist_ok=True)
     mp.write_text(new_manifest)
