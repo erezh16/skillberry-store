@@ -2,7 +2,7 @@
 # Licensed under the Apache License, Version 2.0
 """Exercises the build system's git-state code against the concepts it implements.
 
-``skillberry-common/scripts/git_state.py`` computes BUILD_VERSION and maintains
+``scripts/git_state.py`` computes BUILD_VERSION and maintains
 ``.stamps/git-version-manifest``, the pivot of the build stamp graph. Concepts 1,
 2 and 4 of ``docs/design/build_concepts.md`` state the properties this must have,
 and each one is a property the makefiles now *rely* on: the label names the
@@ -22,8 +22,9 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-GIT_STATE = REPO_ROOT / "skillberry-common" / "scripts" / "git_state.py"
+from build_paths import COMMON_ROOT
+
+GIT_STATE = COMMON_ROOT / "scripts" / "git_state.py"
 
 MANIFEST = ".stamps/git-version-manifest"
 

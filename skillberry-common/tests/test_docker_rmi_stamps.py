@@ -28,8 +28,9 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-DOCKER_MK = REPO_ROOT / "skillberry-common" / ".mk" / "docker.mk"
+from build_paths import COMMON_ROOT
+
+DOCKER_MK = COMMON_ROOT / ".mk" / "docker.mk"
 
 # The label part of the default scheme's tags: IMAGE_TAG is
 # $(BUILD_VERSION)$(IMAGE_TAG_SUFFIX), so the core image's stamps end in the bare

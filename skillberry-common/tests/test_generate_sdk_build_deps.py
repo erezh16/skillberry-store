@@ -16,7 +16,6 @@ import re
 import shutil
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 
@@ -25,8 +24,13 @@ if sys.version_info >= (3, 11):
 else:  # pragma: no cover - the project floor is 3.11
     import tomli as tomllib
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-DEV_MK = REPO_ROOT / ".mk" / "dev.mk"
+from build_paths import PROJECT_ROOT, requires_project
+
+# `generate-sdk` is defined in this repository, but the extras it needs and the
+# hook that installs them are the embedding project's.
+pytestmark = requires_project
+
+DEV_MK = PROJECT_ROOT / ".mk" / "dev.mk"
 
 # Executables generate-sdk's recipe shells out to, and the extra that ships them.
 GENERATE_SDK_TOOLS = {
@@ -40,7 +44,7 @@ def _make_prerequisites(target: str) -> list[str]:
     """Prerequisites of `target` from make's resolved database (no recipe runs)."""
     proc = subprocess.run(
         ["make", "-pRrq", target],
-        cwd=REPO_ROOT,
+        cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
         timeout=300,
@@ -89,7 +93,7 @@ def test_build_extra_installer_uses_a_recursive_make():
 @pytest.mark.parametrize("executable,package", sorted(GENERATE_SDK_TOOLS.items()))
 def test_generate_sdk_tools_are_declared_in_the_build_extra(executable, package):
     """The tools the recipe shells out to must actually be in the extra we install."""
-    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+    pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text())
     extra = pyproject["project"]["optional-dependencies"][BUILD_EXTRA]
     declared = {re.split(r"[\[><=!;]", req, maxsplit=1)[0].strip() for req in extra}
     assert package in declared, (

@@ -35,8 +35,9 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-GLOBALS_MK = REPO_ROOT / "skillberry-common" / ".mk" / "globals.mk"
+from build_paths import COMMON_ROOT
+
+GLOBALS_MK = COMMON_ROOT / ".mk" / "globals.mk"
 STAMP_TARGET = ".stamps/ssh-agent.env"
 
 pytestmark = pytest.mark.skipif(

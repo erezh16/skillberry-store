@@ -22,8 +22,9 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-SCRIPTS = REPO_ROOT / "skillberry-common" / "scripts"
+from build_paths import COMMON_ROOT, PROJECT_ROOT, requires_project
+
+SCRIPTS = COMMON_ROOT / "scripts"
 INSTALL_SH = SCRIPTS / "install-requirements.sh"
 RECONCILE_SH = SCRIPTS / "docker-reconcile-stamp.sh"
 
@@ -281,10 +282,15 @@ MANIFEST_STAMP = ".stamps/git-version-manifest"
 
 
 def _docker_build_rule(*make_vars: str) -> str:
-    """The resolved `.stamps/docker-build-local-*` rule line from make's database."""
+    """The resolved `.stamps/docker-build-local-*` rule line from make's database.
+
+    Read from the embedding project: the tagging-scheme conditional lives in
+    docker.mk, but only a project that includes it has a Makefile for make to
+    resolve, so these two tests are the ones that need PROJECT_ROOT.
+    """
     proc = subprocess.run(
         ["make", "-pRrq", *make_vars, "print_build_version"],
-        cwd=REPO_ROOT,
+        cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
         timeout=600,
@@ -299,6 +305,7 @@ def _docker_build_rule(*make_vars: str) -> str:
     return rules[0]
 
 
+@requires_project
 @pytest.mark.parametrize("scheme", ["default", "suffixed"])
 def test_a_label_scoped_stamp_takes_the_manifest_order_only(scheme):
     """The stamp name carries the label, so the label is the change detector.
@@ -323,6 +330,7 @@ def test_a_label_scoped_stamp_takes_the_manifest_order_only(scheme):
     )
 
 
+@requires_project
 def test_a_custom_tag_takes_the_manifest_as_a_real_prerequisite():
     """A fixed tag says nothing about state, so only the manifest's mtime can."""
     rule = _docker_build_rule("CUSTOM_TAG=my-experiment")

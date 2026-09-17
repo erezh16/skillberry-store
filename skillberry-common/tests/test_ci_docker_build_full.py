@@ -17,30 +17,34 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
-from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+from build_paths import PROJECT_ROOT, requires_project
+
 MAKEFILES = [
-    REPO_ROOT / ".mk" / "dev.mk",
-    REPO_ROOT / ".mk" / "local.mk",
-    REPO_ROOT / ".mk" / "process.mk",
+    PROJECT_ROOT / ".mk" / "dev.mk",
+    PROJECT_ROOT / ".mk" / "local.mk",
+    PROJECT_ROOT / ".mk" / "process.mk",
 ]
 
 # The CI hook that must pull the -full variant into the push flow.
 CI_FULL_TARGET = "ci-docker-build-full"
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("make") is None, reason="make is not available on this host"
-)
+# The wiring under test is the embedding project's own, resolved through make.
+pytestmark = [
+    requires_project,
+    pytest.mark.skipif(
+        shutil.which("make") is None, reason="make is not available on this host"
+    ),
+]
 
 
 def _make_database() -> str:
     """Dump make's resolved rule database without running any recipe."""
     proc = subprocess.run(
         ["make", "-pRrq", "ci-push"],
-        cwd=REPO_ROOT,
+        cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
         timeout=300,
@@ -80,7 +84,7 @@ def test_full_image_is_pushed_only_after_lint_and_tests(database: str):
 
 def test_ci_hook_pushes_to_the_registry_and_delegates_to_docker_build_full():
     """The hook must set DBT=registry (push, not a throwaway local build)."""
-    dev_mk = (REPO_ROOT / ".mk" / "dev.mk").read_text()
+    dev_mk = (PROJECT_ROOT / ".mk" / "dev.mk").read_text()
     recipe = re.search(
         rf"^{re.escape(CI_FULL_TARGET)}:.*?\n((?:\t.*\n)+)", dev_mk, re.MULTILINE
     )
@@ -92,7 +96,7 @@ def test_ci_hook_pushes_to_the_registry_and_delegates_to_docker_build_full():
 
 def test_docker_build_full_tags_and_bundles_all_plugins():
     """The -full variant is only meaningful with the suffix and the plugin extra."""
-    dev_mk = (REPO_ROOT / ".mk" / "dev.mk").read_text()
+    dev_mk = (PROJECT_ROOT / ".mk" / "dev.mk").read_text()
     recipe = re.search(r"^docker-build-full:.*?\n((?:\t.*\n)+)", dev_mk, re.MULTILINE)
     assert recipe, "docker-build-full has no recipe in .mk/dev.mk"
     body = recipe.group(1)
