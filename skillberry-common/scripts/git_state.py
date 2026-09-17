@@ -1,0 +1,488 @@
+#!/usr/bin/env python3
+"""Git-state management for the SkillBerry build system.
+
+Consolidates the small shell/awk scripts that previously handled the
+BUILD_VERSION label, the state manifest, and content-idempotent updates.
+See ``docs/design/build_concepts.md`` for the semantics — concepts 1, 2,
+and 4.
+
+Subcommands:
+  version   Print the BUILD_VERSION label to stdout.
+  manifest  Print the canonical state manifest to stdout.
+  update    Content-idempotent update of the state manifest at the given
+            path, with observability lines to stderr on real state changes.
+            If a VERSION_LOCATION path is given as the third argument, the
+            label is projected there using the same content-idempotence
+            rule (concept 2).
+
+Observability for ``update``:
+  * No state change             → no output.
+  * State changed               → single line: ``==> BUILD_VERSION updated to '<label>'``.
+  * State changed, VERBOSE mode → the above plus a per-file breakdown of
+    what changed (commit-delta ``~``, newly-dirty ``+``, no-longer-dirty
+    ``-``, still-dirty-with-different-content ``!``).
+
+VERBOSE mode is enabled by setting the ``VERBOSE_BUILD_VERSION`` environment
+variable (any value, including empty string, counts as set).
+
+All human-facing output goes to stderr, so any subcommand is safe to call
+from a Makefile's ``$(shell ...)``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+
+# ---------------------------------------------------------------------------
+# git helpers
+# ---------------------------------------------------------------------------
+
+def _git(*args: str) -> str:
+    """Run ``git <args>`` and return stdout as text; empty string on failure."""
+    try:
+        r = subprocess.run(["git", *args], capture_output=True, text=True)
+    except FileNotFoundError:
+        return ""
+    return r.stdout if r.returncode == 0 else ""
+
+
+def _git_bytes(*args: str) -> bytes:
+    """Run ``git <args>`` and return stdout as bytes; empty on failure."""
+    try:
+        r = subprocess.run(["git", *args], capture_output=True)
+    except FileNotFoundError:
+        return b""
+    return r.stdout if r.returncode == 0 else b""
+
+
+def _in_repo() -> bool:
+    r = subprocess.run(
+        ["git", "rev-parse", "--is-inside-work-tree"],
+        capture_output=True, text=True,
+    )
+    return r.returncode == 0
+
+
+# ---------------------------------------------------------------------------
+# BUILD_VERSION label (concept 1)
+# ---------------------------------------------------------------------------
+
+def compute_version() -> str:
+    """Return the BUILD_VERSION label for the current repository state.
+
+    Formats (matching ``git describe --always --dirty`` conventions):
+      * clean at release commit:       ``<release>``            (e.g. ``0.5.3``)
+      * N commits past latest release: ``<release>-<N>-g<sha>``
+      * no releases in the repo yet:   ``g<sha>``
+      * any dirty state adds:          ``-dirty-<7hex>``
+
+    The dirty fingerprint is a hash over ``git diff HEAD`` plus the sorted
+    list and contents of untracked non-ignored files, so different dirty
+    states produce different labels.
+    """
+    if not _in_repo():
+        return "unknown"
+
+    latest_release = _latest_release()
+    commit = _git("rev-parse", "--short=7", "HEAD").strip() or "0000000"
+
+    if not latest_release:
+        base = f"g{commit}"
+    else:
+        count_out = _git("rev-list", "--count", f"{latest_release}..HEAD").strip()
+        if count_out.isdigit():
+            count = int(count_out)
+            base = latest_release if count == 0 else f"{latest_release}-{count}-g{commit}"
+        else:
+            # Tag not resolvable locally — fall back to the no-release form
+            # rather than emitting a spurious label.
+            base = f"g{commit}"
+
+    if not _git("status", "--porcelain").strip():
+        return base
+    return f"{base}-dirty-{_dirty_fingerprint()}"
+
+
+# A release identifier: starts with a digit, and carries only characters a
+# version number is made of. Deliberately loose about the shape beyond that
+# (0.2, 0.2.1, 0.2.1-rc1, 1.0.0-alpha.2 all qualify).
+_RELEASE_RE = re.compile(r"^\d[0-9A-Za-z.+_-]*$")
+
+
+def _latest_release() -> str:
+    """Return the highest release identifier this repository can resolve, or ``""``.
+
+    Candidates come from two places, because neither alone is dependable:
+
+    * remote ``branch-<version>`` refs — the release convention (each release
+      gets a branch, carrying a toml that pins the matching sdk), but a clone
+      whose release branches were never pushed or have since been pruned has
+      none of them;
+    * tags — ``make release`` creates and pushes one per release, and a tag is
+      what the commit count below is measured against anyway.
+
+    Two filters then keep the answer honest, and both were missing:
+
+    * **the name must look like a version.** Without this, an ordinary feature
+      branch named ``branch-drop-path-derived-import-tags`` sorted last among
+      the candidates and became "the latest release" — which is what this
+      repository's own origin did to the label: every build was tagged
+      ``drop-path-derived-import-tags--g<sha>``.
+    * **the name must resolve to a commit,** since the commit count below is
+      ``<release>..HEAD``. An unresolvable candidate spilled
+      ``fatal: ambiguous argument`` onto the console on every single make
+      invocation, and left the label in its no-release form.
+    """
+    candidates: set[str] = set()
+    for line in _git("branch", "-r").splitlines():
+        line = line.strip()
+        idx = line.find("branch-")
+        if idx >= 0:
+            candidates.add(line[idx + len("branch-"):])
+    candidates.update(tag.strip() for tag in _git("tag").splitlines() if tag.strip())
+
+    releases = [c for c in candidates if _RELEASE_RE.match(c) and _rev_exists(c)]
+    if not releases:
+        return ""
+    return sorted(releases, key=_version_key)[-1]
+
+
+def _rev_exists(rev: str) -> bool:
+    """True when ``rev`` names a commit in this repository."""
+    r = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"],
+        capture_output=True,
+    )
+    return r.returncode == 0
+
+
+def _version_key(v: str) -> tuple:
+    """Ordering for release identifiers, following ``sort -V``.
+
+    Numeric components compare numerically, and a pre-release suffix ranks
+    *below* the bare release it qualifies (``0.2.1-rc1`` < ``0.2.1``) — so a
+    release candidate left behind in the tag list cannot outrank the release
+    that superseded it.
+    """
+    nums: list[int] = []
+    suffix = ""
+    for part in v.split("."):
+        if part.isdigit():
+            nums.append(int(part))
+            continue
+        # First non-numeric component: everything from here is the suffix.
+        m = re.match(r"(\d+)(.*)", part)
+        if m:
+            nums.append(int(m.group(1)))
+            suffix = m.group(2)
+        else:
+            suffix = part
+        break
+    return (tuple(nums), not suffix, suffix)
+
+
+def _dirty_fingerprint() -> str:
+    """7-char SHA1-prefix fingerprint of the current dirty content.
+
+    Covers tracked diffs (staged + unstaged) plus untracked non-ignored file
+    contents, matching the state manifest's scope.
+    """
+    h = hashlib.sha1()
+    h.update(_git_bytes("diff", "HEAD"))
+    untracked = _git_bytes("ls-files", "--others", "--exclude-standard", "-z")
+    paths = [p for p in untracked.split(b"\0") if p]
+    for path in sorted(paths):
+        h.update(b"\n== ")
+        h.update(path)
+        h.update(b" ==\n")
+        try:
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    h.update(chunk)
+        except OSError:
+            pass
+    return h.hexdigest()[:7]
+
+
+# ---------------------------------------------------------------------------
+# State manifest (concept 4 pivot)
+# ---------------------------------------------------------------------------
+#
+# Manifest format:
+#     HEAD: <sha>
+#     <status>\t<hash>\t<path>
+#     <status>\t<hash>\t<path>
+#     ...
+#
+#   <status> is git status --porcelain=v1's 2-char XY code.
+#   <hash>   is `git hash-object` of the current on-disk file, or
+#            '-' for a deletion, '<dir>' for an untracked directory,
+#            '<missing>' if the path resolves to nothing.
+#   <path>   is the working-tree path (renames use the destination path).
+#
+# Body lines are sorted so equivalent states produce byte-identical
+# manifests; different states produce different manifests, and two manifests
+# can be diffed to enumerate the files responsible for a change.
+
+def compute_manifest() -> str:
+    if not _in_repo():
+        return "HEAD: unknown\n"
+
+    head = _git("rev-parse", "HEAD").strip() or "unknown"
+    lines = [f"HEAD: {head}"]
+
+    raw = _git_bytes("status", "--porcelain=v1", "-z", "--untracked-files=all")
+    entries = raw.split(b"\0")
+    # (status, path) pairs, in porcelain order; hashing is a second pass so the
+    # files can be handed to git in one batch.
+    changed: list[tuple[str, str]] = []
+    i = 0
+    while i < len(entries):
+        entry = entries[i]
+        i += 1
+        if len(entry) < 3:
+            continue
+        status = entry[:2].decode("utf-8", errors="replace")
+        path = entry[3:].decode("utf-8", errors="replace")
+        # Rename/copy emits <new>\0<origin>; the destination reflects the
+        # current on-disk state, so we skip the origin slot.
+        if status[0] in ("R", "C"):
+            i += 1
+        changed.append((status, path))
+
+    hashes = _hash_objects(
+        [p for s, p in changed if "D" not in s and os.path.isfile(p)]
+    )
+
+    body: list[str] = []
+    for status, path in changed:
+        if "D" in status:
+            fh = "-"
+        elif path in hashes:
+            fh = hashes[path]
+        elif os.path.isdir(path):
+            fh = "<dir>"
+        else:
+            fh = "<missing>"
+        body.append(f"{status}\t{fh}\t{path}")
+
+    body.sort()
+    return "\n".join(lines + body) + "\n"
+
+
+def _hash_objects(paths: list[str]) -> dict[str, str]:
+    """``git hash-object`` for many paths, in as few git processes as possible.
+
+    One process per path costs ~2ms of fork+exec, which is invisible on a
+    handful of edited files and is 15 seconds on a working tree carrying a few
+    thousand untracked ones (a scratch data/ or skill-sets/ directory is
+    enough). Since the manifest is recomputed on every make invocation that
+    reaches the stamp graph, that cost lands on every build. ``--stdin-paths``
+    does the same work in one process.
+
+    Degradation is graceful: git processes the list in order and dies on the
+    first path it cannot read, so whatever it did emit is still used and only
+    the remainder falls back to a process per path.
+    """
+    if not paths:
+        return {}
+
+    out: dict[str, str] = {}
+    # --stdin-paths is newline-delimited, so a path containing a newline (legal,
+    # if unkind) cannot go through the batch at all.
+    batchable = [p for p in paths if "\n" not in p]
+    if batchable:
+        try:
+            r = subprocess.run(
+                ["git", "hash-object", "--stdin-paths"],
+                input="\n".join(batchable) + "\n",
+                capture_output=True,
+                text=True,
+            )
+            out.update(zip(batchable, r.stdout.split()))
+        except FileNotFoundError:
+            pass
+
+    for path in paths:
+        if path not in out:
+            out[path] = _git("hash-object", "--", path).strip() or "unknown"
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Update (manifest + optional VERSION_LOCATION) with observability
+# ---------------------------------------------------------------------------
+
+def cmd_update(version: str, manifest_path: str, version_location: str) -> int:
+    # Outside a git repository — a source tarball, or the runtime image's build,
+    # which has neither git nor a .git directory — the manifest is still written,
+    # in compute_manifest()'s constant "HEAD: unknown" form. Skipping it left the
+    # pivot of the stamp graph permanently absent, and make treats a prerequisite
+    # that its recipe fails to create as newer than any target, so every
+    # docker-build fired again. A constant manifest is exactly what a state that
+    # cannot change should produce.
+    in_repo = _in_repo()
+
+    # Observability levels:
+    #   - no state change              → no output
+    #   - state changed, VERBOSE unset → single line naming the new label
+    #   - state changed, VERBOSE set   → single line + per-file breakdown
+    # VERBOSE is opt-in via the VERBOSE_BUILD_VERSION env var (any value,
+    # including empty string, counts as "set" per the concept doc).
+    verbose = "VERBOSE_BUILD_VERSION" in os.environ
+
+    # The label projection is checked on every run, not only when the manifest
+    # moves. The two are near-perfectly correlated but not identical: the label
+    # also carries the release it is counted from, so fetching (or, as `make
+    # release` does, creating) a release ref changes the label while
+    # `git status` — and therefore the manifest — reports nothing at all. Gating
+    # the projection on a manifest rewrite left `make release` baking the
+    # *pre-release* label into the image it published. Each file follows its own
+    # content-idempotence rule (concept 2), which is all that keeps mtimes stable.
+    label_projected = version_location and _write_version_file(
+        version, version_location, verbose
+    )
+
+    new_manifest = compute_manifest()
+    mp = Path(manifest_path)
+    if mp.exists():
+        old_manifest = mp.read_text()
+        if old_manifest == new_manifest:
+            # No change → keep mtime stable so downstream isn't invalidated. The
+            # label can still have moved on its own (see above), and that is worth
+            # the one line the terse mode allows itself.
+            if label_projected:
+                print(f"==> BUILD_VERSION updated to '{version}'", file=sys.stderr)
+            return 0
+        _print_observability(version, True, old_manifest, new_manifest, verbose)
+    else:
+        _print_observability(version, False, "", new_manifest, verbose)
+
+    if not in_repo:
+        print(
+            "    (not inside a Git repository - recording an empty git state)",
+            file=sys.stderr,
+        )
+
+    mp.parent.mkdir(parents=True, exist_ok=True)
+    mp.write_text(new_manifest)
+    return 0
+
+
+def _print_observability(
+    version: str, prior_exists: bool, old: str, new: str, verbose: bool,
+) -> None:
+    verb = "updated" if prior_exists else "set"
+    print(f"==> BUILD_VERSION {verb} to '{version}'", file=sys.stderr)
+
+    if not verbose:
+        return
+
+    if not prior_exists:
+        print("    No prior BUILD_VERSION detected.", file=sys.stderr)
+        return
+
+    print(
+        "    The following changes have been detected since previous BUILD_VERSION:",
+        file=sys.stderr,
+    )
+
+    old_head, old_body = _split_manifest(old)
+    new_head, new_body = _split_manifest(new)
+
+    if old_head != new_head:
+        print(f"    HEAD: {old_head} -> {new_head}", file=sys.stderr)
+        if old_head != "unknown" and new_head != "unknown":
+            r = subprocess.run(
+                ["git", "rev-parse", "--verify", "--quiet", old_head],
+                capture_output=True,
+            )
+            if r.returncode == 0:
+                names = _git("diff", "--name-only", old_head, new_head).splitlines()
+                for p in sorted(set(names)):
+                    print(f"    ~ {p}", file=sys.stderr)
+
+    old_map = _body_map(old_body)
+    new_map = _body_map(new_body)
+    for path in sorted(set(old_map) | set(new_map)):
+        o, n = old_map.get(path), new_map.get(path)
+        if o is not None and n is not None:
+            if o != n:
+                print(f"    ! {path}", file=sys.stderr)
+        elif n is not None:
+            print(f"    + {path}", file=sys.stderr)
+        else:
+            print(f"    - {path}", file=sys.stderr)
+
+
+def _split_manifest(text: str) -> tuple[str, list[str]]:
+    if not text:
+        return "unknown", []
+    lines = text.splitlines()
+    if lines and lines[0].startswith("HEAD: "):
+        return lines[0][len("HEAD: "):], lines[1:]
+    return "unknown", lines
+
+
+def _body_map(body: list[str]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for line in body:
+        parts = line.split("\t")
+        if len(parts) >= 3:
+            status, fh, path = parts[0], parts[1], "\t".join(parts[2:])
+            out[path] = f"{status}\t{fh}"
+    return out
+
+
+def _write_version_file(version: str, path: str, verbose: bool) -> bool:
+    """Content-idempotent write of ``__git_version__ = "<version>"``.
+
+    Returns whether the file was (re)written. Progress is printed only when
+    ``verbose`` is set — the terse observability mode keeps output to the single
+    BUILD_VERSION line.
+    """
+    new = f'__git_version__ = "{version}"\n'
+    p = Path(path)
+    if p.exists() and p.read_text() == new:
+        return False
+    p.parent.mkdir(parents=True, exist_ok=True)
+    verb = "Updated" if p.exists() else "Created"
+    p.write_text(new)
+    if verbose:
+        print(f"{verb} git version in {path} to {version}", file=sys.stderr)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Git-state management for the SkillBerry build system.")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("version", help="Print BUILD_VERSION")
+    sub.add_parser("manifest", help="Print state manifest")
+    up = sub.add_parser("update", help="Content-idempotent manifest update")
+    up.add_argument("version")
+    up.add_argument("manifest_path")
+    up.add_argument("version_location", nargs="?", default="")
+    args = ap.parse_args()
+
+    if args.cmd == "version":
+        print(compute_version())
+    elif args.cmd == "manifest":
+        sys.stdout.write(compute_manifest())
+    elif args.cmd == "update":
+        return cmd_update(args.version, args.manifest_path, args.version_location)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
