@@ -185,7 +185,9 @@ def compute_manifest() -> str:
 
     raw = _git_bytes("status", "--porcelain=v1", "-z", "--untracked-files=all")
     entries = raw.split(b"\0")
-    body: list[str] = []
+    # (status, path) pairs, in porcelain order; hashing is a second pass so the
+    # files can be handed to git in one batch.
+    changed: list[tuple[str, str]] = []
     i = 0
     while i < len(entries):
         entry = entries[i]
@@ -198,10 +200,18 @@ def compute_manifest() -> str:
         # current on-disk state, so we skip the origin slot.
         if status[0] in ("R", "C"):
             i += 1
+        changed.append((status, path))
+
+    hashes = _hash_objects(
+        [p for s, p in changed if "D" not in s and os.path.isfile(p)]
+    )
+
+    body: list[str] = []
+    for status, path in changed:
         if "D" in status:
             fh = "-"
-        elif os.path.isfile(path):
-            fh = _git("hash-object", "--", path).strip() or "unknown"
+        elif path in hashes:
+            fh = hashes[path]
         elif os.path.isdir(path):
             fh = "<dir>"
         else:
@@ -210,6 +220,45 @@ def compute_manifest() -> str:
 
     body.sort()
     return "\n".join(lines + body) + "\n"
+
+
+def _hash_objects(paths: list[str]) -> dict[str, str]:
+    """``git hash-object`` for many paths, in as few git processes as possible.
+
+    One process per path costs ~2ms of fork+exec, which is invisible on a
+    handful of edited files and is 15 seconds on a working tree carrying a few
+    thousand untracked ones (a scratch data/ or skill-sets/ directory is
+    enough). Since the manifest is recomputed on every make invocation that
+    reaches the stamp graph, that cost lands on every build. ``--stdin-paths``
+    does the same work in one process.
+
+    Degradation is graceful: git processes the list in order and dies on the
+    first path it cannot read, so whatever it did emit is still used and only
+    the remainder falls back to a process per path.
+    """
+    if not paths:
+        return {}
+
+    out: dict[str, str] = {}
+    # --stdin-paths is newline-delimited, so a path containing a newline (legal,
+    # if unkind) cannot go through the batch at all.
+    batchable = [p for p in paths if "\n" not in p]
+    if batchable:
+        try:
+            r = subprocess.run(
+                ["git", "hash-object", "--stdin-paths"],
+                input="\n".join(batchable) + "\n",
+                capture_output=True,
+                text=True,
+            )
+            out.update(zip(batchable, r.stdout.split()))
+        except FileNotFoundError:
+            pass
+
+    for path in paths:
+        if path not in out:
+            out[path] = _git("hash-object", "--", path).strip() or "unknown"
+    return out
 
 
 # ---------------------------------------------------------------------------
