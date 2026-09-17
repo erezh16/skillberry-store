@@ -271,3 +271,65 @@ def test_an_empty_tag_is_a_no_op(reconcile_env):
 
     assert proc.returncode == 0
     assert stamps(work) == {f"docker-build-local-{TAG}", f"docker-get-{TAG}"}
+
+
+# ---------------------------------------------------------------------------
+# Concepts 3 + 4: which change detector each tagging scheme uses
+# ---------------------------------------------------------------------------
+
+MANIFEST_STAMP = ".stamps/git-version-manifest"
+
+
+def _docker_build_rule(*make_vars: str) -> str:
+    """The resolved `.stamps/docker-build-local-*` rule line from make's database."""
+    proc = subprocess.run(
+        ["make", "-pRrq", *make_vars, "print_build_version"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert "# Files" in proc.stdout, f"could not read make database:\n{proc.stderr}"
+    rules = [
+        line
+        for line in proc.stdout.splitlines()
+        if line.startswith(".stamps/docker-build-local") and ":" in line
+    ]
+    assert len(rules) == 1, f"expected one docker-build-local rule, got {rules}"
+    return rules[0]
+
+
+@pytest.mark.parametrize("scheme", ["default", "suffixed"])
+def test_a_label_scoped_stamp_takes_the_manifest_order_only(scheme):
+    """The stamp name carries the label, so the label is the change detector.
+
+    Depending on the manifest's *mtime* as well would only add false positives:
+    returning to an already-built state (a stash pop, a checkout back and forth,
+    a CI job revisiting an older commit) moves the manifest while the stamp and
+    the image for that label are both still there — which concept 3 says is
+    exactly when no build work should happen. Order-only keeps the manifest up to
+    date (it is what projects the label to VERSION_LOCATION) without making it a
+    reason to rebuild.
+    """
+    make_vars = [] if scheme == "default" else ["IMAGE_TAG_SUFFIX=-full"]
+    rule = _docker_build_rule(*make_vars)
+
+    target, prereqs = rule.split(":", 1)
+    assert MANIFEST_STAMP in prereqs, "the manifest must still be brought up to date"
+    order_only = prereqs.split("|", 1)[1] if "|" in prereqs else ""
+    assert MANIFEST_STAMP in order_only, (
+        f"{MANIFEST_STAMP} is a timestamp prerequisite of {target}, so every return "
+        "to an already-built state rebuilds an image that already exists"
+    )
+
+
+def test_a_custom_tag_takes_the_manifest_as_a_real_prerequisite():
+    """A fixed tag says nothing about state, so only the manifest's mtime can."""
+    rule = _docker_build_rule("CUSTOM_TAG=my-experiment")
+
+    _, prereqs = rule.split(":", 1)
+    timestamp_prereqs = prereqs.split("|", 1)[0]
+    assert MANIFEST_STAMP in timestamp_prereqs, (
+        "with a fixed tag the stamp name cannot tell that the tree moved on, so the "
+        "manifest must be a real prerequisite"
+    )

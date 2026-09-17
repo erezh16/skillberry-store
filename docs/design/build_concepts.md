@@ -114,10 +114,28 @@ Local builds (`DBT=local`) and registry builds (`DBT=registry`) produce differen
 artifacts (a local image versus a pushed multi-arch manifest). They are tracked with
 separate stamps and neither satisfies the other.
 
+**A label-scoped stamp is its own change detector.** When the label appears in
+the stamp name, a changed state means a differently named stamp, which is
+missing, which rebuilds — so the two conditions above are the *complete* rebuild
+criterion, and adding the manifest's modification time on top of them can only
+produce false positives. Returning to an already-built state does exactly that:
+a stash pop, a checkout back and forth, or a CI job revisiting an older commit
+moves the manifest while the stamp and the image for that label are both still
+present. Such a stamp therefore takes the manifest as an *order-only*
+prerequisite: still brought up to date on every build — that is what projects
+the label to `VERSION_LOCATION` and reports what changed — but never a reason to
+rebuild.
+
+Where the stamp key does *not* carry the label — a build tagged with a caller's
+fixed custom tag — the manifest is a real prerequisite, because its modification
+time is then the only thing that can tell the stamp that the tree it was built
+from has moved on.
+
 ## 4. Change detection uses the state manifest, not a parallel scan
 
 Any Make target that needs to know "did anything relevant change" must
-consult the state manifest from concept 2 — directly, as a prerequisite. A
+consult the state manifest from concept 2 — directly, as a prerequisite, or
+through a stamp name that carries the label derived from it (see concept 3). A
 parallel scan-based mechanism (for example, `find`-with-mtime over a
 hand-maintained list of subtrees) is **redundant** and must not be used,
 because:

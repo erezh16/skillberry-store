@@ -67,11 +67,27 @@ LATEST_TAG = latest$(IMAGE_TAG_SUFFIX)
 IMAGE_TAGS = $(IMAGE_TAG) $(LATEST_TAG)
 # Tag that docker-pull fetches from the registry.
 PULL_TAG = $(LATEST_TAG)
+# How docker-build depends on the git-state manifest. Here the stamp name
+# already carries the git label, so the label *is* the change detector: a
+# changed state means a differently named stamp, which is missing, which
+# rebuilds. Depending on the manifest's mtime on top of that only adds false
+# positives -- returning to an already-built state (git stash pop, a checkout
+# back and forth, a CI job revisiting an older commit) moves the manifest while
+# the stamp and the image for that label are both still right there, and
+# concept 3 says that is precisely when no build work should happen. So the
+# manifest is order-only: still brought up to date on every build -- that is
+# what projects the label to VERSION_LOCATION and reports what changed -- but
+# never a reason to rebuild.
+DOCKER_BUILD_STATE_DEPS = | .stamps/git-version-manifest
 else
 IMAGE_TAG = $(CUSTOM_TAG)
 LATEST_TAG = $(CUSTOM_TAG)
 IMAGE_TAGS = $(IMAGE_TAG)
 PULL_TAG = $(CUSTOM_TAG)
+# A fixed tag says nothing about state, so here the manifest is a real
+# prerequisite: its mtime is the only thing that can tell this stamp that the
+# tree it was built from has moved on (concepts 2 + 4).
+DOCKER_BUILD_STATE_DEPS = .stamps/git-version-manifest
 endif
 
 # Suffix that keeps one tagging scheme's build stamps apart from another's, and
@@ -251,12 +267,12 @@ base-image-rm: docker-check ## Remove the local base image
 .PHONY: docker-build
 docker-build: docker-check .stamps/docker-build-$(DBT)$(TAG_STAMP_SFX)	## Build docker image (DBT=registry for multi-arch & push, EXTRA_COPY_FILES for extra files & folders, CUSTOM_TAG for a single custom tag)
 
-# Rebuild only when the tag-scoped stamp is missing (concept 3). The
-# prerequisite is the git-state manifest: its mtime updates precisely when
-# repository state changes (concepts 2 + 4), and it exists in every project
-# regardless of whether VERSION_LOCATION is defined. It replaces the former
+# Rebuild only when the tag-scoped stamp is missing, or when the image it
+# claims is gone (concept 3 -- the latter is docker-reconcile-stamp.sh's job,
+# above). Change detection comes from the git-state manifest, directly or via
+# the stamp name; see DOCKER_BUILD_STATE_DEPS. Either way it replaces the former
 # .stamps/code-scan file scan, which duplicated what git already tracks.
-.stamps/docker-build-$(DBT)$(TAG_STAMP_SFX): .stamps/git-version-manifest .stamps/ssh-agent.env
+.stamps/docker-build-$(DBT)$(TAG_STAMP_SFX): .stamps/ssh-agent.env $(DOCKER_BUILD_STATE_DEPS)
 	@echo "Building for $(DB_ARCH) using $(DOCKER) version: $(shell $(DOCKER) --version)"
 	@echo "Building Docker image with tag(s): $(foreach tag,$(IMAGE_TAGS),$(FULL_IMAGE_NAME):$(tag))"
 	@echo "Build version: $(BUILD_VERSION)"
