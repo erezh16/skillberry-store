@@ -32,6 +32,14 @@ The label must **not** change for events that do not affect state, including:
   checkout.
 - The passage of time between two invocations that observe the same state.
 
+**Index bookkeeping is not content.** Staging an edit that is already present in
+the working tree — `git add` on a tracked, modified file — leaves the label
+alone. `git diff HEAD`, and therefore what a build would produce, is identical
+either side of that operation, and invalidating the image at the current label
+would force a rebuild of byte-identical content. Nothing is lost from change
+*detection*: the manifest of concept 2 records each file's index status and does
+move. The label identifies buildable content; the manifest detects change.
+
 Because different sets of uncommitted changes must produce different labels, a bare
 `-dirty` suffix is insufficient. When state is dirty, the label must incorporate a
 fingerprint of the dirty content (for example, a short hash derived from
@@ -68,9 +76,16 @@ rewritten, an observability line is emitted:
 declare `VERSION_LOCATION` — a path to an app-visible file (typically a
 generated Python module) that carries the label at runtime. When defined,
 this file is written with the *same* content-idempotence rule (rewritten only
-when the label content differs), as a side effect of the manifest rewrite.
-Projects that do not need runtime access to the label may leave
-`VERSION_LOCATION` undefined; the manifest remains the pivot regardless.
+when the label content differs). Projects that do not need runtime access to
+the label may leave `VERSION_LOCATION` undefined; the manifest remains the
+pivot regardless.
+
+The two files are evaluated **independently**, each against its own content.
+They almost always move together, but not always: the label also carries the
+release it is counted from, so creating or fetching a release ref changes the
+label while `git status` — and therefore the manifest — reports nothing at all.
+That is precisely what `make release` does, and gating the projection on a
+manifest rewrite left the published image reporting the *pre-release* label.
 
 This is a specific instance of a more general rule: **every generated file
 that gates downstream builds must be content-idempotent** — rewritten only
