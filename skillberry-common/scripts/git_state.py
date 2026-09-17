@@ -338,12 +338,29 @@ def cmd_update(version: str, manifest_path: str, version_location: str) -> int:
     # including empty string, counts as "set" per the concept doc).
     verbose = "VERBOSE_BUILD_VERSION" in os.environ
 
+    # The label projection is checked on every run, not only when the manifest
+    # moves. The two are near-perfectly correlated but not identical: the label
+    # also carries the release it is counted from, so fetching (or, as `make
+    # release` does, creating) a release ref changes the label while
+    # `git status` — and therefore the manifest — reports nothing at all. Gating
+    # the projection on a manifest rewrite left `make release` baking the
+    # *pre-release* label into the image it published. Each file follows its own
+    # content-idempotence rule (concept 2), which is all that keeps mtimes stable.
+    label_projected = version_location and _write_version_file(
+        version, version_location, verbose
+    )
+
     new_manifest = compute_manifest()
     mp = Path(manifest_path)
     if mp.exists():
         old_manifest = mp.read_text()
         if old_manifest == new_manifest:
-            return 0  # No change → keep mtime stable so downstream isn't invalidated.
+            # No change → keep mtime stable so downstream isn't invalidated. The
+            # label can still have moved on its own (see above), and that is worth
+            # the one line the terse mode allows itself.
+            if label_projected:
+                print(f"==> BUILD_VERSION updated to '{version}'", file=sys.stderr)
+            return 0
         _print_observability(version, True, old_manifest, new_manifest, verbose)
     else:
         _print_observability(version, False, "", new_manifest, verbose)
@@ -356,9 +373,6 @@ def cmd_update(version: str, manifest_path: str, version_location: str) -> int:
 
     mp.parent.mkdir(parents=True, exist_ok=True)
     mp.write_text(new_manifest)
-
-    if version_location:
-        _write_version_file(version, version_location, verbose)
     return 0
 
 
@@ -427,21 +441,23 @@ def _body_map(body: list[str]) -> dict[str, str]:
     return out
 
 
-def _write_version_file(version: str, path: str, verbose: bool) -> None:
+def _write_version_file(version: str, path: str, verbose: bool) -> bool:
     """Content-idempotent write of ``__git_version__ = "<version>"``.
 
-    Progress is printed only when ``verbose`` is set — the terse observability
-    mode keeps output to the single BUILD_VERSION line.
+    Returns whether the file was (re)written. Progress is printed only when
+    ``verbose`` is set — the terse observability mode keeps output to the single
+    BUILD_VERSION line.
     """
     new = f'__git_version__ = "{version}"\n'
     p = Path(path)
     if p.exists() and p.read_text() == new:
-        return
+        return False
     p.parent.mkdir(parents=True, exist_ok=True)
     verb = "Updated" if p.exists() else "Created"
     p.write_text(new)
     if verbose:
         print(f"{verb} git version in {path} to {version}", file=sys.stderr)
+    return True
 
 
 # ---------------------------------------------------------------------------
