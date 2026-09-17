@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -109,28 +110,82 @@ def compute_version() -> str:
     return f"{base}-dirty-{_dirty_fingerprint()}"
 
 
+# A release identifier: starts with a digit, and carries only characters a
+# version number is made of. Deliberately loose about the shape beyond that
+# (0.2, 0.2.1, 0.2.1-rc1, 1.0.0-alpha.2 all qualify).
+_RELEASE_RE = re.compile(r"^\d[0-9A-Za-z.+_-]*$")
+
+
 def _latest_release() -> str:
-    """Return the highest ``branch-*`` release found on remote refs, or ``""``."""
-    releases: list[str] = []
+    """Return the highest release identifier this repository can resolve, or ``""``.
+
+    Candidates come from two places, because neither alone is dependable:
+
+    * remote ``branch-<version>`` refs — the release convention (each release
+      gets a branch, carrying a toml that pins the matching sdk), but a clone
+      whose release branches were never pushed or have since been pruned has
+      none of them;
+    * tags — ``make release`` creates and pushes one per release, and a tag is
+      what the commit count below is measured against anyway.
+
+    Two filters then keep the answer honest, and both were missing:
+
+    * **the name must look like a version.** Without this, an ordinary feature
+      branch named ``branch-drop-path-derived-import-tags`` sorted last among
+      the candidates and became "the latest release" — which is what this
+      repository's own origin did to the label: every build was tagged
+      ``drop-path-derived-import-tags--g<sha>``.
+    * **the name must resolve to a commit,** since the commit count below is
+      ``<release>..HEAD``. An unresolvable candidate spilled
+      ``fatal: ambiguous argument`` onto the console on every single make
+      invocation, and left the label in its no-release form.
+    """
+    candidates: set[str] = set()
     for line in _git("branch", "-r").splitlines():
         line = line.strip()
         idx = line.find("branch-")
         if idx >= 0:
-            releases.append(line[idx + len("branch-"):])
+            candidates.add(line[idx + len("branch-"):])
+    candidates.update(tag.strip() for tag in _git("tag").splitlines() if tag.strip())
+
+    releases = [c for c in candidates if _RELEASE_RE.match(c) and _rev_exists(c)]
     if not releases:
         return ""
     return sorted(releases, key=_version_key)[-1]
 
 
+def _rev_exists(rev: str) -> bool:
+    """True when ``rev`` names a commit in this repository."""
+    r = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"],
+        capture_output=True,
+    )
+    return r.returncode == 0
+
+
 def _version_key(v: str) -> tuple:
-    """Key for ``sort -V``-like ordering — numeric parts numerically, others lex."""
-    parts: list[tuple[int, object]] = []
-    for p in v.split("."):
-        if p.isdigit():
-            parts.append((0, int(p)))
+    """Ordering for release identifiers, following ``sort -V``.
+
+    Numeric components compare numerically, and a pre-release suffix ranks
+    *below* the bare release it qualifies (``0.2.1-rc1`` < ``0.2.1``) — so a
+    release candidate left behind in the tag list cannot outrank the release
+    that superseded it.
+    """
+    nums: list[int] = []
+    suffix = ""
+    for part in v.split("."):
+        if part.isdigit():
+            nums.append(int(part))
+            continue
+        # First non-numeric component: everything from here is the suffix.
+        m = re.match(r"(\d+)(.*)", part)
+        if m:
+            nums.append(int(m.group(1)))
+            suffix = m.group(2)
         else:
-            parts.append((1, p))
-    return tuple(parts)
+            suffix = part
+        break
+    return (tuple(nums), not suffix, suffix)
 
 
 def _dirty_fingerprint() -> str:

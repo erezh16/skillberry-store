@@ -133,12 +133,14 @@ release: check-git-main check-git-clean install-requirements  ## Release a new v
 	@git checkout -b branch-$(RELEASE_VERSION)
 	@echo "===> Generated release branch $(RELEASE_VERSION)"
 	@git tag -a $(RELEASE_VERSION) -m "Release $(RELEASE_VERSION)"
-	# Push BOTH the tag and the release branch. The branch is required on
-	# origin so that git_state.py's _LATEST_RELEASE detection (which scans
-	# `git branch -r | grep 'branch-'`) picks up this release when the
-	# docker-build sub-make below recomputes BUILD_VERSION — otherwise the
-	# image is tagged with the previous-release-based label instead of
-	# $(RELEASE_VERSION).
+	# Push BOTH the tag and the release branch. The tag is what git_state.py's
+	# release detection resolves the commit count against, and the branch is the
+	# release convention (a branch per release, carrying a toml that pins the
+	# matching sdk) — pushing only the tag left origin without the branch, which
+	# is how the repository ended up with no resolvable release branch at all.
+	# Either one lets the docker-build sub-make below recompute BUILD_VERSION as
+	# $(RELEASE_VERSION); without them the image is tagged off the *previous*
+	# release instead.
 	@git push origin $(RELEASE_VERSION) branch-$(RELEASE_VERSION)
 
 	#
