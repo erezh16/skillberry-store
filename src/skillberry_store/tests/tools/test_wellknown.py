@@ -332,6 +332,57 @@ def test_authorized_skills_denies_an_absent_subject_under_acl():
 
 
 # --------------------------------------------------------------------------- #
+# SBS_WELLKNOWN_NAMESPACES (§4.3)
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        (None, None),
+        ("", None),
+        ("   ", None),
+        (",,", None),
+        ("data-eng", ["data-eng"]),
+        (" data-eng , web ", ["data-eng", "web"]),
+    ],
+)
+def test_allowed_namespaces(monkeypatch, raw, expected):
+    if raw is None:
+        monkeypatch.delenv(wk.NAMESPACES_ENV_VAR, raising=False)
+    else:
+        monkeypatch.setenv(wk.NAMESPACES_ENV_VAR, raw)
+    assert wk.allowed_namespaces() == expected
+
+
+def test_the_namespace_allowlist_restricts_which_scopes_resolve(monkeypatch):
+    service = FakeService(
+        [
+            make_skill("u1", "a", tags=["namespace:data-eng"]),
+            make_skill("u2", "b", tags=["namespace:secret"]),
+        ]
+    )
+    monkeypatch.setenv(wk.NAMESPACES_ENV_VAR, "data-eng")
+    assert [s["uuid"] for s in wk.authorized_skills(service, None, None, "ns:data-eng")] == [
+        "u1"
+    ]
+    assert wk.authorized_skills(service, None, None, "ns:secret") == []
+
+
+def test_the_namespace_allowlist_does_not_affect_other_scopes(monkeypatch):
+    service = FakeService([make_skill("u1", "a", tags=["namespace:secret"])])
+    monkeypatch.setenv(wk.NAMESPACES_ENV_VAR, "data-eng")
+    assert len(wk.authorized_skills(service, None, None, "*")) == 1
+
+
+# --------------------------------------------------------------------------- #
+# The per-skill internal opt-out (§4.3)
+# --------------------------------------------------------------------------- #
+def test_is_internal_reads_an_ordinary_tag():
+    assert wk.is_internal(make_skill("u1", "a", tags=[wk.INTERNAL_TAG]))
+    assert not wk.is_internal(make_skill("u2", "b"))
+    assert not wk.is_internal(make_skill("u3", "c", tags=["other"]))
+
+
+# --------------------------------------------------------------------------- #
 # normalise_description (§1.3, §5.3 #2/#3)
 # --------------------------------------------------------------------------- #
 def test_normalise_description_passes_ordinary_text_through():
@@ -458,6 +509,38 @@ def test_build_entry_emits_the_slug_as_the_frontmatter_name():
     parsed = yaml.safe_load(body)
     assert parsed["name"] == "pdf-forms"
     assert parsed["description"] == "Fill and flatten PDF forms."
+
+
+def _frontmatter_of(entry):
+    with zipfile.ZipFile(io.BytesIO(entry.payload)) as zf:
+        return yaml.safe_load(zf.read("SKILL.md").decode().split("---")[1])
+
+
+def test_build_entry_records_the_sbs_name_when_it_differs_from_the_slug():
+    """The frontmatter ``name`` is the slug, so the store's own name would
+    otherwise be lost from the file an agent (or a re-import) reads."""
+    entry = wk.build_entry(_service_with_files(), "u1", "pdf-forms")
+    assert _frontmatter_of(entry)["metadata"] == {"sbs_name": "PDF Forms"}
+
+
+def test_build_entry_omits_metadata_when_the_name_already_is_the_slug():
+    service = FakeService([make_skill("u1", "demo")])
+    assert "metadata" not in _frontmatter_of(wk.build_entry(service, "u1", "demo"))
+
+
+def test_an_internal_tagged_skill_emits_metadata_internal():
+    """The CLI hides such a skill from a multi-entry install list unless
+    INSTALL_INTERNAL_SKILLS=1 — a per-skill opt-out (§1.4, §4.3)."""
+    service = FakeService([make_skill("u1", "demo", tags=[wk.INTERNAL_TAG])])
+    assert _frontmatter_of(wk.build_entry(service, "u1", "demo"))["metadata"] == {
+        "internal": True
+    }
+
+
+def test_an_internal_tagged_skill_is_still_published():
+    """It has to be, or its own per-skill install URL would stop working."""
+    service = FakeService([make_skill("u1", "demo", tags=[wk.INTERNAL_TAG])])
+    assert wk.publishable_entry(service, "u1", "demo") is not None
 
 
 def test_build_entry_digest_matches_the_payload():

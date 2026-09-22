@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -67,6 +68,37 @@ DEFAULT_AGENT = "claude-code"
 
 # Namespaces are ordinary tags under this prefix (services/facets.py).
 NAMESPACE_TAG_PREFIX = "namespace:"
+
+#: Per-skill opt-out. A skill carrying this ordinary tag is still *published* —
+#: it has to be, or its own install URL would stop working — but its emitted
+#: frontmatter gets ``metadata.internal: true``, which the CLI honours by hiding
+#: the skill from a multi-entry install list unless ``INSTALL_INTERNAL_SKILLS=1``
+#: (§1.4, §4.3). A tag rather than a new manifest field so it is visible and
+#: filterable in the UI, and needs no migration.
+INTERNAL_TAG = "npx-internal"
+
+#: Restricts which namespaces a ``ns:`` scope may name. Unset means "any
+#: namespace that exists" (§4.3).
+NAMESPACES_ENV_VAR = "SBS_WELLKNOWN_NAMESPACES"
+
+
+def allowed_namespaces() -> Optional[List[str]]:
+    """The operator's namespace allowlist, or ``None`` when unrestricted.
+
+    An empty or whitespace-only value is treated as unset rather than as "no
+    namespaces at all": the latter is a configuration mistake that would look
+    like the feature being broken, and an operator who wants no namespace
+    surface simply does not hand out ``ns:`` URLs.
+    """
+    raw = os.environ.get(NAMESPACES_ENV_VAR, "")
+    names = [part.strip() for part in raw.split(",") if part.strip()]
+    return names or None
+
+
+def is_internal(skill: Dict[str, Any]) -> bool:
+    """Whether ``skill`` opted out of being offered in a multi-entry install."""
+    return INTERNAL_TAG in (skill.get("tags") or [])
+
 
 _SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
@@ -291,6 +323,14 @@ def authorized_skills(
     skills = head_skills(service)
     if scope.startswith("ns:"):
         namespace = scope[3:]
+        allowed = allowed_namespaces()
+        if allowed is not None and namespace not in allowed:
+            logger.info(
+                "npx: namespace %r is not in %s; publishing nothing for it",
+                namespace,
+                NAMESPACES_ENV_VAR,
+            )
+            return []
         skills = [s for s in skills if namespace in namespaces_of(s)]
     return skills
 
@@ -513,8 +553,22 @@ def build_entry(
     if cached is not None:
         return cached
 
+    # The original SBS name goes into `metadata` because the frontmatter `name`
+    # is now the slug (§5.8 #1) and the two can differ — an agent, or a re-import,
+    # would otherwise have no way back to what the store calls this skill.
+    metadata: Dict[str, Any] = {}
+    if str(skill["name"]) != slug:
+        metadata["sbs_name"] = str(skill["name"])
+    if is_internal(skill):
+        metadata["internal"] = True
+
     files = _build_file_structure(
-        skill, tools, snippets, tool_modules, name_override=slug
+        skill,
+        tools,
+        snippets,
+        tool_modules,
+        name_override=slug,
+        metadata=metadata or None,
     )
     files = strip_skill_prefix(files, str(skill["name"]))
     try:

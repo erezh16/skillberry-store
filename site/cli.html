@@ -119,6 +119,20 @@ sbs list-tools --filter='state=active'
 sbs list-tools --offset=20 --limit=10
 sbs list-tools -v              # Verbose request/response</code></pre>
 
+    <h2>Install a skill into your agent with npx</h2>
+    <p>A skill in a running store installs straight into Claude Code, Cursor, Codex and ~70 other agents — nothing to install first, <code>npx</code> fetches the CLI:</p>
+    <pre><code>DISABLE_TELEMETRY=1 npx skills add https://store.example.com/pub/pdf-forms -y -a claude-code</code></pre>
+    <p>You never have to compose that command. The store hands you the whole thing, flags included:</p>
+    <pre><code># one skill
+sbs get-skill pdf-forms --fields name,_npx_install
+
+# every skill you can see, each with its own command
+sbs list-skills --fields name,_npx_install
+
+# later, catch up on store-side edits — only what changed is re-downloaded
+npx skills update</code></pre>
+    <p>In the web UI, each skill's page has an <strong>Install with npx</strong> card with an agent picker and a copy button. Publishing is off by default — an operator opts in with <code>npx_publish: true</code>, since it serves skill content without a session.</p>
+
     <h2>Scripting</h2>
     <p>The CLI slots naturally into shell scripts and pipelines:</p>
     <pre><code># Back up all tools

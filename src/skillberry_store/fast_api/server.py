@@ -27,6 +27,10 @@ from skillberry_store.fast_api.vmcp_api import register_vmcp_api
 from skillberry_store.fast_api.vnfs_api import register_vnfs_api
 from skillberry_store.fast_api.plugins_api import register_plugins_api
 from skillberry_store.fast_api.auth_api import register_auth_api
+from skillberry_store.fast_api.wellknown_api import (
+    NpxPublisher,
+    register_wellknown_api,
+)
 from skillberry_store.access_control.audit import (
     audit_rbac_coverage,
     stamp_rbac_markers,
@@ -216,6 +220,11 @@ class SBS(FastAPI):
         self.state.acl_cfg = acl_cfg
         self.state.acl_sessions = sessions
         self.settings = SBSettings(**settings)
+        # Reachable from ``app.state.npx`` so the skills API can emit the opt-in
+        # ``_npx_install`` field without a second copy of the config, the secret
+        # or the URL composition (docs/design/npx.md §4.3.5). Constructed even
+        # when publishing is off, so that field has one place to ask.
+        self.state.npx = NpxPublisher(acl_cfg, public_url=self.settings.public_url)
         self.configure_fastapi()
         configure_logging(logging._nameToLevel[self.settings.log_level])
         self.logger = logging.getLogger(__name__)
@@ -319,6 +328,13 @@ class SBS(FastAPI):
         register_admin_api(self, tags="admin", service=admin_service)
 
         register_plugins_api(self, plugin_loader=plugin_loader, tags="plugins")
+
+        # Per-skill discovery for `npx skills add` (docs/design/npx.md §6.4).
+        # Registered only when `npx_publish` is on, so with it off the surface
+        # genuinely does not exist rather than existing-but-refusing. These
+        # routes carry no @requires marker by design — they are in the ACL
+        # unauthenticated allow-list (§4.5).
+        register_wellknown_api(self, publisher=self.state.npx, service=skills_service)
 
         # Translate a refused plugin store operation to HTTP once, on the app,
         # rather than in each of the plugins. A denial is the caller's

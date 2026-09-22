@@ -147,6 +147,25 @@
 
       <div class="feature-row">
         <div class="feature-text">
+          <span class="eyebrow">Expose · npx</span>
+          <h3>One-command install into any agent</h3>
+          <p>A skill in the store installs straight into Claude Code, Cursor, Codex and ~70 other agents with <strong>one copy-pasted command and nothing installed first</strong> — <code>npx</code> fetches the CLI, and the store serves the skill's bytes over the open <code>/.well-known/agent-skills</code> discovery convention.</p>
+          <pre><code>DISABLE_TELEMETRY=1 npx skills add https://store.example.com/pub/pdf-forms -y -a claude-code</code></pre>
+          <ul>
+            <li>No <code>npm install</code>, no git credentials, no login from the terminal</li>
+            <li>The store hands you the whole command — from each skill's page, or <code>sbs get-skill &lt;name&gt; --fields name,_npx_install</code></li>
+            <li>One skill per URL: on a secured store the URL carries a read-only token scoped to that skill alone</li>
+            <li><code>npx skills update</code> re-downloads only what changed</li>
+            <li>Off by default — a deliberate opt-in, since it serves skill content without a session</li>
+          </ul>
+        </div>
+        <div class="feature-shot">
+          <img src="assets/screenshots/sbs2-skills-populated.png" alt="Skillberry Store skills library in the web UI" loading="lazy">
+        </div>
+      </div>
+
+      <div class="feature-row flip">
+        <div class="feature-text">
           <span class="eyebrow">Operate</span>
           <h3>Observability &amp; persistence</h3>
           <p>Understand how your tools are used and where your data lives. SBS emits Prometheus metrics and OpenTelemetry traces, and persists resources to the filesystem or to GitHub repositories via version-controlled hooks.</p>
@@ -181,6 +200,7 @@
             <tr><td><strong>MCP control API</strong></td><td>Each REST operation exposed as an MCP tool at <code>/control_sse</code> for agentic workflows.</td></tr>
             <tr><td><strong>VMCP</strong></td><td>Per-skill virtual MCP servers on dedicated ports.</td></tr>
             <tr><td><strong>vNFS</strong></td><td>Per-skill mountable WebDAV / NFSv3 filesystems.</td></tr>
+            <tr><td><strong><code>npx skills add</code></strong></td><td>Per-skill install URLs over the open <code>/.well-known/agent-skills</code> convention — Claude Code, Cursor, Codex and ~70 more, with nothing installed first. Off by default. <a href="cli.html">See the CLI guide →</a></td></tr>
             <tr><td><strong>Python SDK</strong></td><td>Consume the service programmatically via the skillberry-store SDK (also ships the CLI).</td></tr>
           </tbody>
         </table>

@@ -94,6 +94,7 @@ def generate_skill_md(
     has_file_structure: bool,
     snippets: List[Dict[str, Any]],
     name_override: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Generate SKILL.md content with frontmatter.
 
@@ -106,6 +107,10 @@ def generate_skill_md(
             the file an agent loads carries a name matching its own directory
             (docs/design/npx.md §5.8 #1). Existing callers pass nothing and
             keep emitting the raw SBS name.
+        metadata: Extra frontmatter ``metadata`` mapping. The well-known path
+            uses it to carry the original SBS name when the slug differs, and
+            ``internal: true``, which the consuming CLI honours as a per-skill
+            "do not offer this" flag (docs/design/npx.md §4.3).
 
     Returns:
         SKILL.md content
@@ -115,6 +120,8 @@ def generate_skill_md(
         "name": name_override or skill["name"],
         "description": description,
     }
+    if metadata:
+        fields["metadata"] = dict(metadata)
 
     # Check if there's a LICENSE.txt file in snippets
     license_snippet = None
@@ -316,6 +323,7 @@ def _build_file_structure(
     snippets: List[Dict[str, Any]],
     tool_modules: Optional[Dict[str, str]] = None,
     name_override: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, bytes]:
     """Build the complete file structure for a skill export.
 
@@ -337,7 +345,11 @@ def _build_file_structure(
 
     has_file_structure = len(all_files) > 0
     skill_md_content = generate_skill_md(
-        skill, has_file_structure, snippets, name_override=name_override
+        skill,
+        has_file_structure,
+        snippets,
+        name_override=name_override,
+        metadata=metadata,
     )
 
     additional_snippets = export_snippets_to_skill_md(snippets)

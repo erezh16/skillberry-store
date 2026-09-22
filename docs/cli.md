@@ -337,6 +337,93 @@ cat tools-backup.json | jq -c '.[]' | while read tool; do
 done
 ```
 
+## Install skills into your agent with npx
+
+A skill in the store can be installed straight into Claude Code, Cursor, Codex or
+any of ~70 other agents with one command and no prior setup — no `npm install`,
+no `skills` CLI on your PATH, no git credentials, no login from the terminal:
+
+```bash
+DISABLE_TELEMETRY=1 npx skills add https://store.example.com/pub/pdf-forms -y -a claude-code
+```
+
+`npx` fetches the [`skills`](https://www.npmjs.com/package/skills) CLI on first
+use and caches it. The store serves the skill's bytes directly over two
+read-only `GET` endpoints, using the open
+`/.well-known/agent-skills/index.json` discovery convention.
+
+**You do not have to compose that command.** Every surface hands you the whole
+thing, flags included:
+
+```bash
+# one skill
+sbs get-skill pdf-forms --fields name,_npx_install
+
+# every skill you can see, each with its own command
+sbs list-skills --fields name,_npx_install
+```
+
+In the UI, each skill's detail page has an **Install with npx** card with an
+agent picker and a copy button.
+
+### Installing several skills
+
+There is deliberately one skill per install URL, so bulk installs are scripted
+rather than served by a single aggregate URL:
+
+```bash
+sbs list-skills --fields _npx_install -o json \
+  | jq -r '.[]._npx_install' \
+  | while read -r cmd; do eval "$cmd"; done
+```
+
+Each `npx` run re-does discovery, but the npm package is cached after the first,
+so this is seconds per skill.
+
+### Keeping up to date
+
+```bash
+npx skills update
+```
+
+Re-fetches the index and re-downloads only the skills whose content changed. A
+store-side edit reaches you on your next `update`; a skill deleted from the store
+is offered for removal.
+
+### What the flags are for
+
+Both matter, and both are emitted for you — they are not decoration:
+
+| Flag | Why |
+| --- | --- |
+| `-a <agent>` | `-y` with no detected agent installs the skill into **every** supported agent's directory — around 75 of them in your project tree. |
+| `-y` | Skips the scope, symlink and confirmation prompts. |
+| `DISABLE_TELEMETRY=1` | The CLI otherwise reports the install URL, your hostname and the skill name to `add-skill.vercel.sh`. File contents are never sent, but on a secured store the URL contains an access token. `DO_NOT_TRACK=1` works too. |
+
+### Operator notes
+
+npx publishing is **off by default** and is turned on with `npx_publish: true` in
+`access_control_config.yaml`. It is declared there rather than in an environment
+variable because it *is* an access-control decision: it is the one setting that
+makes skill **content**, not just metadata, readable without a session.
+
+| Concern | What to know |
+| --- | --- |
+| **What gets published** | Every skill visible to a holder of `skills:list`, one per install URL. There is no lifecycle-state or tag filter: a `state: new` draft is already visible to every such user, so hiding it from npx would misreport what the store contains. To publish a curated subset, use a namespace — which users can see and filter by — rather than an invisible server-side filter. |
+| **`SBS_PUBLIC_URL`** | Set it. The install command is absolute, and behind an ingress or load balancer the server cannot derive its own externally-visible URL; without it, the command is omitted rather than guessed. Useful beyond npx — it is the value any copy-paste snippet needs. |
+| **Access tokens in URLs** | With access control on, the path segment is a read-only capability token scoped to **one skill**, derived from a durable secret. It is re-authorized on every request, so it stops working the moment its tenant loses `skills:list` or its account is removed. It is not accepted as an `Authorization: Bearer` value anywhere. |
+| **The token is durable** | It keeps returning *future* edits to that skill, not only the version installed, until the secret is rotated. Where the skill's content is committed next to the lockfile that is immaterial; it matters if a published skill later gains sensitive content. |
+| **Revoking** | Losing `skills:list` revokes automatically, per request. To revoke everything at once, rotate `SBS_WELLKNOWN_SECRET` — that is the intended global revoke, and everyone then re-copies their command. |
+| **Committing `skills-lock.json`** | Safe. A project install writes the lockfile *and* the skill's own files in the same commit, so a per-skill token in it grants read access to content that is already in the repository beside it. |
+| **Alternatives to a URL-borne token** | Running with access control disabled behind a network boundary (the URL is then just the skill's slug, with no secret), terminating auth at a gateway in front of the store, or leaving npx publishing off entirely and using the UI, the `sbs` CLI or vNFS. All three are supported configurations, not failure modes. |
+| **Hiding one skill** | Tag it `npx-internal`. Its own install URL keeps working — it has to, or the command on its page would break — but its emitted frontmatter carries `metadata.internal: true`, which the CLI honours by leaving it out of a multi-skill install list unless `INSTALL_INTERNAL_SKILLS=1`. |
+| **Namespace packs** | A namespace-scoped install URL publishes one namespace, which is the analogue of a skills.sh "pack". Set `SBS_WELLKNOWN_NAMESPACES` to a comma-separated allowlist to restrict which namespaces may be named that way; per-skill URLs are unaffected. |
+| **Renaming a skill** | Changes its slug, so it leaves the index under the old name and reappears under the new one; an already-installed copy is orphaned. Expected, not a defect. |
+| **Version chains** | An install URL always installs the HEAD. On a chain with no unambiguous HEAD, which object is published follows the same resolution as `GET /skills/{name}` — debug the chain, not the index. |
+
+See [docs/design/npx.md](design/npx.md) for the protocol findings this is built
+on, including what the CLI validates and what it silently drops.
+
 ## Integration with Scripts
 
 The CLI can be easily integrated into shell scripts:

@@ -13,6 +13,21 @@ This table lists the default ports, host URLs and overall service configuration 
 | Observability enablement | True          | `OBSERVABILITY`                  | If False - disable observability (telemetry and prometheus) |
 | Python execution mode    | False         | `EXECUTE_PYTHON_LOCALLY`         | If True - use local exec() instead of Docker                |
 | Auto-detect dependencies | True          | `AUTO_DETECT_TOOL_DEPENDENCIES`  | If False - disable automatic tool dependency detection      |
+| Public base URL          | None          | `SBS_PUBLIC_URL`                 | The externally-visible base URL — the one a user's terminal can reach. Not derivable from the bind address: behind an ingress or load balancer, forwarded headers are ignored (uvicorn is started without `forwarded_allow_ips`) and the server would otherwise report its internal address. Required for the `npx skills add` install command, which is absolute; without it the command is omitted rather than guessed. Must carry an `http://` or `https://` scheme, and a trailing slash is normalised away. Useful beyond npx — it is the value any copy-paste snippet needs |
+
+> You can override the default values by setting the corresponding environment variables in your deployment configuration.
+
+
+This table lists the `npx skills add` publishing configuration (see
+[the npx section of the CLI guide](cli.md#install-skills-into-your-agent-with-npx)
+and [docs/design/npx.md](design/npx.md)).
+
+| Configuration          | Default value                          | Environment Variables Override | Notes |
+|------------------------|----------------------------------------|--------------------------------|-------|
+| npx publishing enabled | `false`                                | *(none — `npx_publish` in `access_control_config.yaml`)* | Deliberately **not** an environment variable: it is the one setting that makes skill **content**, not just metadata, readable without a session, so it is declared beside `unauthenticated_paths` where the rest of the access-control posture is reviewed. When off, the `/pub/*` routes are not registered at all |
+| Publish token secret   | generated on first use                 | `SBS_WELLKNOWN_SECRET`         | HMAC secret the per-skill capability tokens are derived from. Set it to keep install URLs stable across deployments and restarts; **rotating it is the global revoke**, after which everyone re-copies their command |
+| Publish secret file    | `~/.skillberry/wellknown_secret.json`  | `SBS_WELLKNOWN_SECRET_FILE`    | Where a generated secret is persisted (atomic write, mode 0600) so the next boot reuses it. Ignored when `SBS_WELLKNOWN_SECRET` is set |
+| Publishable namespaces | *(unset — any namespace)*              | `SBS_WELLKNOWN_NAMESPACES`     | Comma-separated allowlist restricting which namespaces a namespace-scoped install URL may name. Per-skill URLs are unaffected. An empty value is treated as unset, not as "none" |
 
 > You can override the default values by setting the corresponding environment variables in your deployment configuration.
 

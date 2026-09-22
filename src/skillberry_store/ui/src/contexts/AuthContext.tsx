@@ -24,6 +24,18 @@ type AclMode = 'disabled' | 'standalone';
 const MODE: AclMode =
   ((import.meta as any).env?.VITE_ACL_MODE as AclMode) || 'disabled';
 
+/**
+ * The deployment's access-control mode, without needing the provider.
+ *
+ * `useAuth` is the right entry point for anything that touches the session, but
+ * a component that only needs to know whether this store *has* an auth layer
+ * should not have to be wrapped in `<AuthProvider>` to ask — and should not
+ * re-read `VITE_ACL_MODE` itself, which would put the constant in two places.
+ */
+export function getAclMode(): AclMode {
+  return MODE;
+}
+
 const TOKEN_KEY = 'sbs.session.token';
 
 export interface WhoAmI {

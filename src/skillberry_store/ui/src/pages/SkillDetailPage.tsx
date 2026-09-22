@@ -45,6 +45,7 @@ import {
 import { EditIcon, TrashIcon, FolderIcon, FileIcon, FileCodeIcon, ExportIcon } from '@patternfly/react-icons';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { NpxInstallCommand } from '@/components/NpxInstallCommand';
 import { skillsApi, toolsApi, snippetsApi } from '@/services/api';
 import type { Skill } from '@/types';
 import { detectLanguage } from '@/utils/detectLanguage';
@@ -658,6 +659,11 @@ export function SkillDetailPage() {
             </DescriptionList>
           </CardBody>
         </Card>
+
+        {/* Install into an agent with one copy-paste (docs/design/npx.md §4.3.2).
+            The component owns its whole card and renders nothing at all when
+            this store does not publish for npx, so no empty section appears. */}
+        <NpxInstallCommand skillId={skill.uuid} />
 
         {/* Tabs for Tools and Snippets Content */}
         {((skill.tools && skill.tools.length > 0) || (skill.snippets && skill.snippets.length > 0)) && (

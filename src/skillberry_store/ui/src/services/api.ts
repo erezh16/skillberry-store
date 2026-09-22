@@ -219,6 +219,31 @@ export const skillsApi = {
     return handleResponse<Skill>(response);
   },
 
+  // The `npx skills add` command for one skill, composed server-side.
+  //
+  // `_npx_install` carries no preset tag, so it has to be named explicitly —
+  // that is deliberate: the value is a capability URL and should not ride along
+  // on payloads nobody asked for (docs/design/npx.md §4.3.5). `npx_agent` is
+  // what the agent picker sends, so the command string has exactly one author.
+  //
+  // Resolves to `null` when the store does not publish for npx, does not know
+  // its own public URL, or this is a superseded version of the skill. None of
+  // those is an error the reader can act on.
+  npxInstallCommand: async (
+    uuidOrName: string,
+    agent: string
+  ): Promise<string | null> => {
+    const params = new URLSearchParams({
+      fields: '_npx_install',
+      npx_agent: agent,
+    });
+    const response = await fetch(
+      `${API_BASE}/skills/${encodeURIComponent(uuidOrName)}?${params}`
+    );
+    const body = await handleResponse<{ _npx_install?: string }>(response);
+    return body._npx_install ?? null;
+  },
+
   create: async (skill: Omit<Skill, 'uuid'>): Promise<Skill> => {
     const response = await fetch(`${API_BASE}/skills/`, {
       method: 'POST',

@@ -10,6 +10,70 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`npx skills add` support.** A skill in a running store installs into Claude
+  Code, Cursor, Codex and ~70 other agents with one copy-pasted command and no
+  prior setup — no `npm install`, no CLI on the PATH, no git credentials, no
+  login from the terminal:
+
+  ```bash
+  DISABLE_TELEMETRY=1 npx skills add https://store.example.com/pub/pdf-forms -y -a claude-code
+  ```
+
+  This needs no npm package published and no registration with skills.sh: the
+  capability is an open, documented-by-implementation HTTP discovery convention
+  (`/.well-known/agent-skills/index.json`) that any web server can serve. The
+  store serves it over two read-only `GET` endpoints under a single `/pub/{ref}`
+  prefix, in schema v0.2.0 (archive + sha256 digest).
+
+  **Off by default.** Turn it on with `npx_publish: true` in
+  `access_control_config.yaml`. It is declared there rather than in an
+  environment variable because it *is* an access-control decision: it is the one
+  setting that makes skill **content**, not just metadata, readable without a
+  session. When off, the routes are not registered at all. The shipped
+  `mode: disabled` config ships it on (nothing is protected there anyway); the
+  `.standalone` demo config ships it off.
+
+  **One skill per install URL.** Under `mode: standalone` the path segment is a
+  read-only capability token scoped to that one skill, derived by HMAC from a
+  durable secret rather than minted and stored — so it survives a restart, which
+  it must, because the URL lives in the user's `skills-lock.json` and is replayed
+  by every `npx skills update`. It is re-authorized on every request, so it stops
+  working the moment its tenant loses `skills:list`. It is never resolvable as an
+  `Authorization: Bearer` value. Under `mode: disabled` the segment is simply the
+  skill's slug. Namespace-scoped ("pack") and store-wide URLs are available as
+  opt-in capabilities.
+
+  You never have to compose the command: `sbs get-skill <name> --fields
+  name,_npx_install`, `sbs list-skills --fields name,_npx_install`, or the
+  **Install with npx** card on each skill's page in the UI, which has an agent
+  picker and a copy button. `-a` is always emitted — `-y` without it installs the
+  skill into every supported agent's directory, around 75 of them — and so is
+  `DISABLE_TELEMETRY=1`, without which the install URL is reported to
+  `add-skill.vercel.sh`.
+
+  Set `SBS_PUBLIC_URL`. The install command is absolute, and behind an ingress
+  the server cannot derive its own externally-visible URL; without it the command
+  is omitted rather than guessed. See `docs/cli.md` and `docs/design/npx.md`.
+
+  Three pre-existing defects were fixed along the way, each of which would have
+  made skills silently uninstallable:
+
+  - `SKILL.md` frontmatter was built by string interpolation, so a description
+    containing a newline or a `: ` produced YAML no parser accepts, and one
+    containing a quote or a `#` parsed to a silently truncated string. It is now
+    serialised with `yaml.safe_dump`. **This changes the bytes of
+    `GET /skills/{name}/export-anthropic` and of the vNFS tree** wherever a
+    description previously needed quoting.
+  - The export ZIP was not byte-deterministic (`writestr` stamps each entry with
+    `time.localtime()`). There is now one deterministic zip builder, used by both
+    the well-known artifact and the existing download. **`export-anthropic`
+    output therefore changes too**: entries carry a fixed `1980-01-01` mtime and
+    sorted order, in exchange for being reproducible.
+  - A description that was absent, empty or `None` reached the file as the
+    literal string `"None"`; it now falls back to `Skill: <name>`.
+
+  Neither byte change affects stored data, and no migration is needed.
+
 - **Baked container env vars.** Application environment variables can be given
   fixed values that ship inside the image, by adding them to `container.env` at
   the repo root:
