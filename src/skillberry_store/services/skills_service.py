@@ -729,6 +729,55 @@ class SkillsService:
             logger.error(f"Error detecting Anthropic skills: {e}")
             raise
 
+    def gather_export_inputs(
+        self, uuid_or_name: str
+    ) -> tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, str]]:
+        """Collect everything an Anthropic-format export of one skill needs.
+
+        Returns ``(skill_dict, tools, snippets, tool_modules)``. Extracted from
+        :meth:`export_anthropic` so the well-known (npx) artifact builder walks
+        the same tool/snippet graph rather than a second copy of it that can
+        drift — see docs/design/npx.md §6.3.
+
+        Holds the skill's read lock only while assembling, and touches disk
+        only for each tool's persisted module source, exactly as
+        ``GET /skills/{name}/export-anthropic`` already does.
+
+        Args:
+            uuid_or_name: Skill UUID or name.
+
+        Raises:
+            KeyError: If the skill is not found.
+        """
+        from skillberry_store.services.registry import get_service
+
+        skill_uuid = self._resolve_uuid(uuid_or_name)
+        with self.handler.read_lock(skill_uuid):
+            skill_dict = self._safe_read(skill_uuid, uuid_or_name)
+            tools_service = get_service("tool")
+            snippets_service = get_service("snippet")
+
+            tools: List[Dict[str, Any]] = []
+            tool_modules: Dict[str, str] = {}
+            for tool_uuid in skill_dict.get("tool_uuids") or []:
+                tool_dict = tools_service.get(tool_uuid, fields="full")
+                tools.append(tool_dict)
+                tool_name = tool_dict.get("name")
+                module_name = tool_dict.get("module_name")
+                if tool_name and module_name:
+                    try:
+                        tool_modules[tool_name] = tools_service.get_module(tool_uuid)
+                    except Exception as e:
+                        logger.warning(
+                            f"Could not read module for tool {tool_name}: {e}"
+                        )
+
+            snippets: List[Dict[str, Any]] = [
+                snippets_service.get(snippet_uuid, fields="full")
+                for snippet_uuid in skill_dict.get("snippet_uuids") or []
+            ]
+        return skill_dict, tools, snippets, tool_modules
+
     def export_anthropic(self, uuid_or_name: str) -> bytes:
         """Export a skill to the Anthropic format as a ZIP byte payload.
 
@@ -748,7 +797,6 @@ class SkillsService:
         Raises:
             KeyError: If the skill is not found.
         """
-        from skillberry_store.services.registry import get_service
         from skillberry_store.tools.anthropic.exporter import (
             export_skill_to_anthropic_format,
         )
@@ -756,38 +804,15 @@ class SkillsService:
         export_anthropic_skill_counter.inc()
         logger.info(f"Request to export skill to Anthropic format: {uuid_or_name}")
         try:
-            skill_uuid = self._resolve_uuid(uuid_or_name)
-            with self.handler.read_lock(skill_uuid):
-                skill_dict = self._safe_read(skill_uuid, uuid_or_name)
-                tools_service = get_service("tool")
-                snippets_service = get_service("snippet")
-
-                tools: List[Dict[str, Any]] = []
-                tool_modules: Dict[str, str] = {}
-                for tool_uuid in skill_dict.get("tool_uuids") or []:
-                    tool_dict = tools_service.get(tool_uuid, fields="full")
-                    tools.append(tool_dict)
-                    tool_name = tool_dict.get("name")
-                    module_name = tool_dict.get("module_name")
-                    if tool_name and module_name:
-                        try:
-                            tool_modules[tool_name] = tools_service.get_module(tool_uuid)
-                        except Exception as e:
-                            logger.warning(
-                                f"Could not read module for tool {tool_name}: {e}"
-                            )
-
-                snippets: List[Dict[str, Any]] = [
-                    snippets_service.get(snippet_uuid, fields="full")
-                    for snippet_uuid in skill_dict.get("snippet_uuids") or []
-                ]
-
-                zip_content = export_skill_to_anthropic_format(
-                    skill=skill_dict,
-                    tools=tools,
-                    snippets=snippets,
-                    tool_modules=tool_modules,
-                )
+            skill_dict, tools, snippets, tool_modules = self.gather_export_inputs(
+                uuid_or_name
+            )
+            zip_content = export_skill_to_anthropic_format(
+                skill=skill_dict,
+                tools=tools,
+                snippets=snippets,
+                tool_modules=tool_modules,
+            )
             logger.info(
                 f"Successfully exported skill '{uuid_or_name}' to Anthropic format"
             )

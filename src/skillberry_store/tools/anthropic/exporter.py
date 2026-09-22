@@ -4,8 +4,13 @@
 """Exporter for converting Skillberry skills to Anthropic skill format."""
 
 import io
+import logging
 import zipfile
 from typing import Dict, List, Optional, Any
+
+import yaml
+
+logger = logging.getLogger(__name__)
 
 
 def extract_file_path_from_tags(tags: Optional[List[str]]) -> Optional[str]:
@@ -46,8 +51,49 @@ def normalize_file_path(file_path: str, skill_name: str) -> str:
     return file_path
 
 
+def render_frontmatter(fields: Dict[str, Any]) -> str:
+    """Emit YAML frontmatter that round-trips through a real parser.
+
+    Interpolating free-form text into ``key: value`` breaks on newlines and on
+    ``: ``, and quietly truncates anything a YAML scanner reads as a comment or
+    a quoted scalar. The consuming CLI parses frontmatter with a YAML library
+    and drops any skill whose ``name``/``description`` is not a string, so an
+    unescaped description is an uninstallable skill.
+    See docs/design/npx.md §5.4.
+    """
+    body = yaml.safe_dump(
+        fields,
+        default_flow_style=False,
+        allow_unicode=True,
+        sort_keys=False,
+        # Never line-wrap: the default 80-column folding rewrites a long
+        # description with inserted newlines, which is legal YAML but silently
+        # reflows the text an agent reads.
+        width=10**6,
+    )
+    return f"---\n{body}---\n\n"
+
+
+def skill_description(skill: Dict[str, Any]) -> str:
+    """The description to publish for ``skill``, never empty.
+
+    ``skill.get("description", default)`` returns ``None`` when the key is
+    present with a ``None`` value, which is how a literal ``description: None``
+    used to reach the emitted file. An absent, empty or ``None`` description
+    resolves to a synthesized ``"Skill: <name>"`` instead: the consuming CLI
+    requires a non-empty string and drops the skill otherwise (§1.3/§5.4).
+    """
+    description = skill.get("description")
+    if isinstance(description, str) and description.strip():
+        return description
+    return f"Skill: {skill.get('name') or 'unnamed'}"
+
+
 def generate_skill_md(
-    skill: Dict[str, Any], has_file_structure: bool, snippets: List[Dict[str, Any]]
+    skill: Dict[str, Any],
+    has_file_structure: bool,
+    snippets: List[Dict[str, Any]],
+    name_override: Optional[str] = None,
 ) -> str:
     """Generate SKILL.md content with frontmatter.
 
@@ -55,13 +101,20 @@ def generate_skill_md(
         skill: The skill dictionary
         has_file_structure: Whether there's a file structure
         snippets: List of snippet dictionaries
+        name_override: Value to emit as the frontmatter ``name`` instead of the
+            stored SBS name. The well-known path passes the skill's slug, so
+            the file an agent loads carries a name matching its own directory
+            (docs/design/npx.md §5.8 #1). Existing callers pass nothing and
+            keep emitting the raw SBS name.
 
     Returns:
         SKILL.md content
     """
-    content = "---\n"
-    content += f"name: {skill['name']}\n"
-    content += f"description: {skill.get('description', 'No description provided')}\n"
+    description = skill_description(skill)
+    fields: Dict[str, Any] = {
+        "name": name_override or skill["name"],
+        "description": description,
+    }
 
     # Check if there's a LICENSE.txt file in snippets
     license_snippet = None
@@ -72,13 +125,13 @@ def generate_skill_md(
             break
 
     if license_snippet:
-        content += "license: Proprietary. LICENSE.txt has complete terms\n"
+        fields["license"] = "Proprietary. LICENSE.txt has complete terms"
 
-    content += "---\n\n"
+    content = render_frontmatter(fields)
 
     if not has_file_structure:
         content += f"# {skill['name']}\n\n"
-        content += f"{skill.get('description', 'No description provided')}\n\n"
+        content += f"{description}\n\n"
 
     return content
 
@@ -262,11 +315,17 @@ def _build_file_structure(
     tools: List[Dict[str, Any]],
     snippets: List[Dict[str, Any]],
     tool_modules: Optional[Dict[str, str]] = None,
+    name_override: Optional[str] = None,
 ) -> Dict[str, bytes]:
     """Build the complete file structure for a skill export.
 
     Returns {relative_path_under_skill_name: file_content_bytes}.
     Shared by both export variants (ZIP and directory).
+
+    ``name_override`` is forwarded to :func:`generate_skill_md` as the
+    frontmatter ``name`` only — the ``<skill_name>/`` key prefix and the
+    ``file:`` tag normalisation keep using the stored SBS name, so a caller
+    that strips the prefix (``strip_skill_prefix``) is unaffected by it.
     """
     skill_name = skill["name"]
 
@@ -277,7 +336,9 @@ def _build_file_structure(
     all_files = merge_file_structures(snippet_files, tool_files, script_files)
 
     has_file_structure = len(all_files) > 0
-    skill_md_content = generate_skill_md(skill, has_file_structure, snippets)
+    skill_md_content = generate_skill_md(
+        skill, has_file_structure, snippets, name_override=name_override
+    )
 
     additional_snippets = export_snippets_to_skill_md(snippets)
     if additional_snippets:
@@ -304,6 +365,69 @@ def _build_file_structure(
     return result
 
 
+# Fixed epoch for every entry. The ZIP format's own minimum (1980-01-01) rather
+# than the Unix epoch, which zipfile cannot represent. Any constant works; this
+# one is conventional for reproducible builds.
+_ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
+
+
+def build_deterministic_zip(files: Dict[str, bytes]) -> bytes:
+    """Zip ``files`` so identical content always yields identical bytes.
+
+    ``ZipFile.writestr(name, data)`` with a *string* name stamps each entry
+    with ``time.localtime()``, so the same skill hashes differently on every
+    call. The well-known discovery protocol publishes a sha256 of the exact
+    bytes it will serve and drops any skill whose artifact does not match, so
+    a wall-clock timestamp makes every skill uninstallable. Pin the mtime, the
+    permission bits and the entry order instead. See docs/design/npx.md §5.1.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for path in sorted(files):
+            info = zipfile.ZipInfo(path, date_time=_ZIP_EPOCH)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o644 << 16
+            zf.writestr(info, files[path])
+    return buf.getvalue()
+
+
+def strip_skill_prefix(files: Dict[str, bytes], skill_name: str) -> Dict[str, bytes]:
+    """Re-root ``files`` so ``SKILL.md`` sits at the archive root.
+
+    ``_build_file_structure`` keys every path under ``<skill_name>/`` because
+    both existing consumers want that container directory. The well-known
+    protocol does not: it requires a root-level ``SKILL.md`` and does not strip
+    a leading component. See docs/design/npx.md §5.2.
+    """
+    prefix = f"{skill_name}/"
+    return {
+        (k[len(prefix) :] if k.startswith(prefix) else k): v for k, v in files.items()
+    }
+
+
+def unsafe_archive_paths(files: Dict[str, bytes]) -> List[str]:
+    """Return every key of ``files`` the consuming CLI would reject.
+
+    Mirrors the CLI's ``normalizeArchivePath`` rejections (docs/design/npx.md
+    §1.4): an absolute path, a ``..`` segment, a backslash, a Windows drive
+    letter or a NUL byte. The CLI rejects such an entry by *throwing*, which
+    aborts extraction of the whole archive — so one bad ``file:`` tag makes an
+    entire skill uninstallable (§5.7). Callers exclude the skill instead.
+    """
+    offenders: List[str] = []
+    for path in files:
+        if (
+            not path
+            or path.startswith("/")
+            or "\\" in path
+            or "\x00" in path
+            or ".." in path.split("/")
+            or (len(path) > 1 and path[1] == ":")
+        ):
+            offenders.append(path)
+    return sorted(offenders)
+
+
 def export_skill_to_anthropic_format(
     skill: Dict[str, Any],
     tools: List[Dict[str, Any]],
@@ -311,6 +435,12 @@ def export_skill_to_anthropic_format(
     tool_modules: Optional[Dict[str, str]] = None,
 ) -> bytes:
     """Export skill to Anthropic format as a ZIP file.
+
+    Keeps the ``<skill-name>/`` container directory — a human unzipping this
+    download wants one — but builds the archive with
+    :func:`build_deterministic_zip` so there is a single zip path in the tree
+    and the digest tests cover both callers (docs/design/npx.md §5.13). Entries
+    therefore carry a fixed 1980-01-01 mtime and sorted order.
 
     Args:
         skill: The skill dictionary
@@ -322,14 +452,7 @@ def export_skill_to_anthropic_format(
         ZIP file content as bytes
     """
     files = _build_file_structure(skill, tools, snippets, tool_modules)
-
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-        for file_path, content in files.items():
-            zip_file.writestr(file_path, content)
-
-    zip_buffer.seek(0)
-    return zip_buffer.read()
+    return build_deterministic_zip(files)
 
 
 def export_skill_to_directory(
