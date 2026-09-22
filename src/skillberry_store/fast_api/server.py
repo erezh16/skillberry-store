@@ -4,7 +4,7 @@ import os
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, List, Literal
+from typing import Any, List, Literal, Optional
 
 import uvicorn
 
@@ -66,11 +66,44 @@ class SBSettings(BaseSettings):
     )
     observability: bool = Field(True, validation_alias="OBSERVABILITY")
     sbs_vdb: str = Field("faiss", validation_alias="SBS_VDB")
+    # The externally-visible base URL — the one a *user's terminal* can reach,
+    # which is not derivable from how the process is bound (docs/design/npx.md
+    # §5.11). ``uvicorn.run`` is called without ``forwarded_allow_ips``, so
+    # behind a container ingress or a load balancer the forwarded headers are
+    # ignored and ``request.base_url`` reports the internal bind address
+    # instead — silently handing out install commands that point at
+    # http://0.0.0.0:8000. Authoritative whenever set; otherwise the well-known
+    # layer falls back to ``request.base_url`` and, failing that, omits the
+    # install command rather than emitting one that cannot work.
+    public_url: Optional[str] = Field(None, validation_alias="SBS_PUBLIC_URL")
 
     @property
     def display_host(self) -> str:
         """Return a browser-friendly host (0.0.0.0 is not browsable on Windows)."""
         return "localhost" if self.sbs_host == "0.0.0.0" else self.sbs_host
+
+    @model_validator(mode="after")
+    def _normalise_public_url(self) -> "SBSettings":
+        """Require a scheme and strip the trailing slash, once, at startup.
+
+        Normalising here rather than at each use site is what keeps a composed
+        URL from ever containing ``//pub/``. A value without an ``http(s)``
+        scheme is rejected outright: it is unusable, and discovering that from
+        a failed ``npx`` run on someone else's machine is far worse than
+        failing to boot.
+        """
+        if self.public_url is None:
+            return self
+        value = str(self.public_url).strip().rstrip("/")
+        if not value:
+            object.__setattr__(self, "public_url", None)
+            return self
+        if not value.startswith(("http://", "https://")):
+            raise ValueError(
+                f"SBS_PUBLIC_URL must start with http:// or https:// (got {value!r})"
+            )
+        object.__setattr__(self, "public_url", value)
+        return self
 
 
 async def _warm_semantic_encoder() -> None:

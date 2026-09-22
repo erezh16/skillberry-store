@@ -125,6 +125,14 @@ class RoleBinding:
 class AccessControlConfig:
     mode: str = "disabled"
     unauthenticated_paths: List[str] = field(default_factory=list)
+    # Publish skills for `npx skills add` (docs/design/npx.md §5.12). This is
+    # the one setting that makes skill CONTENT — not just metadata — reachable
+    # without a session, which is why it lives beside `unauthenticated_paths`
+    # rather than in an env var: anyone reviewing this file's security posture
+    # sees it in the same glance. Default False, i.e. fail-closed. Deliberately
+    # NOT mode-dependent: "on when disabled, off when standalone" is exactly the
+    # kind of subtlety that surprises someone who later enables auth.
+    npx_publish: bool = False
     users: List[User] = field(default_factory=list)
     session_ttl_seconds: int = DEFAULT_SESSION_TTL_SECONDS
     roles: List[Role] = field(default_factory=list)
@@ -261,6 +269,15 @@ _DEFAULT_UNAUTH_PATHS = [
     # is defensive belt-and-braces).
     "GET /control_sse*",
     "POST /control_sse*",
+    # Per-skill discovery for `npx skills add` (docs/design/npx.md §4.3.8).
+    # Read-only, one skill per URL, gated by `npx_publish` — when that is off
+    # the routes are not registered at all and this entry matches nothing. The
+    # path segment is a scoped capability token (standalone) or a slug
+    # (disabled).
+    # NOTE: `_path_matches` supports only a trailing '*' — a middle wildcard
+    # like /pub/*/.well-known/* is inexpressible, so /pub/ MUST remain a
+    # dedicated prefix with nothing else ever mounted under it (§5.10 #1).
+    "GET /pub/*",
 ]
 
 
@@ -359,6 +376,7 @@ def load_config(path: Optional[str] = None) -> AccessControlConfig:
         )
 
     unauth_paths = list(raw.get("unauthenticated_paths") or _DEFAULT_UNAUTH_PATHS)
+    npx_publish = _coerce_bool(raw.get("npx_publish"), "npx_publish", cfg_path)
 
     standalone = raw.get("standalone") or {}
     if not isinstance(standalone, dict):
@@ -405,6 +423,7 @@ def load_config(path: Optional[str] = None) -> AccessControlConfig:
     cfg = AccessControlConfig(
         mode=mode,
         unauthenticated_paths=unauth_paths,
+        npx_publish=npx_publish,
         users=users,
         session_ttl_seconds=session_ttl,
         roles=roles,
@@ -425,6 +444,25 @@ def load_config(path: Optional[str] = None) -> AccessControlConfig:
         len(cfg.bindings),
     )
     return cfg
+
+
+def _coerce_bool(raw: Any, key: str, cfg_path: str) -> bool:
+    """Coerce a top-level config boolean, warning on junk and failing closed.
+
+    Read with ``raw.get(...)`` like every other known key, so an older config
+    file that predates the setting keeps loading with it off — purely additive,
+    no migration.
+    """
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return False
+    if isinstance(raw, str) and raw.strip().lower() in _TRUTHY:
+        return True
+    logger.warning(
+        "%s=%r in %s is not a boolean; treating as false", key, raw, cfg_path
+    )
+    return False
 
 
 def _coerce_login_info_enabled(raw: Any, cfg_path: str) -> bool:
