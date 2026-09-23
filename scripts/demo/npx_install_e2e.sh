@@ -99,10 +99,15 @@ slug="$(printf '%s' "$index" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p' | head -1)
 published_digest="$(printf '%s' "$index" | sed -n 's/.*"digest":"sha256:\([a-f0-9]*\)".*/\1/p' | head -1)"
 [ -n "$slug" ] || fail "index published no skill"
 
-say "The alias the CLI also probes"
-curl -fsS -o /dev/null "${install_url}/.well-known/skills/index.json" \
-    || fail "/.well-known/skills/index.json does not answer"
-echo "ok"
+say "The second index spelling is deliberately not served"
+# The CLI probes /.well-known/skills/index.json only *after* the agent-skills
+# spelling fails, and that one always answers — so routing it would be public
+# surface with no caller. A 404 here is correct, not a gap.
+alias_status="$(curl -s -o /dev/null -w '%{http_code}' \
+    "${install_url}/.well-known/skills/index.json")"
+echo "GET .well-known/skills/index.json -> ${alias_status}"
+[ "$alias_status" = "404" ] \
+    || fail "expected 404 for the unserved index spelling, got ${alias_status}"
 
 say "Artifact bytes hash to the published digest"
 # A mismatch is not an error message — the skill just vanishes from the install

@@ -23,7 +23,9 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   capability is an open, documented-by-implementation HTTP discovery convention
   (`/.well-known/agent-skills/index.json`) that any web server can serve. The
   store serves it over two read-only `GET` endpoints under a single `/pub/{ref}`
-  prefix, in schema v0.2.0 (archive + sha256 digest).
+  prefix, in schema v0.2.0 (archive + sha256 digest). Both are excluded from
+  `/openapi.json`, so neither appears in the generated Python SDK or as an `sbs`
+  command — they exist for npx and for nothing else.
 
   **Off by default.** Turn it on with `npx_publish: true` in
   `access_control_config.yaml`. It is declared there rather than in an

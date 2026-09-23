@@ -44,8 +44,12 @@ SCHEMA_V2 = "https://schemas.agentskills.io/discovery/0.2.0/schema.json"
 PUBLIC_URL = "http://store.test"
 
 INDEX = "/pub/{ref}/.well-known/agent-skills/index.json"
-ALIAS = "/pub/{ref}/.well-known/skills/index.json"
 ARTIFACT = "/pub/{ref}/.well-known/agent-skills/{slug}.zip"
+
+# The convention's second index spelling, which the store deliberately does NOT
+# route: the CLI probes it only after the first fails, and the first always
+# answers. Kept here as the subject of an assertion, not as a URL we serve.
+UNSERVED_ALIAS = "/pub/{ref}/.well-known/skills/index.json"
 
 
 # --------------------------------------------------------------------------- #
@@ -345,11 +349,69 @@ def test_03_index_reachable_with_no_token(demo_with_skill):
     _assert_cli_valid(resp.json())
 
 
-def test_04_the_alias_returns_an_identical_body(demo_with_skill):
+def test_04_the_second_index_spelling_is_deliberately_not_served(demo_with_skill):
+    """The store answers one index URL, not two.
+
+    The CLI's candidate list contains ``/.well-known/skills/index.json`` as well,
+    but it is tried *sequentially* — only when the first candidate fails to parse.
+    Since the first always answers, routing the second would be public surface no
+    supported client ever reaches. This pins that decision: if someone re-adds the
+    route, they have to come here and say why.
+
+    A 404 is also a well-behaved answer in its own right — the CLI skips a
+    non-2xx candidate silently — so nothing breaks for a client that does probe it
+    first and then falls through to the spelling we serve.
+    """
     client, ref = demo_with_skill
-    assert client.get(ALIAS.format(ref=ref)).json() == client.get(
-        INDEX.format(ref=ref)
-    ).json()
+    assert client.get(INDEX.format(ref=ref)).status_code == 200
+    resp = client.get(UNSERVED_ALIAS.format(ref=ref))
+    assert resp.status_code == 404
+    # Still JSON, never HTML: an HTML body would be parsed as an index and
+    # silently yield zero skills (§5.3 #11).
+    assert "application/json" in resp.headers["content-type"]
+
+
+def test_04b_only_two_pub_routes_exist(skillberry_demo_client):
+    """The whole public npx surface, enumerated — so growth is deliberate."""
+    from skillberry_store.access_control.audit import walk_api_routes
+
+    paths = sorted(
+        w.path for w in walk_api_routes(skillberry_demo_client.app)
+        if w.path.startswith("/pub/")
+    )
+    assert paths == [
+        "/pub/{ref}/.well-known/agent-skills/index.json",
+        "/pub/{ref}/.well-known/agent-skills/{slug}.zip",
+    ]
+
+
+def test_04c_the_pub_routes_are_absent_from_the_openapi_schema(skillberry_demo_client):
+    """No generated SDK method and no ``sbs`` command for either route.
+
+    Both the Python SDK (``openapi-generator-cli generate -i .../openapi.json``)
+    and the ``sbs`` CLI (restish, over the same schema) are generated from
+    ``/openapi.json``, so ``include_in_schema=False`` is what keeps these two out
+    of both. They exist for npx and for nothing else: a generated
+    ``get_wellknown_index(ref=...)`` would be a client method whose only correct
+    argument is a capability token, and a `sbs` command for it would invite
+    exactly the confusion that the token is not a session credential.
+
+    Asserted rather than assumed, because the property rests on one keyword
+    argument per route that nothing else would miss if it were dropped.
+    """
+    spec = skillberry_demo_client.app.openapi()
+    assert [p for p in spec.get("paths", {}) if p.startswith("/pub")] == []
+
+    # Nor may they carry the markers that name a CLI command or an MCP tool.
+    from skillberry_store.access_control.audit import walk_api_routes
+
+    for walked in walk_api_routes(skillberry_demo_client.app):
+        if not walked.path.startswith("/pub/"):
+            continue
+        extra = walked.route.openapi_extra or {}
+        assert walked.route.include_in_schema is False, walked.path
+        assert "x-cli-name" not in extra, walked.path
+        assert "x-mcp-tool" not in extra, walked.path
 
 
 def test_05_artifact_reachable_with_no_token_and_digest_matches(demo_with_skill):

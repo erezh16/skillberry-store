@@ -62,12 +62,17 @@ def test_pub_prefix_is_in_the_built_in_allowlist():
     assert "GET /pub/*" in _DEFAULT_UNAUTH_PATHS
 
 
-def test_the_allowlist_entry_matches_index_alias_and_artifact():
-    """One glob covers all three, because all three live under /pub/ (§6.4)."""
+def test_the_allowlist_entry_matches_the_index_and_the_artifact():
+    """One glob covers both routes, because both live under /pub/ (§6.4).
+
+    It necessarily covers every other path under the prefix too, since
+    ``_path_matches`` supports only a trailing ``*`` — which is exactly why
+    ``/pub/`` must stay a dedicated namespace with nothing else mounted under it
+    (§5.10 #1).
+    """
     cfg = load_config("/nonexistent/acl.yaml")
     for path in (
         "/pub/TOKEN/.well-known/agent-skills/index.json",
-        "/pub/TOKEN/.well-known/skills/index.json",
         "/pub/TOKEN/.well-known/agent-skills/pdf-forms.zip",
         "/pub/pdf-forms/.well-known/agent-skills/index.json",
     ):

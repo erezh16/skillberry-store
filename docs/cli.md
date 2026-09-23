@@ -350,7 +350,9 @@ npx skills add https://store.example.com/pub/pdf-forms -y -a claude-code
 `npx` fetches the [`skills`](https://www.npmjs.com/package/skills) CLI on first
 use and caches it. The store serves the skill's bytes directly over two
 read-only `GET` endpoints, using the open
-`/.well-known/agent-skills/index.json` discovery convention.
+`/.well-known/agent-skills/index.json` discovery convention. Those two endpoints
+exist for npx only: they are excluded from `/openapi.json`, so neither the
+generated SDK nor `sbs` has a method or command for them.
 
 **You do not have to compose that command.** Every surface hands you the whole
 thing, flags included:

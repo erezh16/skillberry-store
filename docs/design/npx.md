@@ -355,7 +355,7 @@ A new module `src/skillberry_store/fast_api/wellknown_api.py`, registered from `
 | `GET` | `/ns/{namespace}/.well-known/agent-skills/index.json` | namespace-scoped index (the "pack" analogue) |
 | `GET` | `/ns/{namespace}/.well-known/agent-skills/{slug}.zip` | scoped artifact |
 
-Also register `/.well-known/skills/index.json` as an alias — it costs one line and the CLI probes it.
+~~Also register `/.well-known/skills/index.json` as an alias — it costs one line and the CLI probes it.~~ **Superseded: do not register it.** The CLI probes the two spellings *sequentially* (§1.2) — the second only when the first fails to parse. Since the store always answers the first, a route for the second is unreachable by `skills@1.6.0`/`1.7.0`: public surface with no caller. Adding it back, should a client that speaks only that spelling appear, is one `@app.get` delegating to the same handler.
 
 Then:
 
@@ -1660,8 +1660,9 @@ A new module `src/skillberry_store/fast_api/wellknown_api.py`, registered from `
 | Method | Path | Returns |
 | --- | --- | --- |
 | `GET` | `/pub/{ref}/.well-known/agent-skills/index.json` | a **single-entry** discovery index for one skill |
-| `GET` | `/pub/{ref}/.well-known/skills/index.json` | alias — the CLI probes both (§1.2) |
 | `GET` | `/pub/{ref}/.well-known/agent-skills/{slug}.zip` | that skill's archive. Accepts an optional `?digest=sha256:…` selector — serves those exact cached bytes, 404 on a miss; without it, the current bytes (§5.14) |
+
+**Two routes, and only two.** Both are registered `include_in_schema=False`, which keeps them out of `/openapi.json` and therefore out of the generated Python SDK (`openapi-generator-cli generate -i .../openapi.json`) and out of the `sbs` CLI, which restish generates from the same schema. That is the point rather than a side effect: a generated `get_wellknown_index(ref=...)` would be a client method whose only correct argument is a capability token, and an `sbs` command for it would invite exactly the confusion that a publish token is not a session credential. Neither route carries `x-cli-name` or `x-mcp-tool` either, so both are absent from the Control MCP surface for the same reason.
 
 `{ref}` is resolved by ACL mode — one prefix, so one allowlist entry covers everything:
 
@@ -1726,7 +1727,7 @@ Four rules, each with a concrete failure mode behind it:
   - GET /pub/*
 ```
 
-One entry covers the index, the alias and the artifact, because all three live under `/pub/`. That is the payoff for choosing a single prefix, and the constraint that makes it mandatory.
+One entry covers the index and the artifact, because both live under `/pub/`. That is the payoff for choosing a single prefix, and the constraint that makes it mandatory — the glob necessarily covers every other path under the prefix too, which is why nothing else may ever be mounted there.
 
 ### 6.5 Step 5 — Standalone-ACL verification, with the `skillberry` demo config
 
@@ -1773,7 +1774,7 @@ Assertions:
 | 1 | `cfg.mode` | `"standalone"` — the fixture really did enable ACL |
 | 2 | `GET /skills/` **no token** | `401 {"detail": "missing_authorization"}` — the store is genuinely locked down |
 | 3 | `GET /.well-known/agent-skills/index.json` **no token** | `200`, JSON, correct `$schema` |
-| 4 | `GET /.well-known/skills/index.json` **no token** | `200`, identical body (alias works) |
+| 4 | `GET /pub/{ref}/.well-known/skills/index.json` **no token** | **`404`, as JSON** — the second index spelling is deliberately not served (§4.1). A 404 is a well-behaved "nothing here": the CLI skips a non-2xx candidate silently and falls through to the spelling we do serve |
 | 5 | `GET /.well-known/agent-skills/{slug}.zip` **no token** | `200`, `application/zip`, `sha256 == index digest` |
 | 6 | every index entry | passes all §1.3 v0.2.0 rules, asserted by a `_assert_cli_valid()` helper that mirrors `isValidSkillEntryV2` |
 | 7 | each artifact | root `SKILL.md`, parseable frontmatter with `name` + `description`, no symlink entries, ≤ 1000 files, ≤ 50 MiB |

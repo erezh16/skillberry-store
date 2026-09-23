@@ -3,11 +3,23 @@
 
 """Per-skill discovery endpoints for ``npx skills add`` (docs/design/npx.md §6.4).
 
-One path prefix, three routes::
+One path prefix, two routes::
 
     GET /pub/{ref}/.well-known/agent-skills/index.json   discovery index
-    GET /pub/{ref}/.well-known/skills/index.json          alias — the CLI probes both
-    GET /pub/{ref}/.well-known/agent-skills/{slug}.zip    the archive
+    GET /pub/{ref}/.well-known/agent-skills/{slug}.zip   the archive
+
+Two, not three. The convention has a second index spelling —
+``/.well-known/skills/index.json`` — and the CLI does probe it, but *sequentially*:
+it is candidate #2, tried only when #1 fails to parse. Since we always answer #1,
+a route for the second spelling is unreachable by ``skills@1.6.0``/``1.7.0`` and
+would be public surface with no caller. If a client that speaks only the
+``skills/`` spelling ever appears, adding it back is one ``@app.get`` delegating
+to the same handler.
+
+Two requests rather than one is imposed by the protocol, not a choice: the index
+publishes a digest over bytes the client fetches separately. Schema v0.1.0 would
+serve loose files instead, which is *more* requests (one per file) and an
+all-or-nothing index failure mode — rejected in §4.7.
 
 ``{ref}`` is resolved by access-control mode, which is what keeps the install
 command's shape identical across deployments — only what fills ``{ref}`` differs:
@@ -49,6 +61,17 @@ Four handler rules, each with a concrete failure mode behind it:
 4. **404 for every failure** — unknown ref, rotated secret, tenant without
    ``skills:list``, unpublishable skill. Never 403, never anything a prober can
    tell apart (§4.3.1).
+
+Both routes are registered ``include_in_schema=False``, which is what keeps them
+out of ``/openapi.json`` — and therefore out of the **generated Python SDK**
+(``openapi-generator-cli generate -i .../openapi.json``) and out of the ``sbs``
+**CLI**, which restish generates from the same schema. That is deliberate, not an
+oversight: these two exist for npx and for nothing else. A generated
+``get_wellknown_index(ref=...)`` would be a client method whose only correct
+argument is a capability token, and an `sbs` command for it would invite exactly
+the confusion that a publish token is not a session credential. They also carry no
+``x-cli-name`` and no ``x-mcp-tool`` marker, so they are absent from the Control
+MCP surface for the same reason.
 
 NOTE: no ``@requires`` markers anywhere in this module. These paths are in the
 ACL unauthenticated allow-list, so the PEP short-circuits before mapping a route
@@ -531,26 +554,9 @@ def register_wellknown_api(
         publisher.public_url or "(derived per request)",
     )
 
-    def _index(request: Request, ref: str) -> Dict[str, Any]:
-        wellknown_index_counter.labels(
-            update_check=str(request.headers.get(UPDATE_CHECK_HEADER) == "1").lower()
-        ).inc()
-        resolved = publisher.resolve_ref(service, ref)
-        if resolved is None:
-            raise _not_found()
-        entries = publisher.entries(service, resolved)
-        if not entries:
-            # An empty index is a legitimate answer for a namespace that has
-            # been emptied — `npx skills update` reads it as "deleted upstream"
-            # and offers to remove the local copy. For a per-skill ref it means
-            # the skill is unpublishable, which is a 404.
-            if resolved.slug is not None:
-                raise _not_found()
-        return build_index(entries)
-
-    # Registered before the artifact route, and matched by a distinct final
-    # segment in any case: `index.json` does not end in `.zip`, so the two
-    # cannot shadow each other (§5.9).
+    # The two routes are matched by a distinct final segment — `index.json` does
+    # not end in `.zip` — so neither can shadow the other whatever the
+    # registration order (§5.9).
     #
     # GET only. `@app.get` does not imply HEAD, so a HEAD here answers 405 — the
     # CLI never issues one (§5.8 #4), and adding it would require a matching
@@ -558,22 +564,31 @@ def register_wellknown_api(
     # route to be allow-listed.
     @app.get(
         "/pub/{ref}/.well-known/agent-skills/index.json",
+        # Out of /openapi.json, hence out of the generated SDK and the `sbs` CLI
+        # — see the module docstring. Do not add x-cli-name or x-mcp-tool.
         include_in_schema=False,
     )
     def wellknown_index(request: Request, ref: str) -> Dict[str, Any]:
         """The discovery index for ``ref``'s scope."""
-        return _index(request, ref)
-
-    @app.get(
-        "/pub/{ref}/.well-known/skills/index.json",
-        include_in_schema=False,
-    )
-    def wellknown_index_alias(request: Request, ref: str) -> Dict[str, Any]:
-        """Alias: the CLI probes both spellings, so answering both costs a line."""
-        return _index(request, ref)
+        wellknown_index_counter.labels(
+            update_check=str(request.headers.get(UPDATE_CHECK_HEADER) == "1").lower()
+        ).inc()
+        resolved = publisher.resolve_ref(service, ref)
+        if resolved is None:
+            raise _not_found()
+        entries = publisher.entries(service, resolved)
+        if not entries and resolved.slug is not None:
+            # An empty index is a legitimate answer for a namespace that has been
+            # emptied — `npx skills update` reads it as "deleted upstream" and
+            # offers to remove the local copy. For a per-skill ref it instead
+            # means the skill is unpublishable, which is a 404.
+            raise _not_found()
+        return build_index(entries)
 
     @app.get(
         "/pub/{ref}/.well-known/agent-skills/{slug}.zip",
+        # Out of /openapi.json, hence out of the generated SDK and the `sbs` CLI
+        # — see the module docstring. Do not add x-cli-name or x-mcp-tool.
         include_in_schema=False,
     )
     def wellknown_artifact(
