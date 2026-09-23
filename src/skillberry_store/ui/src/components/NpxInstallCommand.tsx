@@ -15,7 +15,7 @@
 // The command string itself is composed **server-side** and fetched whole
 // (`GET /skills/{uuid}?fields=_npx_install&npx_agent=...`). Nothing here
 // assembles or edits it: there is one definition of that string, in
-// `tools/wellknown.py`, and the picker's only job is to tell the server which
+// `tools/publish.py`, and the picker's only job is to tell the server which
 // agent to pin. That is also why changing the agent re-fetches rather than
 // rewriting the `-a` token locally.
 //

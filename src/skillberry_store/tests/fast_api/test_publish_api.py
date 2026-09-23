@@ -63,9 +63,9 @@ def _build_client(cfg_path, monkeypatch, tmp_path) -> TestClient:
 
     monkeypatch.setenv("SBS_ACCESS_CONTROL_CONFIG", str(cfg_path))
     monkeypatch.setenv("SBS_PUBLIC_URL", PUBLIC_URL)
-    monkeypatch.setenv("SBS_WELLKNOWN_SECRET", "test-publish-secret")
+    monkeypatch.setenv("SBS_PUBLISH_SEED", "test-publish-seed")
     monkeypatch.setenv(
-        "SBS_WELLKNOWN_SECRET_FILE", str(tmp_path / "wellknown_secret.json")
+        "SBS_PUBLISH_SEED_FILE", str(tmp_path / "publish_seed.json")
     )
     acl_config.reset_config_cache()
     clean_test_tmp_dir()
@@ -81,7 +81,7 @@ def _teardown() -> None:
     object_handler.clear_object_handlers()
     registry.clear_services()
     acl_config.reset_config_cache()
-    from skillberry_store.tools.wellknown import get_cache
+    from skillberry_store.tools.publish import get_cache
 
     get_cache().clear()
 
@@ -392,7 +392,7 @@ def test_04c_the_pub_routes_are_absent_from_the_openapi_schema(skillberry_demo_c
     and the ``sbs`` CLI (restish, over the same schema) are generated from
     ``/openapi.json``, so ``include_in_schema=False`` is what keeps these two out
     of both. They exist for npx and for nothing else: a generated
-    ``get_wellknown_index(ref=...)`` would be a client method whose only correct
+    ``get_publish_index(ref=...)`` would be a client method whose only correct
     argument is a capability token, and a `sbs` command for it would invite
     exactly the confusion that the token is not a session credential.
 
@@ -449,7 +449,7 @@ def test_09_the_feature_does_not_disturb_the_existing_tenant(demo_with_skill):
     assert client.get(INDEX.format(ref=ref)).status_code == 200
 
 
-def test_10_the_wellknown_route_did_not_widen_base_user(demo_with_skill):
+def test_10_the_publish_route_did_not_widen_base_user(demo_with_skill):
     """The one that matters most: `base-user` still has no `skills:create`."""
     client, _ = demo_with_skill
     resp = client.post(
@@ -559,10 +559,10 @@ def test_17_the_url_survives_rebuilding_the_session_store(demo_with_skill):
     assert client.get(INDEX.format(ref=ref)).status_code == 200
 
 
-def test_18_rotating_the_secret_yields_404_not_403(demo_with_skill):
+def test_18_rotating_the_seed_yields_404_not_403(demo_with_skill):
     client, ref = demo_with_skill
     assert client.get(INDEX.format(ref=ref)).status_code == 200
-    client.app.state.npx._secret = b"a-rotated-secret"
+    client.app.state.npx._seed = b"a-rotated-seed"
     resp = client.get(INDEX.format(ref=ref))
     assert resp.status_code == 404
     assert resp.json() == {"detail": "Not Found"}
@@ -828,10 +828,10 @@ def test_a_namespace_scoped_index_contains_only_that_namespace(skillberry_demo_c
     _create_skill(client, "other-ns", "B.", headers=admin, tags=["namespace:web"])
     _create_skill(client, "no-ns", "C.", headers=admin)
 
-    from skillberry_store.tools import publish_tokens as tokens
+    from skillberry_store.tools import publish_refs as refs
 
     publisher = client.app.state.npx
-    ref = publisher.ref_for_scope(tokens.namespace_scope("data-eng"), "skillberry")
+    ref = publisher.ref_for_scope(refs.namespace_scope("data-eng"), "skillberry")
     index = client.get(INDEX.format(ref=ref)).json()
     _assert_cli_valid(index)
     assert {e["name"] for e in index["skills"]} == {"in-ns"}
@@ -848,10 +848,10 @@ def test_an_unknown_namespace_token_does_not_fall_back_to_everything(
     admin = _auth(client, "skillberry-admin")
     _create_skill(client, "alpha", "A.", headers=admin)
 
-    from skillberry_store.tools import publish_tokens as tokens
+    from skillberry_store.tools import publish_refs as refs
 
     publisher = client.app.state.npx
-    ref = publisher.ref_for_scope(tokens.namespace_scope("no-such-ns"), "skillberry")
+    ref = publisher.ref_for_scope(refs.namespace_scope("no-such-ns"), "skillberry")
     assert client.get(INDEX.format(ref=ref)).status_code == 404
 
 
@@ -861,9 +861,9 @@ def test_the_global_scope_publishes_every_visible_skill(skillberry_demo_client):
     for name in ("alpha", "beta"):
         _create_skill(client, name, f"{name}.", headers=admin)
 
-    from skillberry_store.tools import publish_tokens as tokens
+    from skillberry_store.tools import publish_refs as refs
 
-    ref = client.app.state.npx.ref_for_scope(tokens.SCOPE_ALL, "skillberry")
+    ref = client.app.state.npx.ref_for_scope(refs.SCOPE_ALL, "skillberry")
     index = client.get(INDEX.format(ref=ref)).json()
     _assert_cli_valid(index)
     assert {e["name"] for e in index["skills"]} == {"alpha", "beta"}
@@ -874,14 +874,14 @@ def test_the_global_scope_publishes_every_visible_skill(skillberry_demo_client):
 def test_a_global_token_for_an_unconfigured_tenant_does_not_resolve(
     skillberry_demo_client,
 ):
-    from skillberry_store.tools import publish_tokens as tokens
+    from skillberry_store.tools import publish_refs as refs
 
     client = skillberry_demo_client
     _create_skill(client, "alpha", "A.", headers=_auth(client, "skillberry-admin"))
     # `plugin-user` is a virtual subject with no `standalone.users` entry, so it
     # is never a resolution candidate (§5.10 #4).
-    ref = tokens.publish_token(
-        client.app.state.npx.secret, "plugin-user", tokens.SCOPE_ALL
+    ref = refs.derive_ref(
+        client.app.state.npx.seed, "plugin-user", refs.SCOPE_ALL
     )
     assert client.get(INDEX.format(ref=ref)).status_code == 404
 
@@ -889,19 +889,19 @@ def test_a_global_token_for_an_unconfigured_tenant_does_not_resolve(
 def test_the_namespace_allowlist_restricts_which_namespaces_resolve(
     skillberry_demo_client, monkeypatch
 ):
-    """``SBS_WELLKNOWN_NAMESPACES`` (§4.3): when set, only those namespaces
+    """``SBS_PUBLISH_NAMESPACES`` (§4.3): when set, only those namespaces
     publish, so a store can expose one pack without exposing the rest."""
-    from skillberry_store.tools import publish_tokens as tokens
-    from skillberry_store.tools.wellknown import NAMESPACES_ENV_VAR
+    from skillberry_store.tools import publish_refs as refs
+    from skillberry_store.tools.publish import NAMESPACES_ENV_VAR
 
     client = skillberry_demo_client
     admin = _auth(client, "skillberry-admin")
     _create_skill(client, "public", "A.", headers=admin, tags=["namespace:data-eng"])
-    _create_skill(client, "private", "B.", headers=admin, tags=["namespace:secret"])
+    _create_skill(client, "private", "B.", headers=admin, tags=["namespace:seed"])
 
     publisher = client.app.state.npx
-    open_ref = publisher.ref_for_scope(tokens.namespace_scope("data-eng"), "skillberry")
-    shut_ref = publisher.ref_for_scope(tokens.namespace_scope("secret"), "skillberry")
+    open_ref = publisher.ref_for_scope(refs.namespace_scope("data-eng"), "skillberry")
+    shut_ref = publisher.ref_for_scope(refs.namespace_scope("seed"), "skillberry")
 
     monkeypatch.setenv(NAMESPACES_ENV_VAR, "data-eng")
     assert {
@@ -917,7 +917,7 @@ def test_the_namespace_allowlist_restricts_which_namespaces_resolve(
 def test_an_internal_tagged_skill_is_marked_but_still_installable(disabled_client):
     """§4.3: the tag is a per-skill "don't offer this in a list" flag the CLI
     honours; the skill's own URL must keep working."""
-    from skillberry_store.tools.wellknown import INTERNAL_TAG
+    from skillberry_store.tools.publish import INTERNAL_TAG
 
     _create_skill(disabled_client, "hidden", "H.", tags=[INTERNAL_TAG])
     _create_skill(disabled_client, "shown", "S.")
@@ -938,13 +938,13 @@ def test_an_internal_tagged_skill_is_marked_but_still_installable(disabled_clien
 def test_update_polls_are_counted_separately_from_installs(disabled_client):
     """§4.4: `npx skills update` sets X-Skills-Update-Check, so an operator can
     tell polling from real installs."""
-    from skillberry_store.fast_api.wellknown_api import (
+    from skillberry_store.fast_api.publish_api import (
         UPDATE_CHECK_HEADER,
-        wellknown_index_counter,
+        publish_index_counter,
     )
 
     def count(label):
-        return wellknown_index_counter.labels(update_check=label)._value.get()
+        return publish_index_counter.labels(update_check=label)._value.get()
 
     _create_skill(disabled_client, "demo", "D.")
     before_install, before_poll = count("false"), count("true")
@@ -957,12 +957,12 @@ def test_update_polls_are_counted_separately_from_installs(disabled_client):
 
 
 def test_artifact_downloads_are_counted(disabled_client):
-    from skillberry_store.fast_api.wellknown_api import wellknown_artifact_counter
+    from skillberry_store.fast_api.publish_api import publish_artifact_counter
 
     _create_skill(disabled_client, "demo", "D.")
-    before = wellknown_artifact_counter._value.get()
+    before = publish_artifact_counter._value.get()
     disabled_client.get(ARTIFACT.format(ref="demo", slug="demo"))
-    assert wellknown_artifact_counter._value.get() == before + 1
+    assert publish_artifact_counter._value.get() == before + 1
 
 
 # =========================================================================== #
@@ -1107,7 +1107,7 @@ def test_without_a_public_url_the_command_is_omitted_not_guessed(
 ):
     """§5.11 option 3: a wrong URL is worse than an absent one — but a directly
     reachable server may still derive one from the request."""
-    from skillberry_store.fast_api.wellknown_api import NpxPublisher
+    from skillberry_store.fast_api.publish_api import NpxPublisher
 
     cfg = type("Cfg", (), {"mode": "disabled", "npx_publish": True})()
     publisher = NpxPublisher(cfg, public_url=None)
@@ -1144,7 +1144,7 @@ def test_a_skill_with_an_unsafe_file_tag_is_not_published(disabled_client, caplo
     _create_skill(disabled_client, "unsafe", "U.", snippet_uuids=[snippet])
     _create_skill(disabled_client, "safe", "S.")
 
-    with caplog.at_level(logging.WARNING, logger="skillberry_store.tools.wellknown"):
+    with caplog.at_level(logging.WARNING, logger="skillberry_store.tools.publish"):
         resp = disabled_client.get(INDEX.format(ref="unsafe"))
     assert resp.status_code == 404
     assert "file:../../escape.txt" in caplog.text

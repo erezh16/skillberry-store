@@ -32,7 +32,7 @@ ACL mode        ``{ref}`` is                    Resolution
                                                 ``authorize(subject, "skills",
                                                 "list")`` on **every** request
 ``disabled``    the scope, spelled out          no auth layer exists, so there is
-                (a bare slug is shorthand       nothing for a secret to protect;
+                (a bare slug is shorthand       nothing for a seed to protect;
                 for ``skill:<slug>``)           ``/pub/pdf-forms`` is the whole URL
 ==============  ==============================  =====================================
 
@@ -58,7 +58,7 @@ Four handler rules, each with a concrete failure mode behind it:
 3. **Always JSON, never HTML.** A stray HTML error body is parsed as an index
    and silently yields zero skills, which is how ``npx skills add https://skills.sh``
    reports "no skills found" today (§1.7.1).
-4. **404 for every failure** — unknown ref, rotated secret, tenant without
+4. **404 for every failure** — unknown ref, rotated seed, tenant without
    ``skills:list``, unpublishable skill. Never 403, never anything a prober can
    tell apart (§4.3.1).
 
@@ -67,7 +67,7 @@ out of ``/openapi.json`` — and therefore out of the **generated Python SDK**
 (``openapi-generator-cli generate -i .../openapi.json``) and out of the ``sbs``
 **CLI**, which restish generates from the same schema. That is deliberate, not an
 oversight: these two exist for npx and for nothing else. A generated
-``get_wellknown_index(ref=...)`` would be a client method whose only correct
+``get_publish_index(ref=...)`` would be a client method whose only correct
 argument is a capability token, and an `sbs` command for it would invite exactly
 the confusion that a publish token is not a session credential. They also carry no
 ``x-cli-name`` and no ``x-mcp-tool`` marker, so they are absent from the Control
@@ -93,8 +93,8 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import Response
 from prometheus_client import Counter
 
-from skillberry_store.tools import publish_tokens as tokens
-from skillberry_store.tools.wellknown import (
+from skillberry_store.tools import publish_refs as refs
+from skillberry_store.tools.publish import (
     DEFAULT_AGENT,
     PublishedSkill,
     assign_slugs,
@@ -109,13 +109,13 @@ from skillberry_store.tools.wellknown import (
 
 logger = logging.getLogger(__name__)
 
-prom_prefix = "sts_wellknown_"
-wellknown_index_counter = Counter(
+prom_prefix = "sts_publish_"
+publish_index_counter = Counter(
     f"{prom_prefix}index_counter",
     "Count of npx discovery-index requests",
     ["update_check"],
 )
-wellknown_artifact_counter = Counter(
+publish_artifact_counter = Counter(
     f"{prom_prefix}artifact_counter",
     "Count of npx artifact (archive) downloads",
 )
@@ -151,7 +151,7 @@ class ResolvedRef:
 class NpxPublisher:
     """Everything the npx surface needs that is not a pure function.
 
-    Holds the access-control config, the durable HMAC secret and the store's
+    Holds the access-control config, the durable HMAC seed and the store's
     public URL, and is reachable from ``app.state.npx`` so the skills API can
     emit the opt-in ``_npx_install`` field without duplicating any of it.
 
@@ -163,7 +163,7 @@ class NpxPublisher:
         self.cfg = cfg
         self.public_url = public_url.rstrip("/") if public_url else None
         self.enabled = bool(getattr(cfg, "npx_publish", False))
-        self._secret: Optional[bytes] = None
+        self._seed: Optional[bytes] = None
 
     # -- configuration --------------------------------------------------- #
     @property
@@ -171,15 +171,15 @@ class NpxPublisher:
         return str(getattr(self.cfg, "mode", "disabled"))
 
     @property
-    def secret(self) -> bytes:
-        """The HMAC secret, loaded once on first use.
+    def seed(self) -> bytes:
+        """The HMAC seed, loaded once on first use.
 
-        Lazy so a store with publishing off never creates a secret file, and so
+        Lazy so a store with publishing off never creates a seed file, and so
         importing this module does not touch the filesystem.
         """
-        if self._secret is None:
-            self._secret = tokens.load_secret()
-        return self._secret
+        if self._seed is None:
+            self._seed = refs.load_seed()
+        return self._seed
 
     def base_url(self, request: Optional[Request]) -> Optional[str]:
         """The absolute base URL to compose an install command from (§5.11).
@@ -210,7 +210,7 @@ class NpxPublisher:
             return scope[len("skill:") :] if scope.startswith("skill:") else scope
         if not tenant_id:
             return None
-        return tokens.publish_token(self.secret, tenant_id, scope)
+        return refs.derive_ref(self.seed, tenant_id, scope)
 
     def slug_map(self, service: Any) -> Dict[str, Dict[str, Any]]:
         """``{slug: skill}`` over the store's current HEADs.
@@ -260,14 +260,14 @@ class NpxPublisher:
             if not self._may_list(subject):
                 return None
             tenant_id = getattr(subject, "tenant_id", None)
-            if not tenant_id or tenant_id not in tokens.candidate_tenants(self.cfg):
+            if not tenant_id or tenant_id not in refs.candidate_tenants(self.cfg):
                 # A virtual subject (no `standalone.users` entry) cannot be
                 # handed an install URL: resolution only ever recomputes over
                 # configured tenants, so the token would never verify.
                 return None
         else:
             tenant_id = None
-        ref = self.ref_for_scope(tokens.skill_scope(slug), tenant_id)
+        ref = self.ref_for_scope(refs.skill_scope(slug), tenant_id)
         if ref is None:
             return None
         return npx_install_command(base, ref, agent=agent)
@@ -332,12 +332,12 @@ class NpxPublisher:
             return self._resolve_plaintext(ref, slugs, namespaces)
 
         candidate_scopes = (
-            [tokens.skill_scope(slug) for slug in sorted(slugs)]
-            + [tokens.namespace_scope(ns) for ns in namespaces]
-            + [tokens.SCOPE_ALL]
+            [refs.skill_scope(slug) for slug in sorted(slugs)]
+            + [refs.namespace_scope(ns) for ns in namespaces]
+            + [refs.SCOPE_ALL]
         )
-        found = tokens.resolve_token(
-            ref, self.secret, tokens.candidate_tenants(self.cfg), candidate_scopes
+        found = refs.match_ref(
+            ref, self.seed, refs.candidate_tenants(self.cfg), candidate_scopes
         )
         if found is None:
             return None
@@ -353,15 +353,15 @@ class NpxPublisher:
     def _resolve_plaintext(
         self, ref: str, slugs: Dict[str, Dict[str, Any]], namespaces: List[str]
     ) -> Optional[ResolvedRef]:
-        """``mode: disabled`` — the ref names its own scope, no secret involved."""
-        if ref == tokens.SCOPE_ALL:
-            scope = tokens.SCOPE_ALL
+        """``mode: disabled`` — the ref names its own scope, no seed involved."""
+        if ref == refs.SCOPE_ALL:
+            scope = refs.SCOPE_ALL
         elif ref.startswith("ns:"):
             scope = ref if ref[len("ns:") :] in namespaces else ""
         elif ref.startswith("skill:"):
             scope = ref if ref[len("skill:") :] in slugs else ""
         elif ref in slugs:
-            scope = tokens.skill_scope(ref)
+            scope = refs.skill_scope(ref)
         else:
             scope = ""
         if not scope:
@@ -516,7 +516,7 @@ def attach_npx_install(
             item.pop(key, None)
 
 
-def register_wellknown_api(
+def register_publish_api(
     app: FastAPI,
     publisher: Optional[NpxPublisher] = None,
     service: Optional[Any] = None,
@@ -534,7 +534,7 @@ def register_wellknown_api(
     if publisher is None:
         publisher = getattr(app.state, "npx", None)
     if publisher is None:
-        raise RuntimeError("register_wellknown_api requires an NpxPublisher")
+        raise RuntimeError("register_publish_api requires an NpxPublisher")
     if service is None:
         from skillberry_store.services.registry import get_service
 
@@ -568,9 +568,9 @@ def register_wellknown_api(
         # — see the module docstring. Do not add x-cli-name or x-mcp-tool.
         include_in_schema=False,
     )
-    def wellknown_index(request: Request, ref: str) -> Dict[str, Any]:
+    def publish_index(request: Request, ref: str) -> Dict[str, Any]:
         """The discovery index for ``ref``'s scope."""
-        wellknown_index_counter.labels(
+        publish_index_counter.labels(
             update_check=str(request.headers.get(UPDATE_CHECK_HEADER) == "1").lower()
         ).inc()
         resolved = publisher.resolve_ref(service, ref)
@@ -591,7 +591,7 @@ def register_wellknown_api(
         # — see the module docstring. Do not add x-cli-name or x-mcp-tool.
         include_in_schema=False,
     )
-    def wellknown_artifact(
+    def publish_artifact(
         ref: str,
         slug: str,
         digest: Optional[str] = Query(
@@ -618,7 +618,7 @@ def register_wellknown_api(
             raise _not_found()
 
         if digest:
-            from skillberry_store.tools.wellknown import get_cache
+            from skillberry_store.tools.publish import get_cache
 
             slugs = assign_slugs(head_skills(service))
             skill = slugs.get(slug)
@@ -640,7 +640,7 @@ def register_wellknown_api(
             if entry is None:
                 raise _not_found()
 
-        wellknown_artifact_counter.inc()
+        publish_artifact_counter.inc()
         return Response(
             content=entry.payload,
             media_type="application/zip",

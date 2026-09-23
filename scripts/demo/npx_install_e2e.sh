@@ -9,7 +9,7 @@
 # `skills` package from the public npm registry) and Node >= 22.20.0. The
 # in-process equivalents — index shape, digest agreement, archive layout, ACL
 # behaviour — are covered by
-# src/skillberry_store/tests/fast_api/test_wellknown_api.py, which asserts
+# src/skillberry_store/tests/fast_api/test_publish_api.py, which asserts
 # against the CLI's own validators. What this script adds is the one thing a
 # TestClient cannot: that the real CLI, unmodified, installs the skill.
 #

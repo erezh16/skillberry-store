@@ -43,7 +43,7 @@ describe('NpxInstallCommand', () => {
   });
 
   it('re-fetches rather than rewriting the command when the agent changes', async () => {
-    // The command string has exactly one author (tools/wellknown.py), so the
+    // The command string has exactly one author (tools/publish.py), so the
     // picker's only job is to tell the server which agent to pin.
     const spy = vi
       .spyOn(skillsApi, 'npxInstallCommand')

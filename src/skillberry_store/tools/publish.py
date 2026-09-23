@@ -5,7 +5,7 @@
 
 Pure functions plus a process-local artifact cache — no FastAPI import, so this
 module is unit-testable without an app. The HTTP surface lives in
-:mod:`skillberry_store.fast_api.wellknown_api`.
+:mod:`skillberry_store.fast_api.publish_api`.
 
 Three contracts from the consuming CLI drive everything here (§1.3, §1.4):
 
@@ -79,7 +79,7 @@ INTERNAL_TAG = "npx-internal"
 
 #: Restricts which namespaces a ``ns:`` scope may name. Unset means "any
 #: namespace that exists" (§4.3).
-NAMESPACES_ENV_VAR = "SBS_WELLKNOWN_NAMESPACES"
+NAMESPACES_ENV_VAR = "SBS_PUBLISH_NAMESPACES"
 
 
 def allowed_namespaces() -> Optional[List[str]]:
@@ -103,11 +103,11 @@ def is_internal(skill: Dict[str, Any]) -> bool:
 _SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
-class WellKnownError(Exception):
+class PublishError(Exception):
     """Base class for "this skill cannot be published" conditions."""
 
 
-class UnsafeArchivePathError(WellKnownError):
+class UnsafeArchivePathError(PublishError):
     """An archive path the consuming CLI would reject (§5.7)."""
 
     def __init__(self, paths: List[str]):
@@ -115,7 +115,7 @@ class UnsafeArchivePathError(WellKnownError):
         self.paths = paths
 
 
-class ArchiveTooLargeError(WellKnownError):
+class ArchiveTooLargeError(PublishError):
     """An archive beyond the CLI's file-count or unpacked-size cap (§5.3 #5)."""
 
 

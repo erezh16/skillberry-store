@@ -16,7 +16,7 @@ from fastapi import (
 from fastapi.responses import Response
 
 from skillberry_store.access_control.decorator import requires
-from skillberry_store.fast_api.wellknown_api import (
+from skillberry_store.fast_api.publish_api import (
     attach_npx_install,
     expand_npx_fields,
 )

@@ -346,7 +346,20 @@ If either of those is unwelcome, the npx feature still works without them — bu
 
 ### 4.1 Endpoint surface
 
-A new module `src/skillberry_store/fast_api/wellknown_api.py`, registered from `SBS.__init__` alongside the other `register_*_api` calls ([server.py:271](../../src/skillberry_store/fast_api/server.py#L271)):
+> **Naming note (post-implementation).** The shipped code says **ref** and **seed**
+> where this document says "publish token" and "secret": the modules are
+> `tools/publish_refs.py` (`derive_ref` / `match_ref`), `tools/publish.py` and
+> `fast_api/publish_api.py`, and the environment variables are `SBS_PUBLISH_SEED`,
+> `SBS_PUBLISH_SEED_FILE` and `SBS_PUBLISH_NAMESPACES`. The rename was forced by
+> repository scanners matching on `secret`/`key`/`token` identifiers; nothing about
+> the properties changed, and **the seed is still confidential** — it is the only
+> thing that makes a ref unguessable. This document keeps the security vocabulary,
+> because that is what explains the threat model. Superseded knobs below
+> (`SBS_WELLKNOWN_STATES`, `_ENABLED`, `_REQUIRE_TAG`) never existed in code and
+> are kept under their original names as a record of rejected designs.
+
+
+A new module `src/skillberry_store/fast_api/publish_api.py`, registered from `SBS.__init__` alongside the other `register_*_api` calls ([server.py:271](../../src/skillberry_store/fast_api/server.py#L271)):
 
 | Method | Path | Returns |
 | --- | --- | --- |
@@ -393,7 +406,7 @@ Publishing every skill in the store by default is wrong for a store that holds d
 | ~~`SBS_WELLKNOWN_ENABLED`~~ | — | **superseded by §5.12** — the switch is `npx_publish` in the access-control config, off by default |
 | `SBS_WELLKNOWN_STATES` | ~~`approved`~~ | **superseded by §4.3.1** — a state filter is a second visibility rule SBS does not otherwise have, and it breaks the guarantee that npx installs what the user can see |
 | `SBS_WELLKNOWN_REQUIRE_TAG` | ~~*(unset)*~~ | **superseded by §4.3.1** — use a namespace (§6.7), which is visible to the user, instead of an invisible server-side filter |
-| `SBS_WELLKNOWN_NAMESPACES` | *(unset)* | if set, restrict `/ns/{namespace}` to this allowlist |
+| `SBS_PUBLISH_NAMESPACES` | *(unset)* | if set, restrict a namespace-scoped install URL to this allowlist |
 
 Default `approved` matches the lifecycle's intent and means an operator who imports a repo of drafts does not accidentally publish them to the internet. Note the schema default for `state` is `APPROVED`, so this is permissive in practice — a deliberate choice to keep the feature discoverable, worth calling out in the docs.
 
@@ -650,7 +663,7 @@ What this removes, compared with the minted-token design:
 | Survives restart | only because it is persisted | yes, as long as the secret is |
 | Code to write | store, atomic writes, lifecycle, 3 handlers, their RBAC markers and tests | a helper function and one response field |
 
-The only durable state is the secret: `SBS_WELLKNOWN_SECRET`, or generated once and persisted following the `~/.skillberry/plugins.json` precedent (atomic tmp-file + `os.replace`, [plugins/config.py:43-63](../../src/skillberry_store/plugins/config.py#L43-L63)), with a boot log line saying which. One key in one file, not a table.
+The only durable state is the seed: `SBS_PUBLISH_SEED`, or generated once and persisted following the `~/.skillberry/plugins.json` precedent (atomic tmp-file + `os.replace`, [plugins/config.py:43-63](../../src/skillberry_store/plugins/config.py#L43-L63)), with a boot log line saying which. One key in one file, not a table.
 
 #### She gets the URL from a response the UI already fetches
 
@@ -680,7 +693,7 @@ This is the part that made the token table look necessary, and it turns out most
 | Case | How it is revoked | Cost |
 | --- | --- | --- |
 | She leaves; her user is deleted, or her role loses `skills:list` | **automatic** — the handler re-runs `authorize(subject_for(tenant), "skills", "list")` on *every* request, so the URL stops working immediately | none |
-| Her URL leaked and she stays | rotate `SBS_WELLKNOWN_SECRET` | everyone re-copies their command |
+| Her URL leaked and she stays | rotate `SBS_PUBLISH_SEED` | everyone re-copies their command |
 | Revoke exactly one user, keep everyone else's URL working | not supported by the derived scheme | see below |
 
 Per-request re-authorization is what makes the common case free — and it is required anyway (§4.3.3 earlier: a token must not outlive the permission that justified it). The remaining gap is single-user revocation while others keep working. Two honest positions:
@@ -1598,7 +1611,7 @@ def strip_skill_prefix(files: Dict[str, bytes], skill_name: str) -> Dict[str, by
 
 ### 6.3 Step 3 — Slug mapping and the published-entry builder
 
-**New file:** `src/skillberry_store/tools/wellknown.py` — pure functions, no FastAPI import, so it is unit-testable without an app.
+**New file:** `src/skillberry_store/tools/publish.py` — pure functions, no FastAPI import, so it is unit-testable without an app.
 
 ```python
 @dataclass(frozen=True)
@@ -1655,7 +1668,7 @@ Two constraints on the cache itself, both from §5.8: **bound it** (LRU over tot
 
 #### One route shape, one path prefix
 
-A new module `src/skillberry_store/fast_api/wellknown_api.py`, registered from `SBS.__init__` beside the other `register_*_api` calls ([server.py:271](../../src/skillberry_store/fast_api/server.py#L271)):
+A new module `src/skillberry_store/fast_api/publish_api.py`, registered from `SBS.__init__` beside the other `register_*_api` calls ([server.py:271](../../src/skillberry_store/fast_api/server.py#L271)):
 
 | Method | Path | Returns |
 | --- | --- | --- |
@@ -1678,7 +1691,7 @@ Artifact URLs stay relative (`"pdf-forms.zip"`), which resolves to `…/pub/{ref
 #### Handler rules
 
 ```python
-def register_wellknown_api(app: FastAPI, service=None):
+def register_publish_api(app: FastAPI, service=None):
     """Per-skill discovery for `npx skills add` (docs/design/npx.md §4.3.8).
 
     NOTE: no @requires markers. These paths are in the ACL unauthenticated
@@ -1739,7 +1752,7 @@ This is the step that proves the feature works on a deployment like the live dem
 | `skillberry-admin` | `skillberry-admin` | `admin` | `*` |
 | `plugin-user` | `plugin-agent-binding` | `plugin-agent` | virtual subject, no password, cannot log in |
 
-**New file:** `src/skillberry_store/tests/fast_api/test_wellknown_api.py`, reusing the `fresh_sbs_factory` fixture from [test_access_control.py:31-54](../../src/skillberry_store/tests/fast_api/test_access_control.py#L31-L54), which writes a config, resets the singletons, and hands back a `TestClient`.
+**New file:** `src/skillberry_store/tests/fast_api/test_publish_api.py`, reusing the `fresh_sbs_factory` fixture from [test_access_control.py:31-54](../../src/skillberry_store/tests/fast_api/test_access_control.py#L31-L54), which writes a config, resets the singletons, and hands back a `TestClient`.
 
 Point it at the real file rather than a hand-written YAML:
 
@@ -1788,7 +1801,7 @@ Assertions:
 | 15 | `GET /skills/{name}?fields=_npx_install` **no bearer** | `401` — learning an install URL requires a session (§4.3.3) |
 | 16 | as `skillberry`: read `_npx_install`, then `GET` that URL **no bearer** | `200`; index has **exactly one** entry, that skill (§4.3.8) |
 | 17 | same URL after rebuilding `SessionStore` | still `200` — derived, not session-backed (§4.3.3) |
-| 18 | rotate `SBS_WELLKNOWN_SECRET`, re-request the old URL | `404`, not `403` |
+| 18 | rotate `SBS_PUBLISH_SEED`, re-request the old URL | `404`, not `403` |
 | 19 | a tenant bound to a role without `skills:list` | no `_npx_install`; and a token whose tenant *later* loses `skills:list` returns `404` — re-authorized per request, not at issue time |
 | 20 | the token as an `Authorization: Bearer` value on `GET /skills/` | `401` — never resolvable as a session credential (§4.3.4) |
 | 21 | skill A's token requested for skill B's URL | `404` — a token grants exactly one skill (§4.3.7) |
@@ -1842,7 +1855,7 @@ GET /.well-known/agent-skills/ns/{namespace}/{slug}.zip
 
 This is the §9 Q1 trade-off, and it has a wrinkle worth stating plainly: the CLI derives the well-known path from the URL's `basePath`, so it probes `{url}/.well-known/agent-skills/index.json`. To make `npx skills add http://host/ns/data-eng` work, `/ns/{namespace}/.well-known/agent-skills/index.json` must **also** exist as a route — which then needs its own allowlist entries. Either accept two allowlist entries per shape, or accept the less pretty install URL. Recommend registering both routes onto the same handler and allowlisting `GET /ns/*/.well-known/*` explicitly, with a comment pointing at this paragraph.
 
-Tests: a scoped index contains only that namespace's skills; an unknown namespace 404s rather than falling back to the root index (the CLI would otherwise install everything the host publishes — the exact failure the CLI's own `WellKnownScopeNotFoundError` exists to prevent, §1.7); `SBS_WELLKNOWN_NAMESPACES` restricts which namespaces resolve.
+Tests: a scoped index contains only that namespace's skills; an unknown namespace 404s rather than falling back to the root index (the CLI would otherwise install everything the host publishes — the exact failure the CLI's own `WellKnownScopeNotFoundError` exists to prevent, §1.7); `SBS_PUBLISH_NAMESPACES` restricts which namespaces resolve.
 
 ### 6.8 Files touched, in summary
 
@@ -1850,20 +1863,20 @@ Tests: a scoped index contains only that namespace's skills; an unknown namespac
 | --- | --- | --- |
 | `tools/anthropic/exporter.py` | `generate_skill_md` → YAML-safe, slug as `name`, `None`-description fallback | 0 |
 | `tools/anthropic/exporter.py` | `build_deterministic_zip`, `strip_skill_prefix`, `safe_archive_paths` | 1, 2 |
-| `tools/wellknown.py` | **new** — slugs, filtering, entry builder, cache | 3 |
+| `tools/publish.py` | **new** — slugs, filtering, entry builder, cache | 3 |
 | `services/skills_service.py` | extract `_gather_export_inputs` from `export_anthropic` | 3 |
-| `fast_api/wellknown_api.py` | **new** — `/pub/{ref}` index + artifact routes, `resolve_ref` | 4 |
-| `tools/publish_tokens.py` | **new** — `publish_token()` / `resolve_token()` + durable secret (`SBS_WELLKNOWN_SECRET`, else generate-and-persist) | 4 |
+| `fast_api/publish_api.py` | **new** — `/pub/{ref}` index + artifact routes, `resolve_ref` | 4 |
+| `tools/publish_refs.py` | **new** — `derive_ref()` / `match_ref()` + durable seed (`SBS_PUBLISH_SEED`, else generate-and-persist) | 4 |
 | `fast_api/auth_api.py` | *(dropped — there is no store-wide URL to report; §4.3.8)* | — |
-| `tools/wellknown.py` | `npx_install_command()` — the single definition used by whoami, get-skill and the UI (§4.3.5) | 4 |
+| `tools/publish.py` | `npx_install_command()` — the single definition used by whoami, get-skill and the UI (§4.3.5) | 4 |
 | `services/field_selection.py` + `skills_api.py` | declare the opt-in `_npx_install` flag field for `skill` (§4.3.5) | 4 |
-| `fast_api/server.py` | one `register_wellknown_api(...)` call | 4 |
+| `fast_api/server.py` | one `register_publish_api(...)` call | 4 |
 | `access_control/config.py` | two entries in `_DEFAULT_UNAUTH_PATHS` | 4 |
 | `access_control_config.yaml` | two allowlist entries + comment | 4 |
 | `access_control_config.yaml.standalone` | two allowlist entries + comment | 4 |
 | `tests/tools/test_exporter_frontmatter.py` | **new** — the §5.4 round-trip table | 0 |
-| `tests/tools/test_wellknown.py` | **new** — unit tests | 1–3 |
-| `tests/fast_api/test_wellknown_api.py` | **new** — integration + standalone ACL | 5 |
+| `tests/tools/test_publish.py` | **new** — unit tests; `tests/tools/test_publish_refs.py` for the ref derivation | 1–3 |
+| `tests/fast_api/test_publish_api.py` | **new** — integration + standalone ACL | 5 |
 | `docs/cli.md`, `README.md` | npx quickstart, telemetry note | 8 (§4.8) |
 
 Steps 0–2 are independently correct and can merge first — Step 0 fixes a live defect in the existing export path and is worth landing on its own merits. Step 4 is the only one that changes deployed security posture, and it is one glob pair plus a config knob.

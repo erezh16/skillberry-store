@@ -27,9 +27,9 @@ from skillberry_store.fast_api.vmcp_api import register_vmcp_api
 from skillberry_store.fast_api.vnfs_api import register_vnfs_api
 from skillberry_store.fast_api.plugins_api import register_plugins_api
 from skillberry_store.fast_api.auth_api import register_auth_api
-from skillberry_store.fast_api.wellknown_api import (
+from skillberry_store.fast_api.publish_api import (
     NpxPublisher,
-    register_wellknown_api,
+    register_publish_api,
 )
 from skillberry_store.access_control.audit import (
     audit_rbac_coverage,
@@ -334,7 +334,7 @@ class SBS(FastAPI):
         # genuinely does not exist rather than existing-but-refusing. These
         # routes carry no @requires marker by design — they are in the ACL
         # unauthenticated allow-list (§4.5).
-        register_wellknown_api(self, publisher=self.state.npx, service=skills_service)
+        register_publish_api(self, publisher=self.state.npx, service=skills_service)
 
         # Translate a refused plugin store operation to HTTP once, on the app,
         # rather than in each of the plugins. A denial is the caller's

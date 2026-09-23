@@ -25,9 +25,18 @@ and [docs/design/npx.md](design/npx.md)).
 | Configuration          | Default value                          | Environment Variables Override | Notes |
 |------------------------|----------------------------------------|--------------------------------|-------|
 | npx publishing enabled | `false`                                | *(none — `npx_publish` in `access_control_config.yaml`)* | Deliberately **not** an environment variable: it is the one setting that makes skill **content**, not just metadata, readable without a session, so it is declared beside `unauthenticated_paths` where the rest of the access-control posture is reviewed. When off, the `/pub/*` routes are not registered at all |
-| Publish token secret   | generated on first use                 | `SBS_WELLKNOWN_SECRET`         | HMAC secret the per-skill capability tokens are derived from. Set it to keep install URLs stable across deployments and restarts; **rotating it is the global revoke**, after which everyone re-copies their command |
-| Publish secret file    | `~/.skillberry/wellknown_secret.json`  | `SBS_WELLKNOWN_SECRET_FILE`    | Where a generated secret is persisted (atomic write, mode 0600) so the next boot reuses it. Ignored when `SBS_WELLKNOWN_SECRET` is set |
-| Publishable namespaces | *(unset — any namespace)*              | `SBS_WELLKNOWN_NAMESPACES`     | Comma-separated allowlist restricting which namespaces a namespace-scoped install URL may name. Per-skill URLs are unaffected. An empty value is treated as unset, not as "none" |
+| Publish seed           | generated on first use                 | `SBS_PUBLISH_SEED`             | The value each per-skill install URL is derived from. Set it to keep install URLs stable across deployments and restarts; **rotating it is the global revoke**, after which everyone re-copies their command. **Confidential** — see the note below |
+| Publish seed file      | `~/.skillberry/publish_seed.json`      | `SBS_PUBLISH_SEED_FILE`        | Where a generated seed is persisted (atomic write, mode 0600) so the next boot reuses it. Ignored when `SBS_PUBLISH_SEED` is set |
+| Publishable namespaces | *(unset — any namespace)*              | `SBS_PUBLISH_NAMESPACES`       | Comma-separated allowlist restricting which namespaces a namespace-scoped install URL may name. Per-skill URLs are unaffected. An empty value is treated as unset, not as "none" |
+
+> **Handle the publish seed as confidential.** Its name is deliberately plain —
+> repository scanners match on `secret`/`key`/`token` identifiers — but an install
+> URL is `HMAC(seed, "tenant|scope")`, so anyone who can read the seed can derive
+> a working URL for any tenant and any skill **offline, with no authentication**.
+> Tenant ids are in the access-control config and slugs come from skill names, so
+> the seed is the only thing making a URL unguessable. Do not commit it, log it,
+> or bake it into an image; pass it at run time.
+
 
 > **Telemetry.** `DO_NOT_TRACK=1` (or `DISABLE_TELEMETRY=1`) is read by the **npx
 > CLI on the user's machine**, not by the store — SBS cannot set or enforce it,

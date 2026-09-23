@@ -5,7 +5,7 @@
 
 Everything here runs against a stub service so the slug / HEAD / digest / cache
 contracts are exercised without an app or a store on disk. The HTTP surface is
-covered by ``tests/fast_api/test_wellknown_api.py``.
+covered by ``tests/fast_api/test_publish_api.py``.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import zipfile
 import pytest
 import yaml
 
-from skillberry_store.tools import wellknown as wk
+from skillberry_store.tools import publish as pub
 
 
 # --------------------------------------------------------------------------- #
@@ -84,9 +84,9 @@ def make_skill(uuid, name, description="A skill.", created="2024-01-01", **extra
 
 @pytest.fixture(autouse=True)
 def _clean_cache():
-    wk.get_cache().clear()
+    pub.get_cache().clear()
     yield
-    wk.get_cache().clear()
+    pub.get_cache().clear()
 
 
 # --------------------------------------------------------------------------- #
@@ -114,7 +114,7 @@ def _clean_cache():
     ],
 )
 def test_to_slug(name, expected):
-    assert wk.to_slug(name) == expected
+    assert pub.to_slug(name) == expected
 
 
 @pytest.mark.parametrize(
@@ -123,26 +123,26 @@ def test_to_slug(name, expected):
 )
 def test_to_slug_never_ends_in_a_hyphen_at_the_cap(name):
     """A 64-char cut landing on a hyphen must not leave an edge hyphen."""
-    slug = wk.to_slug(name)
+    slug = pub.to_slug(name)
     assert len(slug) <= 64
-    assert wk.is_valid_slug(slug)
+    assert pub.is_valid_slug(slug)
 
 
 @pytest.mark.parametrize("slug", ["a", "pdf-forms", "a1-b2-c3", "123"])
 def test_is_valid_slug_accepts_cli_legal_names(slug):
-    assert wk.is_valid_slug(slug)
+    assert pub.is_valid_slug(slug)
 
 
 @pytest.mark.parametrize("slug", ["", "-a", "a-", "a--b", "A", "a_b", "a b", "a" * 65])
 def test_is_valid_slug_rejects_everything_the_cli_would(slug):
-    assert not wk.is_valid_slug(slug)
+    assert not pub.is_valid_slug(slug)
 
 
 def test_every_slug_to_slug_produces_is_cli_valid():
     for name in ["PDF Forms", "pdf--forms", "_x_", "a" * 80, "Release Notes (v2)!"]:
-        slug = wk.to_slug(name)
+        slug = pub.to_slug(name)
         if slug:
-            assert wk.is_valid_slug(slug), slug
+            assert pub.is_valid_slug(slug), slug
 
 
 # --------------------------------------------------------------------------- #
@@ -154,10 +154,10 @@ def test_assign_slugs_gives_each_skill_a_unique_slug():
         make_skill("u2", "pdf-forms", created="2024-02-01"),
         make_skill("u3", "pdf_forms", created="2024-03-01"),
     ]
-    assigned = wk.assign_slugs(skills)
+    assigned = pub.assign_slugs(skills)
     assert len(assigned) == 3
     assert assigned["pdf-forms"]["uuid"] == "u1"  # oldest keeps the bare slug
-    assert all(wk.is_valid_slug(s) for s in assigned)
+    assert all(pub.is_valid_slug(s) for s in assigned)
 
 
 def test_oldest_created_at_keeps_the_bare_slug():
@@ -165,7 +165,7 @@ def test_oldest_created_at_keeps_the_bare_slug():
         make_skill("zzz", "PDF Forms", created="2024-01-01"),
         make_skill("aaa", "pdf-forms", created="2024-06-01"),
     ]
-    assigned = wk.assign_slugs(skills)
+    assigned = pub.assign_slugs(skills)
     assert assigned["pdf-forms"]["uuid"] == "zzz"
 
 
@@ -174,7 +174,7 @@ def test_uuid_breaks_a_created_at_tie():
         make_skill("bbbb", "PDF Forms", created="2024-01-01"),
         make_skill("aaaa", "pdf-forms", created="2024-01-01"),
     ]
-    assigned = wk.assign_slugs(skills)
+    assigned = pub.assign_slugs(skills)
     assert assigned["pdf-forms"]["uuid"] == "aaaa"
 
 
@@ -182,11 +182,11 @@ def test_adding_a_third_colliding_skill_shifts_no_existing_slug():
     """The §5.6 stability rule: a shifted slug orphans an installed copy."""
     first = make_skill("u1", "PDF Forms", created="2024-01-01")
     second = make_skill("u2", "pdf_forms", created="2024-02-01")
-    before = {s["uuid"]: k for k, s in wk.assign_slugs([first, second]).items()}
+    before = {s["uuid"]: k for k, s in pub.assign_slugs([first, second]).items()}
 
     # A newcomer whose uuid sorts *below* both existing ones.
     third = make_skill("0000", "pdf-forms", created="2024-09-01")
-    after = {s["uuid"]: k for k, s in wk.assign_slugs([first, second, third]).items()}
+    after = {s["uuid"]: k for k, s in pub.assign_slugs([first, second, third]).items()}
 
     assert after["u1"] == before["u1"]
     assert after["u2"] == before["u2"]
@@ -200,15 +200,15 @@ def test_a_suffixed_slug_never_displaces_a_bare_one():
         make_skill("u0", "pdf forms", created="2024-01-01"),
         make_skill("u9", "PDF-Forms-a3f1", created="2024-07-01"),
     ]
-    assigned = wk.assign_slugs(colliding)
+    assigned = pub.assign_slugs(colliding)
     assert assigned["pdf-forms-a3f1"]["uuid"] == "u9"
     assert assigned["pdf-forms"]["uuid"] == "u0"
     assert len(assigned) == 3
 
 
 def test_empty_slug_is_skipped_and_logged(caplog):
-    with caplog.at_level(logging.WARNING, logger="skillberry_store.tools.wellknown"):
-        assigned = wk.assign_slugs([make_skill("u1", "!!!"), make_skill("u2", "ok")])
+    with caplog.at_level(logging.WARNING, logger="skillberry_store.tools.publish"):
+        assigned = pub.assign_slugs([make_skill("u1", "!!!"), make_skill("u2", "ok")])
     assert list(assigned) == ["ok"]
     assert "has no valid slug" in caplog.text
 
@@ -219,9 +219,9 @@ def test_assign_slugs_respects_the_64_char_cap_on_suffixed_slugs():
         make_skill("u1", long_name, created="2024-01-01"),
         make_skill("u2", long_name.upper(), created="2024-02-01"),
     ]
-    assigned = wk.assign_slugs(skills)
+    assigned = pub.assign_slugs(skills)
     assert len(assigned) == 2
-    assert all(len(s) <= 64 and wk.is_valid_slug(s) for s in assigned)
+    assert all(len(s) <= 64 and pub.is_valid_slug(s) for s in assigned)
 
 
 # --------------------------------------------------------------------------- #
@@ -233,7 +233,7 @@ def test_head_skills_returns_one_entry_per_name():
     v2 = make_skill("u2", "demo", created="2024-02-01")
     v3 = make_skill("u3", "demo", created="2024-03-01")
     service = FakeService([v1, v2, v3])  # last wins in the name cache
-    heads = wk.head_skills(service)
+    heads = pub.head_skills(service)
     assert [h["uuid"] for h in heads] == ["u3"]
     assert heads[0]["uuid"] == service.handler.name_cache.get_head("demo")
 
@@ -241,8 +241,8 @@ def test_head_skills_returns_one_entry_per_name():
 def test_head_skills_skips_an_unreadable_head(caplog):
     service = FakeService([make_skill("u1", "ok")])
     service.handler.name_cache._heads["ghost"] = "missing-uuid"
-    with caplog.at_level(logging.WARNING, logger="skillberry_store.tools.wellknown"):
-        heads = wk.head_skills(service)
+    with caplog.at_level(logging.WARNING, logger="skillberry_store.tools.publish"):
+        heads = pub.head_skills(service)
     assert [h["uuid"] for h in heads] == ["u1"]
     assert "Skipping skill ghost" in caplog.text
 
@@ -250,9 +250,9 @@ def test_head_skills_skips_an_unreadable_head(caplog):
 def test_is_head():
     head = make_skill("u2", "demo")
     service = FakeService([make_skill("u1", "demo"), head])
-    assert wk.is_head(service, head)
-    assert not wk.is_head(service, make_skill("u1", "demo"))
-    assert not wk.is_head(service, {"uuid": "u1"})
+    assert pub.is_head(service, head)
+    assert not pub.is_head(service, make_skill("u1", "demo"))
+    assert not pub.is_head(service, {"uuid": "u1"})
 
 
 def test_index_is_built_from_heads_not_every_revision():
@@ -260,7 +260,7 @@ def test_index_is_built_from_heads_not_every_revision():
     service = FakeService(
         [make_skill(f"u{i}", "demo", created=f"2024-0{i}-01") for i in (1, 2, 3)]
     )
-    assigned = wk.assign_slugs(wk.head_skills(service))
+    assigned = pub.assign_slugs(pub.head_skills(service))
     assert list(assigned) == ["demo"]
     assert assigned["demo"]["uuid"] == "u3"
 
@@ -270,13 +270,13 @@ def test_index_is_built_from_heads_not_every_revision():
 # --------------------------------------------------------------------------- #
 def test_namespaces_of():
     skill = make_skill("u1", "a", tags=["namespace:data-eng", "python", "namespace:x"])
-    assert wk.namespaces_of(skill) == ["data-eng", "x"]
-    assert wk.namespaces_of(make_skill("u2", "b")) == []
+    assert pub.namespaces_of(skill) == ["data-eng", "x"]
+    assert pub.namespaces_of(make_skill("u2", "b")) == []
 
 
 def test_authorized_skills_with_no_acl_returns_every_head():
     service = FakeService([make_skill("u1", "a"), make_skill("u2", "b")])
-    got = wk.authorized_skills(service, None, None)
+    got = pub.authorized_skills(service, None, None)
     assert {s["uuid"] for s in got} == {"u1", "u2"}
 
 
@@ -288,7 +288,7 @@ def test_authorized_skills_filters_by_namespace_scope():
             make_skill("u3", "c"),
         ]
     )
-    got = wk.authorized_skills(service, None, None, scope="ns:data-eng")
+    got = pub.authorized_skills(service, None, None, scope="ns:data-eng")
     assert [s["uuid"] for s in got] == ["u1"]
 
 
@@ -305,7 +305,7 @@ def test_authorized_skills_consults_the_pdp_and_denies(monkeypatch):
     monkeypatch.setattr(pdp, "authorize", spy)
     service = FakeService([make_skill("u1", "a")])
     cfg = type("Cfg", (), {"mode": "standalone"})()
-    assert wk.authorized_skills(service, pdp.Subject(tenant_id="t"), cfg) == []
+    assert pub.authorized_skills(service, pdp.Subject(tenant_id="t"), cfg) == []
     assert calls == [("skills", "list")]
 
 
@@ -321,18 +321,18 @@ def test_authorized_skills_allows_when_the_pdp_allows(monkeypatch):
     monkeypatch.setattr(pdp, "authorize", spy)
     service = FakeService([make_skill("u1", "a")])
     cfg = type("Cfg", (), {"mode": "standalone"})()
-    got = wk.authorized_skills(service, pdp.Subject(tenant_id="t"), cfg)
+    got = pub.authorized_skills(service, pdp.Subject(tenant_id="t"), cfg)
     assert [s["uuid"] for s in got] == ["u1"]
     assert calls == [("skills", "list")]
 
 
 def test_authorized_skills_denies_an_absent_subject_under_acl():
     cfg = type("Cfg", (), {"mode": "standalone"})()
-    assert wk.authorized_skills(FakeService([make_skill("u1", "a")]), None, cfg) == []
+    assert pub.authorized_skills(FakeService([make_skill("u1", "a")]), None, cfg) == []
 
 
 # --------------------------------------------------------------------------- #
-# SBS_WELLKNOWN_NAMESPACES (§4.3)
+# SBS_PUBLISH_NAMESPACES (§4.3)
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(
     "raw,expected",
@@ -347,76 +347,76 @@ def test_authorized_skills_denies_an_absent_subject_under_acl():
 )
 def test_allowed_namespaces(monkeypatch, raw, expected):
     if raw is None:
-        monkeypatch.delenv(wk.NAMESPACES_ENV_VAR, raising=False)
+        monkeypatch.delenv(pub.NAMESPACES_ENV_VAR, raising=False)
     else:
-        monkeypatch.setenv(wk.NAMESPACES_ENV_VAR, raw)
-    assert wk.allowed_namespaces() == expected
+        monkeypatch.setenv(pub.NAMESPACES_ENV_VAR, raw)
+    assert pub.allowed_namespaces() == expected
 
 
 def test_the_namespace_allowlist_restricts_which_scopes_resolve(monkeypatch):
     service = FakeService(
         [
             make_skill("u1", "a", tags=["namespace:data-eng"]),
-            make_skill("u2", "b", tags=["namespace:secret"]),
+            make_skill("u2", "b", tags=["namespace:seed"]),
         ]
     )
-    monkeypatch.setenv(wk.NAMESPACES_ENV_VAR, "data-eng")
-    assert [s["uuid"] for s in wk.authorized_skills(service, None, None, "ns:data-eng")] == [
+    monkeypatch.setenv(pub.NAMESPACES_ENV_VAR, "data-eng")
+    assert [s["uuid"] for s in pub.authorized_skills(service, None, None, "ns:data-eng")] == [
         "u1"
     ]
-    assert wk.authorized_skills(service, None, None, "ns:secret") == []
+    assert pub.authorized_skills(service, None, None, "ns:seed") == []
 
 
 def test_the_namespace_allowlist_does_not_affect_other_scopes(monkeypatch):
-    service = FakeService([make_skill("u1", "a", tags=["namespace:secret"])])
-    monkeypatch.setenv(wk.NAMESPACES_ENV_VAR, "data-eng")
-    assert len(wk.authorized_skills(service, None, None, "*")) == 1
+    service = FakeService([make_skill("u1", "a", tags=["namespace:seed"])])
+    monkeypatch.setenv(pub.NAMESPACES_ENV_VAR, "data-eng")
+    assert len(pub.authorized_skills(service, None, None, "*")) == 1
 
 
 # --------------------------------------------------------------------------- #
 # The per-skill internal opt-out (§4.3)
 # --------------------------------------------------------------------------- #
 def test_is_internal_reads_an_ordinary_tag():
-    assert wk.is_internal(make_skill("u1", "a", tags=[wk.INTERNAL_TAG]))
-    assert not wk.is_internal(make_skill("u2", "b"))
-    assert not wk.is_internal(make_skill("u3", "c", tags=["other"]))
+    assert pub.is_internal(make_skill("u1", "a", tags=[pub.INTERNAL_TAG]))
+    assert not pub.is_internal(make_skill("u2", "b"))
+    assert not pub.is_internal(make_skill("u3", "c", tags=["other"]))
 
 
 # --------------------------------------------------------------------------- #
 # normalise_description (§1.3, §5.3 #2/#3)
 # --------------------------------------------------------------------------- #
 def test_normalise_description_passes_ordinary_text_through():
-    assert wk.normalise_description("Fill PDF forms.", "d") == "Fill PDF forms."
+    assert pub.normalise_description("Fill PDF forms.", "d") == "Fill PDF forms."
 
 
 @pytest.mark.parametrize("value", [None, "", "   ", 42, [], {}])
 def test_normalise_description_substitutes_a_fallback(value):
-    assert wk.normalise_description(value, "pdf-forms") == "Skill: pdf-forms"
+    assert pub.normalise_description(value, "pdf-forms") == "Skill: pdf-forms"
 
 
 def test_normalise_description_truncates_to_the_v2_limit():
-    got = wk.normalise_description("word " * 500, "d")
-    assert len(got) <= wk.MAX_DESCRIPTION_CHARS
+    got = pub.normalise_description("word " * 500, "d")
+    assert len(got) <= pub.MAX_DESCRIPTION_CHARS
     assert not got.endswith(" ")
 
 
 def test_normalise_description_truncates_on_a_word_boundary():
     text = "a" * 600 + " " + "b" * 600
-    got = wk.normalise_description(text, "d")
+    got = pub.normalise_description(text, "d")
     assert got == "a" * 600
 
 
 def test_normalise_description_ignores_a_word_boundary_too_early_to_help():
     """A boundary in the first half would throw away more than it saves."""
     text = "a" * 100 + " " + "b" * 2000
-    got = wk.normalise_description(text, "d")
-    assert len(got) == wk.MAX_DESCRIPTION_CHARS
-    assert got == text[: wk.MAX_DESCRIPTION_CHARS]
+    got = pub.normalise_description(text, "d")
+    assert len(got) == pub.MAX_DESCRIPTION_CHARS
+    assert got == text[: pub.MAX_DESCRIPTION_CHARS]
 
 
 def test_normalise_description_handles_a_single_unbroken_word():
-    got = wk.normalise_description("z" * 2000, "d")
-    assert got == "z" * wk.MAX_DESCRIPTION_CHARS
+    got = pub.normalise_description("z" * 2000, "d")
+    assert got == "z" * pub.MAX_DESCRIPTION_CHARS
 
 
 # --------------------------------------------------------------------------- #
@@ -424,36 +424,36 @@ def test_normalise_description_handles_a_single_unbroken_word():
 # --------------------------------------------------------------------------- #
 def test_safe_archive_paths_passes_clean_input_through():
     files = {"SKILL.md": b"x", "scripts/a.py": b"y"}
-    assert wk.safe_archive_paths(files) is files
+    assert pub.safe_archive_paths(files) is files
 
 
 def test_safe_archive_paths_raises_naming_every_offender():
-    with pytest.raises(wk.UnsafeArchivePathError) as excinfo:
-        wk.safe_archive_paths({"SKILL.md": b"x", "../a": b"y", "/b": b"z"})
+    with pytest.raises(pub.UnsafeArchivePathError) as excinfo:
+        pub.safe_archive_paths({"SKILL.md": b"x", "../a": b"y", "/b": b"z"})
     assert excinfo.value.paths == ["../a", "/b"]
 
 
 def test_check_archive_limits_rejects_too_many_files():
-    files = {f"f{i}.txt": b"x" for i in range(wk.MAX_ARCHIVE_FILES + 1)}
-    with pytest.raises(wk.ArchiveTooLargeError, match="file cap"):
-        wk.check_archive_limits(files)
+    files = {f"f{i}.txt": b"x" for i in range(pub.MAX_ARCHIVE_FILES + 1)}
+    with pytest.raises(pub.ArchiveTooLargeError, match="file cap"):
+        pub.check_archive_limits(files)
 
 
 def test_check_archive_limits_rejects_an_oversized_archive():
-    files = {"big.bin": b"x" * (wk.MAX_ARCHIVE_BYTES + 1)}
-    with pytest.raises(wk.ArchiveTooLargeError, match="byte cap"):
-        wk.check_archive_limits(files)
+    files = {"big.bin": b"x" * (pub.MAX_ARCHIVE_BYTES + 1)}
+    with pytest.raises(pub.ArchiveTooLargeError, match="byte cap"):
+        pub.check_archive_limits(files)
 
 
 def test_check_archive_limits_accepts_a_normal_archive():
     files = {"SKILL.md": b"x" * 1000}
-    assert wk.check_archive_limits(files) is files
+    assert pub.check_archive_limits(files) is files
 
 
 def test_offending_file_tags_names_the_tag_the_operator_wrote():
     snippets = [{"tags": ["file:../../escape.txt"], "content": "x"}]
     tools = [{"tags": ["file:ok.py"], "name": "t"}]
-    assert wk.offending_file_tags(
+    assert pub.offending_file_tags(
         ["../../escape.txt"], tools, snippets, "demo"
     ) == ["file:../../escape.txt"]
 
@@ -491,7 +491,7 @@ def _service_with_files():
 
 
 def test_build_entry_produces_a_root_level_skill_md():
-    entry = wk.build_entry(_service_with_files(), "u1", "pdf-forms")
+    entry = pub.build_entry(_service_with_files(), "u1", "pdf-forms")
     with zipfile.ZipFile(io.BytesIO(entry.payload)) as zf:
         names = zf.namelist()
         assert "SKILL.md" in names
@@ -502,7 +502,7 @@ def test_build_entry_produces_a_root_level_skill_md():
 
 def test_build_entry_emits_the_slug_as_the_frontmatter_name():
     """§5.8 #1: ``name: PDF Forms`` in a ``pdf-forms/`` directory is a bug."""
-    entry = wk.build_entry(_service_with_files(), "u1", "pdf-forms")
+    entry = pub.build_entry(_service_with_files(), "u1", "pdf-forms")
     with zipfile.ZipFile(io.BytesIO(entry.payload)) as zf:
         content = zf.read("SKILL.md").decode()
     body = content.split("---")[1]
@@ -519,32 +519,32 @@ def _frontmatter_of(entry):
 def test_build_entry_records_the_sbs_name_when_it_differs_from_the_slug():
     """The frontmatter ``name`` is the slug, so the store's own name would
     otherwise be lost from the file an agent (or a re-import) reads."""
-    entry = wk.build_entry(_service_with_files(), "u1", "pdf-forms")
+    entry = pub.build_entry(_service_with_files(), "u1", "pdf-forms")
     assert _frontmatter_of(entry)["metadata"] == {"sbs_name": "PDF Forms"}
 
 
 def test_build_entry_omits_metadata_when_the_name_already_is_the_slug():
     service = FakeService([make_skill("u1", "demo")])
-    assert "metadata" not in _frontmatter_of(wk.build_entry(service, "u1", "demo"))
+    assert "metadata" not in _frontmatter_of(pub.build_entry(service, "u1", "demo"))
 
 
 def test_an_internal_tagged_skill_emits_metadata_internal():
     """The CLI hides such a skill from a multi-entry install list unless
     INSTALL_INTERNAL_SKILLS=1 — a per-skill opt-out (§1.4, §4.3)."""
-    service = FakeService([make_skill("u1", "demo", tags=[wk.INTERNAL_TAG])])
-    assert _frontmatter_of(wk.build_entry(service, "u1", "demo"))["metadata"] == {
+    service = FakeService([make_skill("u1", "demo", tags=[pub.INTERNAL_TAG])])
+    assert _frontmatter_of(pub.build_entry(service, "u1", "demo"))["metadata"] == {
         "internal": True
     }
 
 
 def test_an_internal_tagged_skill_is_still_published():
     """It has to be, or its own per-skill install URL would stop working."""
-    service = FakeService([make_skill("u1", "demo", tags=[wk.INTERNAL_TAG])])
-    assert wk.publishable_entry(service, "u1", "demo") is not None
+    service = FakeService([make_skill("u1", "demo", tags=[pub.INTERNAL_TAG])])
+    assert pub.publishable_entry(service, "u1", "demo") is not None
 
 
 def test_build_entry_digest_matches_the_payload():
-    entry = wk.build_entry(_service_with_files(), "u1", "pdf-forms")
+    entry = pub.build_entry(_service_with_files(), "u1", "pdf-forms")
     assert entry.digest == "sha256:" + hashlib.sha256(entry.payload).hexdigest()
     assert entry.digest.startswith("sha256:")
     assert len(entry.digest) == len("sha256:") + 64
@@ -552,13 +552,13 @@ def test_build_entry_digest_matches_the_payload():
 
 def test_build_entry_preserves_identity_and_normalises_the_description():
     service = FakeService([make_skill("u1", "Demo", description="  ")])
-    entry = wk.build_entry(service, "u1", "demo")
+    entry = pub.build_entry(service, "u1", "demo")
     assert (entry.uuid, entry.name, entry.slug) == ("u1", "Demo", "demo")
     assert entry.description == "Skill: Demo"
 
 
 def test_index_entry_url_is_relative_and_carries_no_token():
-    entry = wk.build_entry(_service_with_files(), "u1", "pdf-forms")
+    entry = pub.build_entry(_service_with_files(), "u1", "pdf-forms")
     item = entry.index_entry()
     assert item == {
         "name": "pdf-forms",
@@ -570,8 +570,8 @@ def test_index_entry_url_is_relative_and_carries_no_token():
 
 
 def test_build_index_shape_matches_the_v2_schema_literal():
-    entry = wk.build_entry(_service_with_files(), "u1", "pdf-forms")
-    index = wk.build_index([entry])
+    entry = pub.build_entry(_service_with_files(), "u1", "pdf-forms")
+    index = pub.build_index([entry])
     assert index["$schema"] == (
         "https://schemas.agentskills.io/discovery/0.2.0/schema.json"
     )
@@ -589,8 +589,8 @@ def test_build_entry_raises_on_an_unsafe_file_tag():
         }
     ]
     service = FakeService([skill], snippets=snippets)
-    with pytest.raises(wk.UnsafeArchivePathError) as excinfo:
-        wk.build_entry(service, "u1", "demo")
+    with pytest.raises(pub.UnsafeArchivePathError) as excinfo:
+        pub.build_entry(service, "u1", "demo")
     assert excinfo.value.tags == ["file:../../escape.txt"]
 
 
@@ -605,25 +605,25 @@ def test_publishable_entry_excludes_an_unsafe_skill_with_a_warning(caplog):
         }
     ]
     service = FakeService([skill], snippets=snippets)
-    with caplog.at_level(logging.WARNING, logger="skillberry_store.tools.wellknown"):
-        assert wk.publishable_entry(service, "u1", "demo") is None
+    with caplog.at_level(logging.WARNING, logger="skillberry_store.tools.publish"):
+        assert pub.publishable_entry(service, "u1", "demo") is None
     assert "demo" in caplog.text
     assert "file:../../escape.txt" in caplog.text
 
 
 def test_publishable_entry_returns_the_entry_for_a_good_skill():
-    assert wk.publishable_entry(_service_with_files(), "u1", "pdf-forms") is not None
+    assert pub.publishable_entry(_service_with_files(), "u1", "pdf-forms") is not None
 
 
 def test_publishable_entry_applies_no_state_gate():
     """§4.3.1: a ``state: new`` draft is publishable — it is already visible."""
     service = FakeService([make_skill("u1", "draft", state="new")])
-    assert wk.publishable_entry(service, "u1", "draft") is not None
+    assert pub.publishable_entry(service, "u1", "draft") is not None
 
 
 def test_publishable_entry_swallows_a_missing_skill(caplog):
-    with caplog.at_level(logging.WARNING, logger="skillberry_store.tools.wellknown"):
-        assert wk.publishable_entry(FakeService([]), "nope", "nope") is None
+    with caplog.at_level(logging.WARNING, logger="skillberry_store.tools.publish"):
+        assert pub.publishable_entry(FakeService([]), "nope", "nope") is None
 
 
 # --------------------------------------------------------------------------- #
@@ -631,8 +631,8 @@ def test_publishable_entry_swallows_a_missing_skill(caplog):
 # --------------------------------------------------------------------------- #
 def test_repeat_builds_hit_the_cache():
     service = _service_with_files()
-    first = wk.build_entry(service, "u1", "pdf-forms")
-    second = wk.build_entry(service, "u1", "pdf-forms")
+    first = pub.build_entry(service, "u1", "pdf-forms")
+    second = pub.build_entry(service, "u1", "pdf-forms")
     assert first is second
     assert service.gather_calls == 2  # gathering is cheap; zipping is not
 
@@ -640,82 +640,82 @@ def test_repeat_builds_hit_the_cache():
 def test_touching_nothing_does_not_change_the_digest():
     service = _service_with_files()
     assert (
-        wk.build_entry(service, "u1", "pdf-forms").digest
-        == wk.build_entry(service, "u1", "pdf-forms").digest
+        pub.build_entry(service, "u1", "pdf-forms").digest
+        == pub.build_entry(service, "u1", "pdf-forms").digest
     )
 
 
 def test_mutating_the_skill_changes_the_digest():
     service = _service_with_files()
-    before = wk.build_entry(service, "u1", "pdf-forms").digest
+    before = pub.build_entry(service, "u1", "pdf-forms").digest
     service.skills["u1"]["description"] = "Changed."
     service.skills["u1"]["modified_at"] = "2024-05-05"
-    assert wk.build_entry(service, "u1", "pdf-forms").digest != before
+    assert pub.build_entry(service, "u1", "pdf-forms").digest != before
 
 
 def test_mutating_a_tool_changes_the_digest():
     service = _service_with_files()
-    before = wk.build_entry(service, "u1", "pdf-forms").digest
+    before = pub.build_entry(service, "u1", "pdf-forms").digest
     service.modules["fill"] = "print('changed')"
     service.tools["t1"]["modified_at"] = "2024-05-05"
-    assert wk.build_entry(service, "u1", "pdf-forms").digest != before
+    assert pub.build_entry(service, "u1", "pdf-forms").digest != before
 
 
 def test_mutating_a_snippet_changes_the_digest():
     service = _service_with_files()
-    before = wk.build_entry(service, "u1", "pdf-forms").digest
+    before = pub.build_entry(service, "u1", "pdf-forms").digest
     service.snippets["s1"]["content"] = "# changed"
     service.snippets["s1"]["modified_at"] = "2024-05-05"
-    assert wk.build_entry(service, "u1", "pdf-forms").digest != before
+    assert pub.build_entry(service, "u1", "pdf-forms").digest != before
 
 
 def test_a_none_modified_at_rebuilds_every_call():
     """§5.8 #3: a ``None`` key that never changes would never invalidate."""
     service = FakeService([make_skill("u1", "demo")])
     service.skills["u1"]["modified_at"] = None
-    assert wk.cache_key(service.skills["u1"], [], []) is None
-    first = wk.build_entry(service, "u1", "demo")
-    second = wk.build_entry(service, "u1", "demo")
+    assert pub.cache_key(service.skills["u1"], [], []) is None
+    first = pub.build_entry(service, "u1", "demo")
+    second = pub.build_entry(service, "u1", "demo")
     assert first is not second
     assert first.digest == second.digest  # same content, still deterministic
 
 
 def test_cache_key_is_none_when_a_tool_has_no_timestamp():
     skill = make_skill("u1", "demo")
-    assert wk.cache_key(skill, [{"modified_at": None}], []) is None
-    assert wk.cache_key(skill, [{"modified_at": "2024-01-01"}], []) is not None
+    assert pub.cache_key(skill, [{"modified_at": None}], []) is None
+    assert pub.cache_key(skill, [{"modified_at": "2024-01-01"}], []) is not None
 
 
 def test_cache_by_digest_serves_the_exact_bytes_after_an_edit():
     """The race-closing lookup behind ``?digest=`` (§5.14 option B)."""
     service = _service_with_files()
-    old = wk.build_entry(service, "u1", "pdf-forms")
+    old = pub.build_entry(service, "u1", "pdf-forms")
     service.skills["u1"]["description"] = "Changed."
     service.skills["u1"]["modified_at"] = "2024-05-05"
-    new = wk.build_entry(service, "u1", "pdf-forms")
+    new = pub.build_entry(service, "u1", "pdf-forms")
     assert new.digest != old.digest
 
-    cache = wk.get_cache()
+    cache = pub.get_cache()
     assert cache.by_digest("u1", "pdf-forms", old.digest).payload == old.payload
     assert cache.by_digest("u1", "pdf-forms", new.digest).payload == new.payload
 
 
 def test_cache_by_digest_refuses_a_digest_belonging_to_another_skill():
     service = _service_with_files()
-    entry = wk.build_entry(service, "u1", "pdf-forms")
-    assert wk.get_cache().by_digest("other", "pdf-forms", entry.digest) is None
-    assert wk.get_cache().by_digest("u1", "other-slug", entry.digest) is None
+    entry = pub.build_entry(service, "u1", "pdf-forms")
+    assert pub.get_cache().by_digest("other", "pdf-forms", entry.digest) is None
+    assert pub.get_cache().by_digest("u1", "other-slug", entry.digest) is None
 
 
 def test_cache_by_digest_misses_an_unknown_digest():
     service = _service_with_files()
-    wk.build_entry(service, "u1", "pdf-forms")
-    assert wk.get_cache().by_digest("u1", "pdf-forms", "sha256:" + "0" * 64) is None
+    pub.build_entry(service, "u1", "pdf-forms")
+    assert pub.get_cache().by_digest("u1", "pdf-forms", "sha256:" + "0" * 64) is None
 
 
 def test_cache_evicts_rather_than_growing_without_limit():
     """§5.8 #2: a miss is cheap, a leak is not — the bound must actually bind."""
-    cache = wk.ArtifactCache(max_bytes=4096)
+    cache = pub.ArtifactCache(max_bytes=4096)
     # Incompressible payloads, so the bound is reached in a handful of entries
     # rather than depending on how well deflate does on repeated bytes.
     blobs = [secrets.token_hex(8192) for _ in range(10)]
@@ -732,7 +732,7 @@ def test_cache_evicts_rather_than_growing_without_limit():
         ],
     )
     for i in range(10):
-        wk.build_entry(service, f"u{i}", f"s{i}", cache=cache)
+        pub.build_entry(service, f"u{i}", f"s{i}", cache=cache)
     assert cache.size() < 10
     # One entry is always retained: evicting the archive just built would make
     # the immediately-following artifact fetch a guaranteed miss.
@@ -740,8 +740,8 @@ def test_cache_evicts_rather_than_growing_without_limit():
 
 
 def test_cache_clear_resets_accounting():
-    cache = wk.ArtifactCache()
-    wk.build_entry(_service_with_files(), "u1", "pdf-forms", cache=cache)
+    cache = pub.ArtifactCache()
+    pub.build_entry(_service_with_files(), "u1", "pdf-forms", cache=cache)
     assert cache.size() == 1
     cache.clear()
     assert (cache.size(), cache.total_bytes()) == (0, 0)
@@ -751,23 +751,23 @@ def test_cache_clear_resets_accounting():
 # The install command (§4.3.5)
 # --------------------------------------------------------------------------- #
 def test_npx_install_command_shape():
-    assert wk.npx_install_command("https://store.example.com", "TOKEN") == (
+    assert pub.npx_install_command("https://store.example.com", "TOKEN") == (
         "npx skills add https://store.example.com/pub/TOKEN -y -a claude-code"
     )
 
 
 def test_npx_install_command_honours_the_agent_picker():
-    assert wk.npx_install_command("https://s", "T", agent="cursor").endswith(
+    assert pub.npx_install_command("https://s", "T", agent="cursor").endswith(
         "-y -a cursor"
     )
 
 
 def test_npx_install_command_never_emits_a_double_slash():
-    assert "//pub/" not in wk.npx_install_command("https://store.example.com/", "T")
+    assert "//pub/" not in pub.npx_install_command("https://store.example.com/", "T")
 
 
 def test_npx_install_url_shape():
-    assert wk.npx_install_url("http://localhost:8000/", "pdf-forms") == (
+    assert pub.npx_install_url("http://localhost:8000/", "pdf-forms") == (
         "http://localhost:8000/pub/pdf-forms"
     )
 
@@ -780,7 +780,7 @@ def test_install_command_carries_no_env_var_prefix():
     this one invocation, not the `npx skills update` runs that follow. The
     telemetry opt-out is documented as an exported `DO_NOT_TRACK=1` instead.
     """
-    command = wk.npx_install_command("https://s", "T")
+    command = pub.npx_install_command("https://s", "T")
     assert command.startswith("npx skills add ")
     assert "=" not in command.split(" ", 1)[0]
     assert "DISABLE_TELEMETRY" not in command
@@ -789,7 +789,7 @@ def test_install_command_carries_no_env_var_prefix():
 
 def test_install_command_pins_an_agent_and_takes_all_skills():
     """``-y`` without ``-a`` installs into ~75 agent directories (§4.3.1)."""
-    command = wk.npx_install_command("https://s", "T")
+    command = pub.npx_install_command("https://s", "T")
     assert " -y " in command
     assert " -a " in command
     assert " -s " not in command  # no per-skill flag: the URL names the skill

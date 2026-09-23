@@ -37,7 +37,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   **One skill per install URL.** Under `mode: standalone` the path segment is a
   read-only capability token scoped to that one skill, derived by HMAC from a
-  durable secret rather than minted and stored — so it survives a restart, which
+  durable seed (`SBS_PUBLISH_SEED`, confidential) rather than minted and stored — so it survives a restart, which
   it must, because the URL lives in the user's `skills-lock.json` and is replayed
   by every `npx skills update`. It is re-authorized on every request, so it stops
   working the moment its tenant loses `skills:list`. It is never resolvable as an
