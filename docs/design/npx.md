@@ -238,7 +238,7 @@ On a successful well-known install the CLI fires a GET to `https://add-skill.ver
 
 **File *contents* are not transmitted** — but internal hostnames, artifact URLs, and skill names are. The privacy suppression path (`isSourcePrivate`) only understands GitHub `owner/repo` visibility; it does not recognise a private well-known host, so an intranet SBS is reported like any public one.
 
-Opt out with `DISABLE_TELEMETRY=1` or `DO_NOT_TRACK=1`. This belongs in the operator docs SBS ships (§4.8), not as an afterthought.
+Opt out with `DISABLE_TELEMETRY=1` or `DO_NOT_TRACK=1`. This belongs in the operator docs SBS ships (§4.8), not as an afterthought. **§9 Q7 resolves *how*: documented as an exported `DO_NOT_TRACK=1`, not as a prefix on the command the store emits** — a prefix covers one invocation, breaks in PowerShell, and suppresses ecosystem install counts by default.
 
 ---
 
@@ -999,7 +999,7 @@ Nothing in §5's blocker list is affected — the per-skill decision is about *w
 | Per-request re-authorization | §4.3.3 |
 | `SBS_PUBLIC_URL` (the URL is still absolute) | §5.10 #2 |
 | `GET /pub/*` allowlist entry | §5.10 #1 |
-| Telemetry opt-out in the copied command | §1.8 |
+| Telemetry opt-out documented (an exported `DO_NOT_TRACK=1`, *not* a command prefix — §9 Q7) | §1.8 |
 
 ### 4.3.9 Scope support: per-skill by default, namespace and global available
 
@@ -1924,7 +1924,15 @@ the demo deployment".
 4. ~~**One archive builder or two?**~~ **Resolved (§5.13): one.** `export-anthropic` moves onto the deterministic builder. The path *layout* stays a caller choice — the download keeps its `<skill-name>/` container, the artifact is root-relative — so one builder means one zip function, not one output.
 5. ~~**Digest strategy.**~~ **Resolved (§5.14):** ship the stable URL. The artifact handler honours an optional `?digest=` parameter from day one, so closing the index/artifact race later is a one-line index change rather than a redesign. Full content-addressing is reserved for a CDN requirement that does not exist yet.
 6. ~~**Is a per-skill bearer capability in a URL acceptable?**~~ **Closed — the model is as you describe it.** The install URL embeds a token; the token is per-skill; it can only be used to fetch that one skill; and that is precisely what compensates for npx being unable to authenticate. Nothing remains to decide. One property is worth keeping visible in the operator notes rather than as an open question: the capability is **durable**, so it also returns *future edits* to that skill until the secret is rotated — not only the version that was installed. Where the skill's content is committed beside the lockfile this is immaterial (§4.3.7); it matters only if a published skill later gains sensitive content. npx cannot authenticate, so per-user enforcement is impossible — anyone holding the install URL can read the store's skills until the token is revoked. Options A (public index), B (no npx on secured stores) and the publish token are laid out with their trade-offs; which is right depends on whether the store is internet-facing and on how the organisation treats URL-borne secrets. **Recommend deciding this before phase 4**, since it determines whether the token store gets built at all.
-7. **Telemetry stance.** Should SBS document the opt-out, or go further and recommend `DISABLE_TELEMETRY=1` in the install snippets it publishes? The latter is more protective but silently removes SBS installs from the ecosystem's install counts.
+7. ~~**Telemetry stance.**~~ **Resolved: document the opt-out; do not prefix the emitted command.** The snippets SBS publishes carry no `DISABLE_TELEMETRY=1`, and `DO_NOT_TRACK=1` — the cross-vendor convention, honoured here alongside it — is documented as a shell-profile export instead. Three reasons, in ascending order of force:
+
+   - **It protects one invocation.** `npx skills update` is typed by the user and replayed indefinitely from `skills-lock.json`; a prefix on the single command we hand out never reaches those runs. An opt-out only means something if it lives in the environment, which is also where a prefix teaches nobody to put it.
+   - **It is not portable.** `VAR=1 cmd` is POSIX shell syntax, so a prefixed command *fails outright* in PowerShell and `cmd.exe` — the copy button would emit something broken for every Windows user. This is a correctness defect, not a preference.
+   - **It is not ours to decide silently.** Suppressing by default removes every SBS install from the ecosystem's install counts, which is a choice to make in the open rather than by default.
+
+   The residual exposure is real and stated rather than mitigated: on a secured store the default reports `installUrl`, token included. The place that fact belongs is the UI, next to the copy button, at the moment a reader is about to paste a credential-bearing URL — which §4.3.2 already reserved for the token warning. Prose there beats shell syntax in a command they skim past.
+
+   Two shapes were considered and rejected. Emitting the prefix only under `mode: standalone` keeps the Windows defect on exactly the deployments that can least afford a broken command. And a server-side knob (`npx_telemetry_opt_out` in the ACL config) would be *advisory only* — it changes a suggested string and cannot affect a hand-typed command, an edited one, or a later `update` — so placing it beside `unauthenticated_paths` and `npx_publish`, where every entry is enforced, would mislead whoever reviews that file's security posture.
 
 ---
 

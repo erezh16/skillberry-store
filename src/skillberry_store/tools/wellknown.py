@@ -653,10 +653,22 @@ def npx_install_command(
     # Always one skill per URL, so no -s and no -g: the single-entry index is
     # auto-selected, and a per-skill token is safe in a committed lockfile.
     #
-    # DISABLE_TELEMETRY=1 is not decoration: without it the install URL — token
-    # and all — is reported to add-skill.vercel.sh as `installUrl` (§1.8), and
-    # the command we emit is the only place we can reliably set it.
-    return (
-        f"DISABLE_TELEMETRY=1 npx skills add "
-        f"{npx_install_url(base_url, ref)} -y -a {agent}"
-    )
+    # Deliberately NO `DISABLE_TELEMETRY=1` prefix, resolving the one question
+    # docs/design/npx.md left open (§9 Q7). The CLI reports a successful install
+    # to add-skill.vercel.sh, and on a secured store `installUrl` is the
+    # capability token (§1.8) — but prefixing the command we emit is the wrong
+    # answer to that:
+    #
+    #   * it protects exactly one invocation. Every later `npx skills update`
+    #     the user types themselves is unaffected, so the opt-out has to live in
+    #     their environment to mean anything;
+    #   * `VAR=1 cmd` is POSIX shell syntax, so the command we hand out would
+    #     simply fail in PowerShell and cmd.exe;
+    #   * `DO_NOT_TRACK=1`, exported once, is the cross-vendor convention and
+    #     covers every run and every other CLI that honours it.
+    #
+    # So the command stays one clean portable line and the opt-out is documented
+    # as a shell-profile setting (docs/cli.md). The UI says so next to the copy
+    # button, where a reader about to paste a credential-bearing URL will
+    # actually see it — prose at the right moment beats shell syntax they skim.
+    return f"npx skills add {npx_install_url(base_url, ref)} -y -a {agent}"

@@ -752,8 +752,7 @@ def test_cache_clear_resets_accounting():
 # --------------------------------------------------------------------------- #
 def test_npx_install_command_shape():
     assert wk.npx_install_command("https://store.example.com", "TOKEN") == (
-        "DISABLE_TELEMETRY=1 npx skills add "
-        "https://store.example.com/pub/TOKEN -y -a claude-code"
+        "npx skills add https://store.example.com/pub/TOKEN -y -a claude-code"
     )
 
 
@@ -773,9 +772,19 @@ def test_npx_install_url_shape():
     )
 
 
-def test_install_command_carries_the_telemetry_opt_out():
-    """§1.8: otherwise the install URL — token and all — reaches Vercel."""
-    assert wk.npx_install_command("https://s", "T").startswith("DISABLE_TELEMETRY=1 ")
+def test_install_command_carries_no_env_var_prefix():
+    """Resolves §9 Q7 against prefixing, and keeps the command portable.
+
+    `VAR=1 cmd` is POSIX shell syntax, so a prefix would make the command we
+    hand out fail outright in PowerShell and cmd.exe — and it would protect only
+    this one invocation, not the `npx skills update` runs that follow. The
+    telemetry opt-out is documented as an exported `DO_NOT_TRACK=1` instead.
+    """
+    command = wk.npx_install_command("https://s", "T")
+    assert command.startswith("npx skills add ")
+    assert "=" not in command.split(" ", 1)[0]
+    assert "DISABLE_TELEMETRY" not in command
+    assert "DO_NOT_TRACK" not in command
 
 
 def test_install_command_pins_an_agent_and_takes_all_skills():

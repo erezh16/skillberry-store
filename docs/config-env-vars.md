@@ -29,6 +29,15 @@ and [docs/design/npx.md](design/npx.md)).
 | Publish secret file    | `~/.skillberry/wellknown_secret.json`  | `SBS_WELLKNOWN_SECRET_FILE`    | Where a generated secret is persisted (atomic write, mode 0600) so the next boot reuses it. Ignored when `SBS_WELLKNOWN_SECRET` is set |
 | Publishable namespaces | *(unset — any namespace)*              | `SBS_WELLKNOWN_NAMESPACES`     | Comma-separated allowlist restricting which namespaces a namespace-scoped install URL may name. Per-skill URLs are unaffected. An empty value is treated as unset, not as "none" |
 
+> **Telemetry.** `DO_NOT_TRACK=1` (or `DISABLE_TELEMETRY=1`) is read by the **npx
+> CLI on the user's machine**, not by the store — SBS cannot set or enforce it,
+> and the install command it emits deliberately carries no such prefix. Export it
+> in the shell profile or CI environment your users' shells inherit; that covers
+> every `npx skills add` and `npx skills update` rather than one invocation. See
+> [the npx section of the CLI guide](cli.md#telemetry-and-how-to-opt-out) for what
+> is reported.
+
+
 > You can override the default values by setting the corresponding environment variables in your deployment configuration.
 
 

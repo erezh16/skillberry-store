@@ -344,7 +344,7 @@ any of ~70 other agents with one command and no prior setup — no `npm install`
 no `skills` CLI on your PATH, no git credentials, no login from the terminal:
 
 ```bash
-DISABLE_TELEMETRY=1 npx skills add https://store.example.com/pub/pdf-forms -y -a claude-code
+npx skills add https://store.example.com/pub/pdf-forms -y -a claude-code
 ```
 
 `npx` fetches the [`skills`](https://www.npmjs.com/package/skills) CLI on first
@@ -398,7 +398,50 @@ Both matter, and both are emitted for you — they are not decoration:
 | --- | --- |
 | `-a <agent>` | `-y` with no detected agent installs the skill into **every** supported agent's directory — around 75 of them in your project tree. |
 | `-y` | Skips the scope, symlink and confirmation prompts. |
-| `DISABLE_TELEMETRY=1` | The CLI otherwise reports the install URL, your hostname and the skill name to `add-skill.vercel.sh`. File contents are never sent, but on a secured store the URL contains an access token. `DO_NOT_TRACK=1` works too. |
+
+### Telemetry, and how to opt out
+
+On a **successful** install (not on discovery, and not on `--list`) the CLI sends
+a request to `add-skill.vercel.sh` carrying your hostname, the skill name, the
+artifact URL, and `installUrl` — the URL you typed, which on a secured store
+contains an access token. **File contents are never sent.** The CLI's own
+privacy-suppression path only understands GitHub repository visibility, so it has
+no concept of a private well-known host and reports an intranet store like a
+public one.
+
+Opt out once, for every run:
+
+```bash
+# bash / zsh — in ~/.bashrc, ~/.zshrc, or your CI environment
+export DO_NOT_TRACK=1
+```
+
+```powershell
+# PowerShell — in $PROFILE
+$env:DO_NOT_TRACK = '1'
+```
+
+`DISABLE_TELEMETRY=1` has the same effect; `DO_NOT_TRACK` is the
+[cross-vendor convention](https://consoledonottrack.com/), so one export also
+covers the other CLIs that honour it.
+
+The install command the store emits deliberately carries **no** environment-variable
+prefix, for three reasons:
+
+- a prefix protects exactly one invocation — every later `npx skills update` you
+  type yourself would be unaffected, so the opt-out has to live in your
+  environment to mean anything;
+- `VAR=1 command` is POSIX shell syntax, so a prefixed command would simply fail
+  in PowerShell and `cmd.exe`;
+- suppressing by default would quietly remove every SBS install from the
+  ecosystem's install counts, which is not a decision a store should make on its
+  users' behalf without saying so.
+
+The trade-off is explicit: the default reports the install, and on a secured store
+that report includes the token. If that is unacceptable for your deployment, set
+`DO_NOT_TRACK=1` in the environment your users' shells inherit — and note that
+the UI already says this next to the copy button, where someone about to paste a
+credential-bearing URL will see it.
 
 ### Operator notes
 
@@ -411,7 +454,7 @@ makes skill **content**, not just metadata, readable without a session.
 | --- | --- |
 | **What gets published** | Every skill visible to a holder of `skills:list`, one per install URL. There is no lifecycle-state or tag filter: a `state: new` draft is already visible to every such user, so hiding it from npx would misreport what the store contains. To publish a curated subset, use a namespace — which users can see and filter by — rather than an invisible server-side filter. |
 | **`SBS_PUBLIC_URL`** | Set it. The install command is absolute, and behind an ingress or load balancer the server cannot derive its own externally-visible URL; without it, the command is omitted rather than guessed. Useful beyond npx — it is the value any copy-paste snippet needs. |
-| **Access tokens in URLs** | With access control on, the path segment is a read-only capability token scoped to **one skill**, derived from a durable secret. It is re-authorized on every request, so it stops working the moment its tenant loses `skills:list` or its account is removed. It is not accepted as an `Authorization: Bearer` value anywhere. |
+| **Access tokens in URLs** | With access control on, the path segment is a read-only capability token scoped to **one skill**, derived from a durable secret. It is re-authorized on every request, so it stops working the moment its tenant loses `skills:list` or its account is removed. It is not accepted as an `Authorization: Bearer` value anywhere. Note that it travels to `add-skill.vercel.sh` in `installUrl` unless `DO_NOT_TRACK=1` is set — see above. |
 | **The token is durable** | It keeps returning *future* edits to that skill, not only the version installed, until the secret is rotated. Where the skill's content is committed next to the lockfile that is immaterial; it matters if a published skill later gains sensitive content. |
 | **Revoking** | Losing `skills:list` revokes automatically, per request. To revoke everything at once, rotate `SBS_WELLKNOWN_SECRET` — that is the intended global revoke, and everyone then re-copies their command. |
 | **Committing `skills-lock.json`** | Safe. A project install writes the lockfile *and* the skill's own files in the same commit, so a per-skill token in it grants read access to content that is already in the repository beside it. |

@@ -29,7 +29,7 @@ Install a skill from a running store straight into your agent — nothing to
 install first, `npx` fetches the CLI:
 
 ```bash
-DISABLE_TELEMETRY=1 npx skills add http://localhost:8000/pub/<skill> -y -a claude-code
+npx skills add http://localhost:8000/pub/<skill> -y -a claude-code
 ```
 
 Works with Claude Code, Cursor, Codex and ~70 other agents. The store hands you

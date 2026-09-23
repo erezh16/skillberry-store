@@ -18,6 +18,9 @@
 // `tools/wellknown.py`, and the picker's only job is to tell the server which
 // agent to pin. That is also why changing the agent re-fetches rather than
 // rewriting the `-a` token locally.
+//
+// The telemetry opt-out is prose here rather than a prefix on the command, for
+// the reasons in `npx_install_command`.
 
 import { useEffect, useState } from 'react';
 import {
@@ -182,13 +185,19 @@ export function NpxInstallCommand({ skillId }: Props) {
 
       <Text component="small" style={{ display: 'block', marginTop: '0.5rem' }}>
         Paste this in your project. Nothing to install first — <code>npx</code>{' '}
-        fetches the CLI. <code>DISABLE_TELEMETRY=1</code> keeps this URL out of a
-        third party&apos;s logs.
+        fetches the CLI. It reports a successful install to a third party; export{' '}
+        <code>DO_NOT_TRACK=1</code> in your shell profile to opt out of that, here
+        and on every later <code>npx skills update</code>.
       </Text>
 
-      {/* One sentence, not a buried note: the command contains a credential,
-          and that is the cost of a CLI that cannot authenticate. It belongs
-          next to the copy button (§4.3.2).
+      {/* Not a buried note: the command contains a credential, and that is the
+          cost of a CLI that cannot authenticate. It belongs next to the copy
+          button (§4.3.2) — which is also the right home for the telemetry
+          opt-out, because this is the moment a reader is about to paste a
+          credential-bearing URL. The command itself carries no
+          `DISABLE_TELEMETRY=1` prefix: that would protect one invocation, break
+          in PowerShell, and miss every later `npx skills update`. An exported
+          `DO_NOT_TRACK=1` covers all of them (see npx_install_command).
 
           Shown by ACL mode rather than by inspecting the URL: under
           `standalone` the path segment is a capability token, under `disabled`
@@ -202,7 +211,9 @@ export function NpxInstallCommand({ skillId }: Props) {
           style={{ marginTop: '0.5rem' }}
         >
           Anyone you share it with can read this one skill until the store&apos;s
-          publish secret is rotated. It grants nothing else.
+          publish secret is rotated. It grants nothing else — but the install
+          report above includes this URL, token and all, so{' '}
+          <code>DO_NOT_TRACK=1</code> matters more here than on an open store.
         </Alert>
       )}
       </CardBody>

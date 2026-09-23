@@ -299,8 +299,7 @@ def test_disabled_mode_install_command_is_slug_addressed(disabled_client):
         "/skills/PDF Forms", params={"fields": "name,_npx_install"}
     )
     assert resp.json()["_npx_install"] == (
-        "DISABLE_TELEMETRY=1 npx skills add "
-        f"{PUBLIC_URL}/pub/pdf-forms -y -a claude-code"
+        f"npx skills add {PUBLIC_URL}/pub/pdf-forms -y -a claude-code"
     )
 
 
@@ -1065,7 +1064,7 @@ def test_a_request_base_url_is_the_documented_fallback(disabled_client, monkeypa
     assert resp.status_code == 200
     command = resp.json()["_npx_install"]
     assert "/pub/demo -y -a claude-code" in command
-    assert command.startswith("DISABLE_TELEMETRY=1 npx skills add http")
+    assert command.startswith("npx skills add http")
     assert "//pub/" not in command
 
 

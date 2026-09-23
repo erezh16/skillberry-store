@@ -150,7 +150,7 @@
           <span class="eyebrow">Expose · npx</span>
           <h3>One-command install into any agent</h3>
           <p>A skill in the store installs straight into Claude Code, Cursor, Codex and ~70 other agents with <strong>one copy-pasted command and nothing installed first</strong> — <code>npx</code> fetches the CLI, and the store serves the skill's bytes over the open <code>/.well-known/agent-skills</code> discovery convention.</p>
-          <pre><code>DISABLE_TELEMETRY=1 npx skills add https://store.example.com/pub/pdf-forms -y -a claude-code</code></pre>
+          <pre><code>npx skills add https://store.example.com/pub/pdf-forms -y -a claude-code</code></pre>
           <ul>
             <li>No <code>npm install</code>, no git credentials, no login from the terminal</li>
             <li>The store hands you the whole command — from each skill's page, or <code>sbs get-skill &lt;name&gt; --fields name,_npx_install</code></li>

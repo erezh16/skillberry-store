@@ -16,7 +16,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   login from the terminal:
 
   ```bash
-  DISABLE_TELEMETRY=1 npx skills add https://store.example.com/pub/pdf-forms -y -a claude-code
+  npx skills add https://store.example.com/pub/pdf-forms -y -a claude-code
   ```
 
   This needs no npm package published and no registration with skills.sh: the
@@ -47,9 +47,17 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   name,_npx_install`, `sbs list-skills --fields name,_npx_install`, or the
   **Install with npx** card on each skill's page in the UI, which has an agent
   picker and a copy button. `-a` is always emitted — `-y` without it installs the
-  skill into every supported agent's directory, around 75 of them — and so is
-  `DISABLE_TELEMETRY=1`, without which the install URL is reported to
-  `add-skill.vercel.sh`.
+  skill into every supported agent's directory, around 75 of them.
+
+  The emitted command carries **no** `DISABLE_TELEMETRY=1` prefix. The CLI does
+  report a successful install to `add-skill.vercel.sh` — hostname, skill name and
+  the URL you typed, which on a secured store contains the access token; file
+  contents are never sent — but a prefix is the wrong lever: it protects one
+  invocation and not the `npx skills update` runs that follow, and `VAR=1 command`
+  is POSIX syntax that fails outright in PowerShell and `cmd.exe`. The opt-out is
+  documented as an exported `DO_NOT_TRACK=1` instead, which covers every run, and
+  the UI states it next to the copy button where a reader about to paste a
+  credential-bearing URL will see it.
 
   Set `SBS_PUBLIC_URL`. The install command is absolute, and behind an ingress
   the server cannot derive its own externally-visible URL; without it the command

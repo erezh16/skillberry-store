@@ -3,8 +3,7 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { NpxInstallCommand, NPX_AGENTS, DEFAULT_NPX_AGENT } from './NpxInstallCommand';
 import { skillsApi } from '@/services/api';
 
-const COMMAND =
-  'DISABLE_TELEMETRY=1 npx skills add http://store.test/pub/pdf-forms -y -a claude-code';
+const COMMAND = 'npx skills add http://store.test/pub/pdf-forms -y -a claude-code';
 
 describe('NpxInstallCommand', () => {
   beforeEach(() => {
@@ -95,8 +94,20 @@ describe('NpxInstallCommand', () => {
   });
 
   it('surfaces the telemetry opt-out rather than hiding it in docs', async () => {
+    // As prose next to the copy button, not as a prefix on the command: a
+    // prefix protects one invocation, breaks in PowerShell, and misses every
+    // later `npx skills update`.
     vi.spyOn(skillsApi, 'npxInstallCommand').mockResolvedValue(COMMAND);
     render(<NpxInstallCommand skillId="u1" />);
-    expect(await screen.findByText(/DISABLE_TELEMETRY=1/)).toBeTruthy();
+    expect(await screen.findByText(/DO_NOT_TRACK=1/)).toBeTruthy();
+  });
+
+  it('keeps the command itself a single portable line', async () => {
+    vi.spyOn(skillsApi, 'npxInstallCommand').mockResolvedValue(COMMAND);
+    render(<NpxInstallCommand skillId="u1" />);
+    const shown = (await screen.findByDisplayValue(COMMAND)) as HTMLInputElement;
+    expect(shown.value.startsWith('npx skills add ')).toBe(true);
+    expect(shown.value).not.toContain('DISABLE_TELEMETRY');
+    expect(shown.value).not.toContain('DO_NOT_TRACK');
   });
 });

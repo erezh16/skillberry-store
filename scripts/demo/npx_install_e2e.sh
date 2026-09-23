@@ -35,7 +35,12 @@ SKILL="${1:-}"
 
 # Do not report this host, this URL or these skill names to Vercel (§1.8). The
 # install URL can contain an access token, so this is not optional here.
-export DISABLE_TELEMETRY=1
+#
+# Exported for the whole script rather than prefixed onto each `npx` call: that
+# is also the form the docs recommend to users, because it covers every later
+# `npx skills update` and not just one invocation. DO_NOT_TRACK is the
+# cross-vendor convention; the CLI honours it and DISABLE_TELEMETRY alike.
+export DO_NOT_TRACK=1
 
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 fail() { printf '\033[31mFAIL: %s\033[0m\n' "$*" >&2; exit 1; }
