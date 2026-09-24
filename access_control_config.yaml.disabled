@@ -7,6 +7,14 @@
 
 mode: disabled
 
+# Publish skills for `npx skills add` (docs/design/npx.md).
+# OFF by default. Turning this on serves SKILL.md CONTENT — not just metadata — to anyone
+# holding a per-skill install URL, with no session (§4.3.3). One skill per URL;
+# the URL's token grants that skill only. Default in code is `false`
+# (fail-closed); this shipped config is `mode: disabled`, where nothing is
+# protected anyway, so a bare dev checkout is usable out of the box.
+npx_publish: true
+
 unauthenticated_paths:
   - GET /health
   - GET /health/ready
@@ -23,6 +31,16 @@ unauthenticated_paths:
   - HEAD /ui*
   - GET /control_sse*
   - POST /control_sse*
+  # Per-skill discovery for `npx skills add` (docs/design/npx.md §4.3.8).
+  # Read-only, one skill per URL, gated by `npx_publish` above — when that is
+  # off the routes are not registered at all and this entry matches nothing.
+  # The path segment is a scoped capability token that resolves to a tenant and
+  # is re-authorized on every request, so it stops working the moment that
+  # tenant loses `skills:list`.
+  # NOTE: `_path_matches` supports only a trailing '*' — a middle wildcard like
+  # /pub/*/.well-known/* is inexpressible, so /pub/ MUST remain a dedicated
+  # prefix with nothing else ever mounted under it (§5.10 #1).
+  - GET /pub/*
 
 # --- Mode-specific: standalone only -------------------------------------
 standalone:
@@ -35,7 +53,7 @@ standalone:
 
   # Informational message shown at login (UI sign-in screen and `sbs login`).
   # Both controls are independent: `enabled` gates the display, `message` holds
-  # the text, so a message can be committed here ahead of being switched on.
+  # the text, so a message can be committed, and dressed, ahead of being switched on.
   # `format` picks the presentation: `plain` (the default — one string, shown
   # verbatim, 1024 chars / 10 lines) or `rich`, which adds Markdown-flavoured
   # markup plus a `style` block for the UI banner's own chrome and raises the cap
