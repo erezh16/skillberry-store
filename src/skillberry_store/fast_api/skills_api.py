@@ -17,7 +17,7 @@ from fastapi.responses import Response
 
 from skillberry_store.access_control.decorator import requires
 from skillberry_store.fast_api.publish_api import (
-    attach_npx_install,
+    attach_npx_fields,
     expand_npx_fields,
 )
 from skillberry_store.tools.endpoint_auth import ReauthRequired
@@ -193,7 +193,7 @@ def register_skills_api(
                 offset=offset,
             )
             items = result["items"] if isinstance(result, dict) else result
-            attach_npx_install(
+            attach_npx_fields(
                 request, service, fields, items, strip=strip, agent=npx_agent
             )
             return result
@@ -263,7 +263,7 @@ def register_skills_api(
         try:
             service_fields, strip = expand_npx_fields(fields, npx_agent)
             skill = service.get(uuid_or_name, fields=service_fields)
-            attach_npx_install(
+            attach_npx_fields(
                 request, service, fields, [skill], strip=strip, agent=npx_agent
             )
             return skill

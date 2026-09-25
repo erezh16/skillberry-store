@@ -23,6 +23,7 @@
 // the reasons in `npx_install_command`.
 
 import { useEffect, useState } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
   Button,
@@ -40,10 +41,13 @@ import {
   SelectList,
   SelectOption,
   Spinner,
+  Switch,
+  Text,
 } from '@patternfly/react-core';
 import { ExternalLinkAltIcon } from '@patternfly/react-icons';
 import { getAclMode } from '@/contexts/AuthContext';
 import { skillsApi } from '@/services/api';
+import type { NpxPublishMode, Skill } from '@/types';
 
 // The agents worth putting in a dropdown. The CLI accepts ~75; this is the
 // short list people actually ask for, and anything else can be typed into the
@@ -91,26 +95,55 @@ function storeAgent(agent: string): void {
   }
 }
 
-interface Props {
-  /** UUID or name of the skill to install. */
-  skillId: string;
+/**
+ * Is npx install ON for this skill right now, given the store's master switch?
+ *
+ * Under `selective` the skill's own flag decides. Under `true`/`false` the store
+ * decides for every skill and the flag is ignored — so the switch must show the
+ * *store's* value there, not the flag. Showing the raw flag was a real bug: a
+ * store set to `true` displayed "not published" beside a working install command.
+ */
+export function effectivePublishState(
+  mode: NpxPublishMode | null,
+  flag: boolean | null
+): boolean {
+  if (mode === 'true') return true;
+  if (mode === 'false') return false;
+  return flag === true;
 }
 
-export function NpxInstallCommand({ skillId }: Props) {
+interface Props {
+  /** The skill to install. The whole object, because toggling the publish flag
+   *  writes the manifest back and `update` replaces it — a partial payload would
+   *  clear every field it omitted. */
+  skill: Skill;
+}
+
+export function NpxInstallCommand({ skill }: Props) {
+  const skillId = skill.uuid;
+  const queryClient = useQueryClient();
   const [agent, setAgent] = useState<string>(loadAgent);
   const [isOpen, setIsOpen] = useState(false);
   const [command, setCommand] = useState<string | null>(null);
+  const [mode, setMode] = useState<NpxPublishMode | null>(null);
+  const [flag, setFlag] = useState<boolean | null>(null);
+  const [editable, setEditable] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [toggleError, setToggleError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
     skillsApi
-      .npxInstallCommand(skillId, agent)
-      .then(value => {
-        if (!cancelled) setCommand(value);
+      .npxState(skillId, agent)
+      .then(state => {
+        if (cancelled) return;
+        setCommand(state.command);
+        setMode(state.mode);
+        setFlag(state.flag);
+        setEditable(state.editable);
       })
       .catch((e: Error) => {
         if (!cancelled) setError(e.message);
@@ -121,7 +154,35 @@ export function NpxInstallCommand({ skillId }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [skillId, agent]);
+  }, [skillId, agent, skill.npx_publish]);
+
+  // Writes the manifest back with the flag flipped. Every field goes along,
+  // because `update` replaces the manifest rather than patching it.
+  const toggleMutation = useMutation({
+    mutationFn: (next: boolean) =>
+      skillsApi.update(skill.name, {
+        uuid: skill.uuid,
+        name: skill.name,
+        version: skill.version,
+        description: skill.description,
+        tags: skill.tags,
+        tool_uuids: skill.tool_uuids ?? skill.tools?.map(t => t.uuid) ?? [],
+        snippet_uuids: skill.snippet_uuids ?? skill.snippets?.map(s => s.uuid) ?? [],
+        state: skill.state,
+        extra: skill.extra,
+        npx_publish: next,
+      } as unknown as Skill),
+    onSuccess: (_data, next) => {
+      setFlag(next);
+      setToggleError(null);
+      // The command appears or disappears with the flag, so re-read rather than
+      // guess, and let the page's own copy of the skill refresh too.
+      skillsApi.npxState(skillId, agent).then(state => setCommand(state.command));
+      queryClient.invalidateQueries({ queryKey: ['skills', skillId] });
+      queryClient.invalidateQueries({ queryKey: ['skills'] });
+    },
+    onError: (e: Error) => setToggleError(e.message || 'Failed to update skill'),
+  });
 
   if (loading) {
     return (
@@ -134,13 +195,18 @@ export function NpxInstallCommand({ skillId }: Props) {
     );
   }
 
-  // No command is the normal answer on a store that does not publish for npx,
-  // on one that does not know its own public URL, and on a superseded version of
-  // a skill. None of those is an error the reader can act on, so the section
-  // simply is not there — which is why the component owns its own card.
-  if (error || !command) {
+  // A failed read is the only case with nothing to show. Note that a *missing
+  // command* is not: the switch below is what turns one on, so hiding the card
+  // when there is no command would hide the only control that could create one.
+  if (error || mode === null) {
     return null;
   }
+
+  const published = effectivePublishState(mode, flag);
+  // Disabled unless the skill's own flag is what decides AND this caller may
+  // change it. Under `true`/`false` the store-wide value governs, so the switch
+  // is read-only and shows what the store decided.
+  const switchDisabled = mode !== 'selective' || !editable || toggleMutation.isPending;
 
   const onSelect = (_e: unknown, value: string | number | undefined) => {
     const next = String(value ?? DEFAULT_NPX_AGENT);
@@ -155,7 +221,57 @@ export function NpxInstallCommand({ skillId }: Props) {
     <Card style={{ marginTop: '1rem' }} data-testid="npx-install">
       <CardTitle>Install with npx</CardTitle>
       <CardBody>
-      <FormGroup label="Agent" fieldId="npx-agent" style={{ maxWidth: '20rem' }}>
+      {/* The control comes first: it is what decides whether there is anything
+          else on this card at all. */}
+      <Switch
+        id="npx-publish-switch"
+        aria-label="Publish this skill for npx"
+        label="Publish this skill for npx"
+        isChecked={published}
+        isDisabled={switchDisabled}
+        onChange={(_e, checked) => toggleMutation.mutate(checked)}
+      />
+      <Text component="small" style={{ display: 'block', marginTop: '0.35rem' }}>
+        {mode !== 'selective' ? (
+          <>
+            Set for the whole store — <code>npx_publish: {mode}</code> in{' '}
+            <code>access_control_config.yaml</code> decides for every skill, so
+            this cannot be changed per skill.
+          </>
+        ) : !editable ? (
+          <>Changing this needs permission to update skills.</>
+        ) : (
+          <>Off means no install command, and the install URL stops resolving.</>
+        )}
+      </Text>
+
+      {toggleError && (
+        <Alert
+          variant="danger"
+          isInline
+          isPlain
+          title="Could not change the setting"
+          style={{ marginTop: '0.5rem' }}
+        >
+          {toggleError}
+        </Alert>
+      )}
+
+      {!command && (
+        <Text component="small" style={{ display: 'block', marginTop: '0.75rem' }}>
+          {published
+            ? 'No install command available — the store may not know its own public URL (SBS_PUBLIC_URL), or this is a superseded version of the skill.'
+            : 'Turn this on to get an install command.'}
+        </Text>
+      )}
+
+      {command && (
+        <>
+      <FormGroup
+        label="Agent"
+        fieldId="npx-agent"
+        style={{ maxWidth: '20rem', marginTop: '1rem' }}
+      >
         <Select
           id="npx-agent"
           isOpen={isOpen}
@@ -244,10 +360,12 @@ export function NpxInstallCommand({ skillId }: Props) {
           style={{ marginTop: '0.5rem' }}
         >
           Anyone you share it with can read this one skill until the store&apos;s
-          publish secret is rotated. It grants nothing else — but the install
+          publish seed is rotated. It grants nothing else — but the install
           report above includes this URL, token and all, so{' '}
           <code>DO_NOT_TRACK=1</code> matters more here than on an open store.
         </Alert>
+      )}
+        </>
       )}
       </CardBody>
     </Card>

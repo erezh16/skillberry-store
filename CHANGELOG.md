@@ -39,8 +39,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   A skill's flag is an ordinary manifest field, so `PUT /skills/{id}` and its
   existing `skills:update` permission already govern it — no new endpoint, no new
-  role. The UI shows the state on each skill's page and offers a **Publish for
-  npx** checkbox in its Edit dialog. The shipped `mode: disabled` config ships
+  role. The UI puts a **Publish this skill for npx** switch in each skill's
+  *Install with npx* card, greyed out when the store-wide value is what decides or
+  when the caller lacks `skills:update`. It always shows the *effective* state:
+  two computed read-only fields, `npx_publish_mode` and `npx_publish_editable`,
+  give a client the context to render that, since a raw flag is not interpretable
+  on a store set to `true`. The shipped `mode: disabled` config ships
   `true` (nothing is protected there anyway); the `.standalone` demo ships
   `selective`, which is as closed as `false` until an operator opts a skill in.
 

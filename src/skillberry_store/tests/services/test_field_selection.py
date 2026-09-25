@@ -392,8 +392,11 @@ def test_skill_narrow_shape():
         "tool_uuids",
         "snippet_uuids",
         # The per-skill npx publish flag: a plain boolean the UI renders and
-        # edits, unlike the opt-in-only `_npx_install` capability URL.
+        # edits, unlike the opt-in-only `_npx_install` capability URL — plus the
+        # computed context needed to interpret it.
         "npx_publish",
+        "npx_publish_mode",
+        "npx_publish_editable",
     }
 
 

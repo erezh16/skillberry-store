@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0
 
 import type {
+  NpxPublishMode,
   Tool,
   Skill,
   Snippet,
@@ -233,15 +234,44 @@ export const skillsApi = {
     uuidOrName: string,
     agent: string
   ): Promise<string | null> => {
+    return (await skillsApi.npxState(uuidOrName, agent)).command;
+  },
+
+  // Everything the "Install with npx" card needs, in one request: the command
+  // (when there is one) plus the state its switch renders — the store's master
+  // switch, this skill's own flag, and whether the caller may change it.
+  //
+  // Fetched together rather than derived from the skill the page already holds,
+  // because the command depends on the chosen agent and has to be re-fetched
+  // when the picker changes anyway.
+  npxState: async (
+    uuidOrName: string,
+    agent: string
+  ): Promise<{
+    command: string | null;
+    mode: NpxPublishMode | null;
+    flag: boolean | null;
+    editable: boolean;
+  }> => {
     const params = new URLSearchParams({
-      fields: '_npx_install',
+      fields: 'npx_publish,npx_publish_mode,npx_publish_editable,_npx_install',
       npx_agent: agent,
     });
     const response = await fetch(
       `${API_BASE}/skills/${encodeURIComponent(uuidOrName)}?${params}`
     );
-    const body = await handleResponse<{ _npx_install?: string }>(response);
-    return body._npx_install ?? null;
+    const body = await handleResponse<{
+      _npx_install?: string;
+      npx_publish?: boolean | null;
+      npx_publish_mode?: NpxPublishMode;
+      npx_publish_editable?: boolean;
+    }>(response);
+    return {
+      command: body._npx_install ?? null,
+      mode: body.npx_publish_mode ?? null,
+      flag: body.npx_publish ?? null,
+      editable: body.npx_publish_editable === true,
+    };
   },
 
   create: async (skill: Omit<Skill, 'uuid'>): Promise<Skill> => {

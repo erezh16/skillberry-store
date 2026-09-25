@@ -562,22 +562,6 @@ export function SkillDetailPage() {
                 </DescriptionListGroup>
               )}
 
-              <DescriptionListGroup>
-                <DescriptionListTerm>Publish for npx</DescriptionListTerm>
-                <DescriptionListDescription>
-                  {/* Always shown, including when unset: "this skill is not
-                      published" is the information a reader is looking for, and
-                      hiding the row when the flag is absent would leave them
-                      unable to tell that from the feature being off. */}
-                  <Label
-                    color={skill.npx_publish === true ? 'green' : 'grey'}
-                    data-testid="npx-publish-state"
-                  >
-                    {skill.npx_publish === true ? 'Enabled' : 'Not enabled'}
-                  </Label>
-                </DescriptionListDescription>
-              </DescriptionListGroup>
-
               {skill.tags && skill.tags.length > 0 && (
                 <DescriptionListGroup>
                   <DescriptionListTerm>Tags</DescriptionListTerm>
@@ -685,7 +669,7 @@ export function SkillDetailPage() {
         {/* Install into an agent with one copy-paste (docs/design/npx.md §4.3.2).
             The component owns its whole card and renders nothing at all when
             this store does not publish for npx, so no empty section appears. */}
-        <NpxInstallCommand skillId={skill.uuid} />
+        <NpxInstallCommand skill={skill} />
 
         {/* Tabs for Tools and Snippets Content */}
         {((skill.tools && skill.tools.length > 0) || (skill.snippets && skill.snippets.length > 0)) && (
@@ -1114,28 +1098,6 @@ export function SkillDetailPage() {
             />
             <Text component="small" style={{ color: '#6a6e73', marginTop: '0.25rem', display: 'block' }}>
               Optional key-value pairs for additional flexible information (must be valid JSON object)
-            </Text>
-          </FormGroup>
-
-          {/* Per-skill npx publish flag (docs/design/npx.md §5.12). It is an
-              ordinary manifest field, so it is saved by this modal like any
-              other and governed by the same `skills:update` permission — the
-              server refuses the whole update for a role that lacks it, and the
-              403 surfaces in `editError` above. */}
-          <FormGroup label="Publish for npx" fieldId="skill-npx-publish">
-            <Checkbox
-              id="skill-npx-publish"
-              label="Allow installing this skill with `npx skills add`"
-              isChecked={editedSkill.npxPublish}
-              onChange={(_, checked) =>
-                setEditedSkill({ ...editedSkill, npxPublish: checked })
-              }
-            />
-            <Text component="small" style={{ color: '#6a6e73', marginTop: '0.25rem', display: 'block' }}>
-              Applies when this store's <code>npx_publish</code> setting is{' '}
-              <code>selective</code>. With it set to <code>true</code> or{' '}
-              <code>false</code> the store-wide value decides and this checkbox
-              has no effect.
             </Text>
           </FormGroup>
         </Form>

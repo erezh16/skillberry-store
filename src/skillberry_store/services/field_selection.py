@@ -129,6 +129,16 @@ SKILL_FIELD_TAGS: FieldTags = {
     # without opting in — it is a plain boolean describing the skill, not a
     # capability like ``_npx_install``.
     "npx_publish":   {"narrow", "wide", "full"},
+    # Computed, read-only context for the flag above, attached by the API layer.
+    # The flag alone is not interpretable: it decides only under a ``selective``
+    # master switch, so a client rendering the raw value would show "not
+    # published" beside a working install command on a store set to ``true``.
+    # ``npx_publish_mode`` carries the master switch; ``npx_publish_editable``
+    # says whether the current caller holds ``skills:update`` and may change the
+    # flag, so a control can be disabled rather than 403 on use. Both are plain
+    # state, not capabilities, so a preset delivers them.
+    "npx_publish_mode":     {"narrow", "wide", "full"},
+    "npx_publish_editable": {"narrow", "wide", "full"},
     "extra":         {"wide", "full"},
     "parent":        {"wide", "full"},
     "created_at":    {"wide", "full"},

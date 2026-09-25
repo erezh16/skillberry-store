@@ -1187,6 +1187,120 @@ def test_toggling_one_skills_flag_does_not_shift_another_slug(acl_client):
 
 
 # =========================================================================== #
+# The computed state a client needs to render the publish control
+# =========================================================================== #
+@pytest.mark.parametrize("master", ["true", "false", "selective"])
+def test_the_master_switch_is_reported_to_clients(modal_client, master):
+    """Without it the per-skill flag is not interpretable, and a UI rendering the
+    raw flag showed "not published" beside a working command on ``true``."""
+    client = modal_client(master)
+    body = client.get("/skills/opted-in").json()
+    assert body["npx_publish_mode"] == master
+
+
+@pytest.mark.parametrize("master", ["true", "false", "selective"])
+def test_the_reported_state_always_agrees_with_installability(modal_client, master):
+    """The invariant the reported bug violated: whatever a client would render as
+    the switch position must match whether an install command exists and whether
+    the install URL resolves."""
+    client = modal_client(master)
+    for slug in ("opted-in", "not-flagged", "opted-out"):
+        body = client.get(f"/skills/{slug}", params={"npx_agent": "claude-code"}).json()
+        mode, flag = body["npx_publish_mode"], body.get("npx_publish")
+        # Exactly the rule the UI applies.
+        shown_on = True if mode == "true" else False if mode == "false" else flag is True
+        has_command = "_npx_install" in body
+        index = client.get(INDEX.format(ref=slug)).status_code
+        assert shown_on == has_command, (master, slug, "switch vs command")
+        assert shown_on == (index == 200), (master, slug, "switch vs index")
+
+
+def test_switch_off_blocks_every_install_route(modal_client):
+    """"Off" has to mean the install genuinely fails, not merely that the command
+    is hidden — someone who kept an old URL must be refused."""
+    client = modal_client("selective")
+    for slug in ("not-flagged", "opted-out"):
+        assert client.get(INDEX.format(ref=slug)).status_code == 404
+        assert client.get(ARTIFACT.format(ref=slug, slug=slug)).status_code == 404
+        # Nor by borrowing a published skill's ref.
+        assert client.get(ARTIFACT.format(ref="opted-in", slug=slug)).status_code == 404
+    index = client.get(INDEX.format(ref="*")).json()
+    assert {e["name"] for e in index["skills"]} == {"opted-in"}
+
+
+def test_editability_is_reported_as_skills_update(acl_client):
+    """So a client can disable the control rather than offer one that 403s."""
+    client = acl_client(
+        """
+        mode: standalone
+        npx_publish: selective
+        standalone:
+          users:
+            - username: reader
+              tenant_id: reader
+              password_hash: "$2b$12$notused"
+            - username: author
+              tenant_id: author
+              password_hash: "$2b$12$notused"
+        roles:
+          - name: read-only
+            rules:
+              - resources: [skills]
+                verbs: [list, get]
+          - name: author
+            rules:
+              - resources: [skills]
+                verbs: [list, get, create, update]
+        bindings:
+          - name: b-reader
+            subjects: [{kind: tenant, name: reader}]
+            roles: [read-only]
+          - name: b-author
+            subjects: [{kind: tenant, name: author}]
+            roles: [author]
+        """
+    )
+    _create_skill(client, "demo", "D.", headers=_auth(client, "author"))
+
+    assert (
+        client.get("/skills/demo", headers=_auth(client, "author")).json()[
+            "npx_publish_editable"
+        ]
+        is True
+    )
+    assert (
+        client.get("/skills/demo", headers=_auth(client, "reader")).json()[
+            "npx_publish_editable"
+        ]
+        is False
+    )
+
+
+def test_editability_is_true_when_no_acl_layer_exists(modal_client):
+    client = modal_client("selective")
+    assert client.get("/skills/opted-in").json()["npx_publish_editable"] is True
+
+
+def test_the_state_fields_arrive_on_a_plain_request(modal_client):
+    """They are ordinary state, not capabilities, so a preset delivers them — a
+    client should not have to opt in to know what to render."""
+    client = modal_client("selective")
+    for params in ({}, {"fields": "narrow"}, {"fields": "wide"}, {"fields": "full"}):
+        body = client.get("/skills/opted-in", params=params).json()
+        assert "npx_publish_mode" in body, params
+        assert "npx_publish_editable" in body, params
+        # …unlike the capability URL, which still needs asking for.
+        assert "_npx_install" not in body, params
+
+
+def test_the_state_fields_appear_on_list_too(modal_client):
+    client = modal_client("selective")
+    for item in client.get("/skills/").json():
+        assert item["npx_publish_mode"] == "selective"
+        assert item["npx_publish_editable"] is True
+
+
+# =========================================================================== #
 # The `_npx_install` field's hygiene contract (§4.3.5)
 # =========================================================================== #
 @pytest.mark.parametrize("preset", ["minimal", "narrow", "wide", "full"])

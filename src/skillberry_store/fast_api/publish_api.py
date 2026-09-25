@@ -332,6 +332,22 @@ class NpxPublisher:
 
         return pdp.authorize(subject, "skills", "list", self.cfg).allowed
 
+    def may_edit_publish_flag(self, subject: Optional[Any]) -> bool:
+        """Whether ``subject`` may change a skill's own ``npx_publish`` flag.
+
+        The flag is an ordinary manifest field, so this is exactly
+        ``skills:update`` — there is no separate verb, and no separate check. A
+        client uses it to disable the control rather than offer one whose use
+        would 403.
+        """
+        if self.acl_mode == "disabled":
+            return True
+        if subject is None:
+            return False
+        from skillberry_store.access_control import pdp
+
+        return pdp.authorize(subject, "skills", "update", self.cfg).allowed
+
     def _subject_for(self, tenant_id: str) -> Any:
         from skillberry_store.access_control.pdp import Subject
 
@@ -551,7 +567,7 @@ def expand_npx_fields(
     return ",".join(sorted(allow | needed)), needed
 
 
-def attach_npx_install(
+def attach_npx_fields(
     request: Request,
     service: Any,
     fields: Optional[str],
@@ -559,20 +575,55 @@ def attach_npx_install(
     strip: Optional[set] = None,
     agent: Optional[str] = None,
 ) -> None:
-    """Set ``_npx_install`` on each of ``items``, in place; a no-op if unasked.
+    """Attach the computed npx fields to each of ``items``, in place.
 
-    Silently omits the field for any skill that has no usable command — a
-    superseded version, a name with no valid slug, a caller without
-    ``skills:list``, a store with publishing off, or a store that does not know
-    its own public URL. Omission rather than an error is deliberate: the caller
-    asked for a convenience, and there is nothing they could do about any of
-    those conditions.
+    Three fields, two of them always and one only when asked:
+
+    ``npx_publish_mode``
+        The store's master switch — ``"true"``, ``"false"`` or ``"selective"``.
+        Without it a client cannot interpret the skill's own ``npx_publish``: the
+        flag only decides under ``selective``, so a UI that rendered the raw flag
+        would show "not published" next to a working install command on a store
+        set to ``true``. That was a real reported bug, which is why this is not
+        left to the client to guess or to a build-time constant that can go stale.
+    ``npx_publish_editable``
+        Whether *this caller* may change the skill's flag — i.e. holds
+        ``skills:update``. Lets a client disable the control instead of offering
+        one that 403s on use.
+    ``_npx_install``
+        The install command, opt-in only (see :func:`npx_install_requested`).
+
+    The first two are plain read-only state and are attached whenever the
+    resolved field allowlist names them, so a preset delivers them. The third is
+    a capability URL and stays opt-in.
+
+    ``_npx_install`` is silently omitted for any skill that has no usable command
+    — a superseded version, a name with no valid slug, a caller without
+    ``skills:list``, a store with publishing off, a skill not opted in under
+    ``selective``, or a store that does not know its own public URL. Omission
+    rather than an error is deliberate: the caller asked for a convenience, and
+    there is nothing they could do about any of those conditions.
     """
-    if not npx_install_requested(fields, agent):
-        return
+    from skillberry_store.services.field_selection import parse_fields_spec
+
     publisher: Optional[NpxPublisher] = getattr(request.app.state, "npx", None)
-    if publisher is not None and publisher.enabled and items:
-        subject = getattr(request.state, "subject", None)
+    allow = parse_fields_spec(fields, "skill")
+    subject = getattr(request.state, "subject", None)
+
+    if publisher is not None and items:
+        if "npx_publish_mode" in allow:
+            for item in items:
+                item["npx_publish_mode"] = publisher.npx_publish
+        if "npx_publish_editable" in allow:
+            editable = publisher.may_edit_publish_flag(subject)
+            for item in items:
+                item["npx_publish_editable"] = editable
+
+    if (
+        npx_install_requested(fields, agent)
+        and publisher is not None
+        and publisher.enabled
+    ):
         slug_map = publisher.slug_map(service)
         pinned = normalise_agent(agent)
         for item in items:
@@ -581,9 +632,15 @@ def attach_npx_install(
             )
             if command:
                 item["_npx_install"] = command
+
     for item in items:
         for key in strip or set():
             item.pop(key, None)
+
+
+#: Retained under its previous name: the skills API imported this before the
+#: state fields joined it, and an external caller may too.
+attach_npx_install = attach_npx_fields
 
 
 def register_publish_api(

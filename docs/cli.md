@@ -481,11 +481,31 @@ it — it is an ordinary manifest field:
 sbs update-skill pdf-forms --body='{"name":"pdf-forms","description":"…","npx_publish":true}'
 ```
 
-…or with the **Publish for npx** checkbox in the skill's Edit dialog in the UI,
-where its current state also shows on the skill's page. Changing it needs the
-same `skills:update` permission as any other manifest edit; no separate role or
-endpoint is involved. A junk value for the store-wide setting fails **closed**
-(`false`) with a warning, rather than silently landing on the default.
+…or with the **Publish this skill for npx** switch on the skill's page in the UI,
+in its *Install with npx* card. Changing it needs the same `skills:update`
+permission as any other manifest edit; no separate role or endpoint is involved.
+A junk value for the store-wide setting fails **closed** (`false`) with a warning,
+rather than silently landing on the default.
+
+The switch always shows the **effective** state, and is greyed out when it is not
+what decides:
+
+| Store-wide `npx_publish` | Switch shows | Switch editable |
+| --- | --- | --- |
+| `true` | on | no — the store decides for every skill |
+| `false` | off | no — the store decides for every skill |
+| `selective` | the skill's own flag | yes, with `skills:update` |
+
+That distinction matters: on a store set to `true` a skill's own flag is ignored,
+so a switch rendering the raw flag would read "off" beside a working install
+command. Two computed read-only fields carry the context a client needs —
+`npx_publish_mode` (the store-wide value) and `npx_publish_editable` (whether this
+caller holds `skills:update`) — and both arrive with any preset, unlike the
+opt-in-only `_npx_install`.
+
+When the switch reads off, there is no install command **and the install URL stops
+resolving**: the index and the archive both return 404, so a URL someone kept from
+earlier is refused rather than merely hidden.
 
 | Concern | What to know |
 | --- | --- |
