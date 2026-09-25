@@ -42,7 +42,8 @@ function renderCard(skill: Skill = SKILL) {
   );
 }
 
-const theSwitch = () => screen.getByLabelText('Publish this skill for npx') as HTMLInputElement;
+const theSwitch = () =>
+  screen.getByLabelText('Publish this skill with npx') as HTMLInputElement;
 
 describe('effectivePublishState', () => {
   // The store-wide value wins under `true`/`false`; only `selective` defers to the
@@ -103,9 +104,33 @@ describe('NpxInstallCommand', () => {
     renderCard();
     await waitFor(() => expect(theSwitch().checked).toBe(false));
     expect(theSwitch().disabled).toBe(false);
-    // The card stays, because the switch is the only thing that can create a
-    // command — hiding it would hide the control.
-    expect(screen.getByText(/Turn this on to get an install command/)).toBeTruthy();
+  });
+
+  it.each([
+    [true, 'YES'],
+    [false, 'NO'],
+  ])('spells the state out in the label: %s -> %s', async (on, word) => {
+    // A disabled switch is hard to read as on or off from its position alone,
+    // which is how this was reported.
+    vi.spyOn(skillsApi, 'npxState').mockResolvedValue(
+      state({ flag: on, command: on ? COMMAND : null })
+    );
+    renderCard();
+    // PatternFly renders the label in both its on and off spans and shows one by
+    // CSS; the text is computed from state, so every copy reads correctly.
+    const labels = await screen.findAllByText(`Publish this skill with npx: ${word}`);
+    expect(labels.length).toBeGreaterThan(0);
+  });
+
+  it('updates the label when the switch is toggled', async () => {
+    vi.spyOn(skillsApi, 'npxState').mockResolvedValue(state({ flag: false, command: null }));
+    vi.spyOn(skillsApi, 'update').mockResolvedValue({ message: 'ok' } as never);
+    renderCard();
+    await screen.findAllByText('Publish this skill with npx: NO');
+    fireEvent.click(theSwitch());
+    expect(
+      (await screen.findAllByText('Publish this skill with npx: YES')).length
+    ).toBeGreaterThan(0);
   });
 
   it.each([
@@ -120,14 +145,63 @@ describe('NpxInstallCommand', () => {
     renderCard();
     await waitFor(() => expect(theSwitch().disabled).toBe(true));
     expect(theSwitch().checked).toBe(on);
-    expect(screen.getByText(/Set for the whole store/)).toBeTruthy();
+    expect(
+      screen.getAllByText(`Publish this skill with npx: ${on ? 'YES' : 'NO'}`).length
+    ).toBeGreaterThan(0);
   });
 
   it('greys the switch out when the caller may not update skills', async () => {
     vi.spyOn(skillsApi, 'npxState').mockResolvedValue(state({ editable: false }));
     renderCard();
     await waitFor(() => expect(theSwitch().disabled).toBe(true));
-    expect(screen.getByText(/needs permission to update skills/)).toBeTruthy();
+  });
+
+  // ── the lock reason is a hover bubble, not a line of prose ───────────────
+  it.each([
+    ['true' as NpxPublishMode, true, true, 'npx publish enabled globally'],
+    ['false' as NpxPublishMode, false, true, 'npx publish disabled globally'],
+    ['selective' as NpxPublishMode, true, false, 'You are not allowed to change'],
+  ])(
+    'explains a locked switch on hover (mode=%s editable=%s)',
+    async (mode, flag, editable, expected) => {
+      vi.spyOn(skillsApi, 'npxState').mockResolvedValue(
+        state({ mode, flag, editable, command: null })
+      );
+      renderCard();
+      const wrapper = await screen.findByTestId('npx-publish-lock');
+      fireEvent.mouseEnter(wrapper);
+      expect(await screen.findByText(new RegExp(expected))).toBeTruthy();
+    }
+  );
+
+  it('adds no hover bubble when the switch can actually be changed', async () => {
+    // Nothing to explain, so nothing to get in the way.
+    vi.spyOn(skillsApi, 'npxState').mockResolvedValue(state());
+    renderCard();
+    await screen.findByDisplayValue(COMMAND);
+    expect(screen.queryByTestId('npx-publish-lock')).toBeNull();
+  });
+
+  // ── switched off, the card is only the switch ────────────────────────────
+  it('hides the rest of the card when the switch is off', async () => {
+    vi.spyOn(skillsApi, 'npxState').mockResolvedValue(
+      state({ flag: false, command: null })
+    );
+    const { container } = renderCard();
+    await screen.findAllByText('Publish this skill with npx: NO');
+
+    expect(screen.queryByLabelText('Target agent')).toBeNull();      // no picker
+    expect(container.querySelector('input[readonly]')).toBeNull();   // no command
+    expect(container.querySelectorAll('li').length).toBe(0);         // no notes
+    expect(screen.queryByText(/DO_NOT_TRACK/)).toBeNull();
+    expect(screen.queryByRole('link')).toBeNull();                   // no Node link
+  });
+
+  it('still explains a published skill that has no command', async () => {
+    // Not the same case: something is misconfigured, and saying so is useful.
+    vi.spyOn(skillsApi, 'npxState').mockResolvedValue(state({ flag: true, command: null }));
+    renderCard();
+    expect(await screen.findByText(/No install command available/)).toBeTruthy();
   });
 
   it('writes the whole manifest back when toggled, not just the flag', async () => {

@@ -39,7 +39,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   A skill's flag is an ordinary manifest field, so `PUT /skills/{id}` and its
   existing `skills:update` permission already govern it — no new endpoint, no new
-  role. The UI puts a **Publish this skill for npx** switch in each skill's
+  role. The UI puts a **Publish this skill with npx** switch in each skill's
   *Install with npx* card, greyed out when the store-wide value is what decides or
   when the caller lacks `skills:update`. It always shows the *effective* state:
   two computed read-only fields, `npx_publish_mode` and `npx_publish_editable`,

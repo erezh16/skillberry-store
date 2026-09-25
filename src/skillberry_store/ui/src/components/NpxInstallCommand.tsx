@@ -43,6 +43,7 @@ import {
   Spinner,
   Switch,
   Text,
+  Tooltip,
 } from '@patternfly/react-core';
 import { ExternalLinkAltIcon } from '@patternfly/react-icons';
 import { getAclMode } from '@/contexts/AuthContext';
@@ -110,6 +111,23 @@ export function effectivePublishState(
   if (mode === 'true') return true;
   if (mode === 'false') return false;
   return flag === true;
+}
+
+/**
+ * Wrap `control` in a hover tooltip when there is a reason it is locked.
+ *
+ * A `<span>` wrapper rather than the tooltip on the control itself: a disabled
+ * input does not reliably emit mouse events, so a tooltip attached straight to it
+ * never opens. `entryDelay={0}` because this explains why a control is
+ * unclickable — the reader is already hovering to find out.
+ */
+function withLockTooltip(control: React.ReactElement, reason: string | null) {
+  if (!reason) return control;
+  return (
+    <Tooltip content={reason} entryDelay={0}>
+      <span data-testid="npx-publish-lock">{control}</span>
+    </Tooltip>
+  );
 }
 
 interface Props {
@@ -203,10 +221,20 @@ export function NpxInstallCommand({ skill }: Props) {
   }
 
   const published = effectivePublishState(mode, flag);
-  // Disabled unless the skill's own flag is what decides AND this caller may
-  // change it. Under `true`/`false` the store-wide value governs, so the switch
-  // is read-only and shows what the store decided.
-  const switchDisabled = mode !== 'selective' || !editable || toggleMutation.isPending;
+
+  // Why the switch cannot be changed, or `null` when it can. Short and
+  // non-technical: it is read on hover, not studied. Kept separate from
+  // `switchDisabled` so an in-flight save disables the control without
+  // claiming a reason that is not true.
+  const lockedReason =
+    mode === 'true'
+      ? 'npx publish enabled globally'
+      : mode === 'false'
+        ? 'npx publish disabled globally'
+        : !editable
+          ? 'You are not allowed to change this setting'
+          : null;
+  const switchDisabled = lockedReason !== null || toggleMutation.isPending;
 
   const onSelect = (_e: unknown, value: string | number | undefined) => {
     const next = String(value ?? DEFAULT_NPX_AGENT);
@@ -222,28 +250,29 @@ export function NpxInstallCommand({ skill }: Props) {
       <CardTitle>Install with npx</CardTitle>
       <CardBody>
       {/* The control comes first: it is what decides whether there is anything
-          else on this card at all. */}
-      <Switch
-        id="npx-publish-switch"
-        aria-label="Publish this skill for npx"
-        label="Publish this skill for npx"
-        isChecked={published}
-        isDisabled={switchDisabled}
-        onChange={(_e, checked) => toggleMutation.mutate(checked)}
-      />
-      <Text component="small" style={{ display: 'block', marginTop: '0.35rem' }}>
-        {mode !== 'selective' ? (
-          <>
-            Set for the whole store — <code>npx_publish: {mode}</code> in{' '}
-            <code>access_control_config.yaml</code> decides for every skill, so
-            this cannot be changed per skill.
-          </>
-        ) : !editable ? (
-          <>Changing this needs permission to update skills.</>
-        ) : (
-          <>Off means no install command, and the install URL stops resolving.</>
-        )}
-      </Text>
+          else on this card at all.
+          
+          The label spells the state out — "…: YES" / "…: NO" — because a
+          disabled switch is hard to read as on or off from its position alone,
+          which is exactly how it was reported. `aria-label` stays constant so
+          the accessible name is stable; screen readers announce the checked
+          state themselves.
+
+          One computed `label` rather than PatternFly's `label`/`labelOff` pair:
+          it renders both spans either way and shows one by CSS, so deriving the
+          text from state means whichever span is visible is correct, with no
+          second string to keep in step. */}
+      {withLockTooltip(
+        <Switch
+          id="npx-publish-switch"
+          aria-label="Publish this skill with npx"
+          label={`Publish this skill with npx: ${published ? 'YES' : 'NO'}`}
+          isChecked={published}
+          isDisabled={switchDisabled}
+          onChange={(_e, checked) => toggleMutation.mutate(checked)}
+        />,
+        lockedReason
+      )}
 
       {toggleError && (
         <Alert
@@ -257,15 +286,19 @@ export function NpxInstallCommand({ skill }: Props) {
         </Alert>
       )}
 
-      {!command && (
+      {/* Switched off, the card is just the switch: no agent picker, no command,
+          no notes. There is nothing to install, so anything else is clutter.
+          A skill that IS published but still has no command is a different
+          case — something is misconfigured, and saying so is worth the line. */}
+      {published && !command && (
         <Text component="small" style={{ display: 'block', marginTop: '0.75rem' }}>
-          {published
-            ? 'No install command available — the store may not know its own public URL (SBS_PUBLIC_URL), or this is a superseded version of the skill.'
-            : 'Turn this on to get an install command.'}
+          No install command available — the store may not know its own public URL
+          (<code>SBS_PUBLIC_URL</code>), or this is a superseded version of the
+          skill.
         </Text>
       )}
 
-      {command && (
+      {published && command && (
         <>
       <FormGroup
         label="Agent"

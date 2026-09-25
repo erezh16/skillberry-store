@@ -481,7 +481,7 @@ it — it is an ordinary manifest field:
 sbs update-skill pdf-forms --body='{"name":"pdf-forms","description":"…","npx_publish":true}'
 ```
 
-…or with the **Publish this skill for npx** switch on the skill's page in the UI,
+…or with the **Publish this skill with npx** switch on the skill's page in the UI,
 in its *Install with npx* card. Changing it needs the same `skills:update`
 permission as any other manifest edit; no separate role or endpoint is involved.
 A junk value for the store-wide setting fails **closed** (`false`) with a warning,
@@ -490,11 +490,17 @@ rather than silently landing on the default.
 The switch always shows the **effective** state, and is greyed out when it is not
 what decides:
 
-| Store-wide `npx_publish` | Switch shows | Switch editable |
-| --- | --- | --- |
-| `true` | on | no — the store decides for every skill |
-| `false` | off | no — the store decides for every skill |
-| `selective` | the skill's own flag | yes, with `skills:update` |
+| Store-wide `npx_publish` | Switch reads | Editable | Hover says |
+| --- | --- | --- | --- |
+| `true` | `…: YES` | no | "npx publish enabled globally" |
+| `false` | `…: NO` | no | "npx publish disabled globally" |
+| `selective` | the skill's own flag | yes, with `skills:update` | — |
+
+Without `skills:update` the switch is locked whatever the mode, and says so on
+hover. The label spells the state out rather than relying on the switch position,
+which is hard to read when the control is greyed out. **When it reads `NO` the card
+is just the switch** — no agent picker, no command, no notes, because there is
+nothing to install.
 
 That distinction matters: on a store set to `true` a skill's own flag is ignored,
 so a switch rendering the raw flag would read "off" beside a working install
