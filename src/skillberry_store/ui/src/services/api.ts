@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0
 
 import type {
+  NpxPublishMode,
   Tool,
   Skill,
   Snippet,
@@ -217,6 +218,60 @@ export const skillsApi = {
     // ``snippets`` on the returned object.
     const response = await fetch(`${API_BASE}/skills/${uuid}?fields=full`);
     return handleResponse<Skill>(response);
+  },
+
+  // The `npx skills add` command for one skill, composed server-side.
+  //
+  // `_npx_install` carries no preset tag, so it has to be named explicitly —
+  // that is deliberate: the value is a capability URL and should not ride along
+  // on payloads nobody asked for (docs/design/npx.md §4.3.5). `npx_agent` is
+  // what the agent picker sends, so the command string has exactly one author.
+  //
+  // Resolves to `null` when the store does not publish for npx, does not know
+  // its own public URL, or this is a superseded version of the skill. None of
+  // those is an error the reader can act on.
+  npxInstallCommand: async (
+    uuidOrName: string,
+    agent: string
+  ): Promise<string | null> => {
+    return (await skillsApi.npxState(uuidOrName, agent)).command;
+  },
+
+  // Everything the "Install with npx" card needs, in one request: the command
+  // (when there is one) plus the state its switch renders — the store's master
+  // switch, this skill's own flag, and whether the caller may change it.
+  //
+  // Fetched together rather than derived from the skill the page already holds,
+  // because the command depends on the chosen agent and has to be re-fetched
+  // when the picker changes anyway.
+  npxState: async (
+    uuidOrName: string,
+    agent: string
+  ): Promise<{
+    command: string | null;
+    mode: NpxPublishMode | null;
+    flag: boolean | null;
+    editable: boolean;
+  }> => {
+    const params = new URLSearchParams({
+      fields: 'npx_publish,npx_publish_mode,npx_publish_editable,_npx_install',
+      npx_agent: agent,
+    });
+    const response = await fetch(
+      `${API_BASE}/skills/${encodeURIComponent(uuidOrName)}?${params}`
+    );
+    const body = await handleResponse<{
+      _npx_install?: string;
+      npx_publish?: boolean | null;
+      npx_publish_mode?: NpxPublishMode;
+      npx_publish_editable?: boolean;
+    }>(response);
+    return {
+      command: body._npx_install ?? null,
+      mode: body.npx_publish_mode ?? null,
+      flag: body.npx_publish ?? null,
+      editable: body.npx_publish_editable === true,
+    };
   },
 
   create: async (skill: Omit<Skill, 'uuid'>): Promise<Skill> => {

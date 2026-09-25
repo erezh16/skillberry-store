@@ -177,15 +177,43 @@ def test_should_run_mechanism_flag_absent():
 
 def test_full_preset_triggers_every_mechanism():
     """``"full"`` tags every flag field for every type, so
-    :func:`should_run_mechanism` fires for each of them."""
+    :func:`should_run_mechanism` fires for each of them — except the
+    opt-in-only ones, which carry no preset by design."""
     for t in ALL_TYPES:
         allow = parse_fields_spec("full", t)
         tags = fs._FIELD_TAGS_BY_TYPE[t]
         for name in tags:
-            if name.startswith("_"):
+            if name.startswith("_") and not fs.is_opt_in_only(t, name):
                 assert should_run_mechanism(allow, name) is True, (
                     f"type '{t}' full does not trigger '{name}'"
                 )
+
+
+def test_full_preset_does_not_trigger_an_opt_in_only_mechanism():
+    """``fields="full"`` is used internally, so it must not start
+    returning a capability URL (docs/design/npx.md §4.3.5)."""
+    for t, names in fs.OPT_IN_ONLY_FIELDS.items():
+        for preset in fs._PRESET_ORDER:
+            allow = parse_fields_spec(preset, t)
+            for name in names:
+                assert should_run_mechanism(allow, name) is False, (
+                    f"type '{t}' preset '{preset}' triggers opt-in-only '{name}'"
+                )
+
+
+def test_an_opt_in_only_field_is_reachable_when_named_explicitly():
+    for t, names in fs.OPT_IN_ONLY_FIELDS.items():
+        for name in names:
+            allow = parse_fields_spec(f"uuid,{name}", t)
+            assert should_run_mechanism(allow, name) is True
+
+
+def test_every_opt_in_only_field_is_declared_with_an_empty_tag_set():
+    """The exemption and the declaration have to agree, or a field would be
+    exempt from the invariant while still riding a preset."""
+    for t, names in fs.OPT_IN_ONLY_FIELDS.items():
+        for name in names:
+            assert fs._FIELD_TAGS_BY_TYPE[t][name] == set()
 
 
 def test_narrow_skill_does_not_trigger_populate():
@@ -309,9 +337,11 @@ def test_presets_are_strictly_ordered_per_type():
 
 def test_full_covers_every_declared_field():
     """Every field in each type's tag table must carry the ``full``
-    preset — ``full`` is the total set."""
+    preset — ``full`` is the total set, bar the opt-in-only exemption."""
     for t, tags in _FIELD_TAGS_BY_TYPE.items():
         for name, presets in tags.items():
+            if fs.is_opt_in_only(t, name):
+                continue
             assert "full" in presets, (
                 f"type '{t}' field '{name}' not tagged 'full' (presets={presets})"
             )
@@ -361,6 +391,12 @@ def test_skill_narrow_shape():
         "version",
         "tool_uuids",
         "snippet_uuids",
+        # The per-skill npx publish flag: a plain boolean the UI renders and
+        # edits, unlike the opt-in-only `_npx_install` capability URL — plus the
+        # computed context needed to interpret it.
+        "npx_publish",
+        "npx_publish_mode",
+        "npx_publish_editable",
     }
 
 

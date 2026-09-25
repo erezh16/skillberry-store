@@ -56,6 +56,13 @@ KNOWN_VERBS = {
     "*",
 }
 
+# The three values `npx_publish` may take. Canonical spellings; the loader
+# accepts YAML booleans and the usual truthy/falsy words and normalises to these.
+NPX_PUBLISH_ALL = "true"
+NPX_PUBLISH_NONE = "false"
+NPX_PUBLISH_SELECTIVE = "selective"
+NPX_PUBLISH_VALUES = (NPX_PUBLISH_ALL, NPX_PUBLISH_NONE, NPX_PUBLISH_SELECTIVE)
+
 DEFAULT_SESSION_TTL_SECONDS = 43200  # 12h
 # Tokens minted for a plugin's own outward calls are short-lived and
 # refreshed on demand rather than held for a session's lifetime — see
@@ -125,6 +132,31 @@ class RoleBinding:
 class AccessControlConfig:
     mode: str = "disabled"
     unauthenticated_paths: List[str] = field(default_factory=list)
+    # Publish skills for `npx skills add` (docs/design/npx.md §5.12). This is
+    # the one setting that makes skill CONTENT — not just metadata — reachable
+    # without a session, which is why it lives beside `unauthenticated_paths`
+    # rather than in an env var: anyone reviewing this file's security posture
+    # sees it in the same glance.
+    #
+    # Tri-state, not a boolean:
+    #
+    #   "true"       every visible skill is publishable
+    #   "false"      nothing is; the /pub routes are not registered at all
+    #   "selective"  each skill's own `npx_publish` flag decides (the DEFAULT)
+    #
+    # A skill's own flag is consulted ONLY under "selective" — `true` and `false`
+    # are deliberate overrides, so an operator can publish or withdraw the whole
+    # store without touching every manifest.
+    #
+    # "selective" is the default because it is both useful and conservative: a
+    # store that has set nothing publishes nothing (a skill with no flag is not
+    # published), yet turning one skill on is a per-skill decision rather than an
+    # all-or-nothing switch.
+    #
+    # Deliberately independent of `mode`: a mode-dependent default — "on when
+    # disabled, off when standalone" — is exactly the kind of subtlety that
+    # surprises someone who later enables auth. Every combination is legal.
+    npx_publish: str = NPX_PUBLISH_SELECTIVE
     users: List[User] = field(default_factory=list)
     session_ttl_seconds: int = DEFAULT_SESSION_TTL_SECONDS
     roles: List[Role] = field(default_factory=list)
@@ -261,6 +293,15 @@ _DEFAULT_UNAUTH_PATHS = [
     # is defensive belt-and-braces).
     "GET /control_sse*",
     "POST /control_sse*",
+    # Per-skill discovery for `npx skills add` (docs/design/npx.md §4.3.8).
+    # Read-only, one skill per URL, gated by `npx_publish` — when that is off
+    # the routes are not registered at all and this entry matches nothing. The
+    # path segment is a scoped capability token (standalone) or a slug
+    # (disabled).
+    # NOTE: `_path_matches` supports only a trailing '*' — a middle wildcard
+    # like /pub/*/.well-known/* is inexpressible, so /pub/ MUST remain a
+    # dedicated prefix with nothing else ever mounted under it (§5.10 #1).
+    "GET /pub/*",
 ]
 
 
@@ -359,6 +400,7 @@ def load_config(path: Optional[str] = None) -> AccessControlConfig:
         )
 
     unauth_paths = list(raw.get("unauthenticated_paths") or _DEFAULT_UNAUTH_PATHS)
+    npx_publish = _coerce_npx_publish(raw.get("npx_publish"), cfg_path)
 
     standalone = raw.get("standalone") or {}
     if not isinstance(standalone, dict):
@@ -405,6 +447,7 @@ def load_config(path: Optional[str] = None) -> AccessControlConfig:
     cfg = AccessControlConfig(
         mode=mode,
         unauthenticated_paths=unauth_paths,
+        npx_publish=npx_publish,
         users=users,
         session_ttl_seconds=session_ttl,
         roles=roles,
@@ -425,6 +468,44 @@ def load_config(path: Optional[str] = None) -> AccessControlConfig:
         len(cfg.bindings),
     )
     return cfg
+
+
+_FALSY = ("false", "0", "no", "off")
+
+
+def _coerce_npx_publish(raw: Any, cfg_path: str) -> str:
+    """Coerce ``npx_publish`` to one of :data:`NPX_PUBLISH_VALUES`.
+
+    Read with ``raw.get(...)`` like every other known key, so a config file that
+    predates the setting keeps loading — it resolves to ``selective``, under which
+    a skill that has set no flag of its own is not published, so such a file
+    publishes nothing until someone opts a skill in.
+
+    YAML parses bare ``true``/``false`` as booleans, so both those and the usual
+    quoted spellings are accepted and normalised. A junk value fails **closed**
+    (``false``) rather than to the default: an operator who typos the value should
+    get nothing published, not a mode they did not choose.
+    """
+    if isinstance(raw, bool):
+        return NPX_PUBLISH_ALL if raw else NPX_PUBLISH_NONE
+    if raw is None:
+        return NPX_PUBLISH_SELECTIVE
+    if isinstance(raw, str):
+        value = raw.strip().lower()
+        if value == NPX_PUBLISH_SELECTIVE:
+            return NPX_PUBLISH_SELECTIVE
+        if value in _TRUTHY:
+            return NPX_PUBLISH_ALL
+        if value in _FALSY:
+            return NPX_PUBLISH_NONE
+    logger.warning(
+        "npx_publish=%r in %s is not one of %s; treating as %r (fail-closed)",
+        raw,
+        cfg_path,
+        ", ".join(NPX_PUBLISH_VALUES),
+        NPX_PUBLISH_NONE,
+    )
+    return NPX_PUBLISH_NONE
 
 
 def _coerce_login_info_enabled(raw: Any, cfg_path: str) -> bool:

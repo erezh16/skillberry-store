@@ -4,7 +4,7 @@ import os
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, List, Literal
+from typing import Any, List, Literal, Optional
 
 import uvicorn
 
@@ -27,6 +27,10 @@ from skillberry_store.fast_api.vmcp_api import register_vmcp_api
 from skillberry_store.fast_api.vnfs_api import register_vnfs_api
 from skillberry_store.fast_api.plugins_api import register_plugins_api
 from skillberry_store.fast_api.auth_api import register_auth_api
+from skillberry_store.fast_api.publish_api import (
+    NpxPublisher,
+    register_publish_api,
+)
 from skillberry_store.access_control.audit import (
     audit_rbac_coverage,
     stamp_rbac_markers,
@@ -66,11 +70,44 @@ class SBSettings(BaseSettings):
     )
     observability: bool = Field(True, validation_alias="OBSERVABILITY")
     sbs_vdb: str = Field("faiss", validation_alias="SBS_VDB")
+    # The externally-visible base URL — the one a *user's terminal* can reach,
+    # which is not derivable from how the process is bound (docs/design/npx.md
+    # §5.11). ``uvicorn.run`` is called without ``forwarded_allow_ips``, so
+    # behind a container ingress or a load balancer the forwarded headers are
+    # ignored and ``request.base_url`` reports the internal bind address
+    # instead — silently handing out install commands that point at
+    # http://0.0.0.0:8000. Authoritative whenever set; otherwise the well-known
+    # layer falls back to ``request.base_url`` and, failing that, omits the
+    # install command rather than emitting one that cannot work.
+    public_url: Optional[str] = Field(None, validation_alias="SBS_PUBLIC_URL")
 
     @property
     def display_host(self) -> str:
         """Return a browser-friendly host (0.0.0.0 is not browsable on Windows)."""
         return "localhost" if self.sbs_host == "0.0.0.0" else self.sbs_host
+
+    @model_validator(mode="after")
+    def _normalise_public_url(self) -> "SBSettings":
+        """Require a scheme and strip the trailing slash, once, at startup.
+
+        Normalising here rather than at each use site is what keeps a composed
+        URL from ever containing ``//pub/``. A value without an ``http(s)``
+        scheme is rejected outright: it is unusable, and discovering that from
+        a failed ``npx`` run on someone else's machine is far worse than
+        failing to boot.
+        """
+        if self.public_url is None:
+            return self
+        value = str(self.public_url).strip().rstrip("/")
+        if not value:
+            object.__setattr__(self, "public_url", None)
+            return self
+        if not value.startswith(("http://", "https://")):
+            raise ValueError(
+                f"SBS_PUBLIC_URL must start with http:// or https:// (got {value!r})"
+            )
+        object.__setattr__(self, "public_url", value)
+        return self
 
 
 async def _warm_semantic_encoder() -> None:
@@ -183,6 +220,11 @@ class SBS(FastAPI):
         self.state.acl_cfg = acl_cfg
         self.state.acl_sessions = sessions
         self.settings = SBSettings(**settings)
+        # Reachable from ``app.state.npx`` so the skills API can emit the opt-in
+        # ``_npx_install`` field without a second copy of the config, the secret
+        # or the URL composition (docs/design/npx.md §4.3.5). Constructed even
+        # when publishing is off, so that field has one place to ask.
+        self.state.npx = NpxPublisher(acl_cfg, public_url=self.settings.public_url)
         self.configure_fastapi()
         configure_logging(logging._nameToLevel[self.settings.log_level])
         self.logger = logging.getLogger(__name__)
@@ -286,6 +328,13 @@ class SBS(FastAPI):
         register_admin_api(self, tags="admin", service=admin_service)
 
         register_plugins_api(self, plugin_loader=plugin_loader, tags="plugins")
+
+        # Per-skill discovery for `npx skills add` (docs/design/npx.md §6.4).
+        # Registered only when `npx_publish` is on, so with it off the surface
+        # genuinely does not exist rather than existing-but-refusing. These
+        # routes carry no @requires marker by design — they are in the ACL
+        # unauthenticated allow-list (§4.5).
+        register_publish_api(self, publisher=self.state.npx, service=skills_service)
 
         # Translate a refused plugin store operation to HTTP once, on the app,
         # rather than in each of the plugins. A denial is the caller's

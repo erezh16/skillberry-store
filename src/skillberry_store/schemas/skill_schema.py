@@ -1,6 +1,6 @@
 """Pydantic schema for skill objects."""
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from pydantic import Field
 
 from .manifest_schema import ManifestSchema
@@ -22,6 +22,17 @@ class SkillSchema(ManifestSchema):
     snippet_uuids: List[str] = Field(
         default_factory=list,
         description="Ordered list of snippet UUIDs that comprise this skill"
+    )
+    npx_publish: Optional[bool] = Field(
+        None,
+        description=(
+            "Whether this skill is published for `npx skills add`. Consulted "
+            "ONLY when the store's own `npx_publish` is `selective` — under "
+            "`true` or `false` the store-wide setting decides and this is "
+            "ignored. Unset means not published, so a skill is opted in "
+            "deliberately. Changing it needs the `skills:update` permission, "
+            "like any other manifest edit."
+        )
     )
     
     def to_dict(self) -> Dict[str, Any]:

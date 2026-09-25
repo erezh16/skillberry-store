@@ -16,7 +16,8 @@ endpoints, and the per-object get endpoints
 * ``"wide"`` — return every persisted manifest field for that type,
   plus any enrichment already present at the ``narrow`` level.
 * ``"full"`` — return every field of the object, including the
-  underscore-prefixed flag fields that trigger bundling mechanisms.
+  underscore-prefixed flag fields that trigger bundling mechanisms,
+  except those declared in :data:`OPT_IN_ONLY_FIELDS`.
 * A comma-separated allowlist (``"uuid,name,description"``) — return
   exactly those keys.
 
@@ -37,6 +38,13 @@ preset is also tagged with every larger preset. Concretely, ``uuid``
 carries every tag; a flag field tagged ``"narrow"`` must also carry
 ``"wide"`` and ``"full"``. The invariant is enforced by unit tests in
 ``test_field_selection.py``.
+
+The one documented exception is :data:`OPT_IN_ONLY_FIELDS`: a field
+declared with an *empty* tag set carries no preset at all, so it satisfies
+the ordering chain trivially while staying out of ``full``. That is the
+right shape for a value nobody should receive without asking — the
+ordering invariant forbids tagging a field for a small preset only, and an
+empty set sidesteps it rather than fighting it.
 
 Boolean flag fields — names prefixed with ``"_"`` — do not represent
 persisted data. Instead they activate a bundling mechanism inside the
@@ -116,6 +124,21 @@ SKILL_FIELD_TAGS: FieldTags = {
     "version":       {"narrow", "wide", "full"},
     "tool_uuids":    {"narrow", "wide", "full"},
     "snippet_uuids": {"narrow", "wide", "full"},
+    # Per-skill npx publish flag (docs/design/npx.md §5.12). Tagged for
+    # ``narrow`` so the UI's listing and detail views can render and edit it
+    # without opting in — it is a plain boolean describing the skill, not a
+    # capability like ``_npx_install``.
+    "npx_publish":   {"narrow", "wide", "full"},
+    # Computed, read-only context for the flag above, attached by the API layer.
+    # The flag alone is not interpretable: it decides only under a ``selective``
+    # master switch, so a client rendering the raw value would show "not
+    # published" beside a working install command on a store set to ``true``.
+    # ``npx_publish_mode`` carries the master switch; ``npx_publish_editable``
+    # says whether the current caller holds ``skills:update`` and may change the
+    # flag, so a control can be disabled rather than 403 on use. Both are plain
+    # state, not capabilities, so a preset delivers them.
+    "npx_publish_mode":     {"narrow", "wide", "full"},
+    "npx_publish_editable": {"narrow", "wide", "full"},
     "extra":         {"wide", "full"},
     "parent":        {"wide", "full"},
     "created_at":    {"wide", "full"},
@@ -126,6 +149,19 @@ SKILL_FIELD_TAGS: FieldTags = {
     "_populate":     {"full"},
     "tools":         {"full"},
     "snippets":      {"full"},
+    # The npx install command for this skill (docs/design/npx.md §4.3.5).
+    # Declared with an **empty** preset tag set, so it is reachable only when
+    # named explicitly: ``GET /skills/pdf-forms?fields=name,_npx_install``.
+    #
+    # Empty rather than "tag it for full": the value is a capability URL, and
+    # ``fields="full"`` is used internally (gathering export inputs, populating
+    # skills for the vMCP bundle), so tagging it would start returning a
+    # credential on payloads nobody asked for — response logs, screenshots,
+    # pasted support tickets. This is hygiene, not a security boundary: the same
+    # caller can ask for it outright. The preset-ordering invariant
+    # (minimal ⊆ narrow ⊆ wide ⊆ full) forbids tagging a flag for a small preset
+    # only, and an empty set sidesteps that cleanly rather than fighting it.
+    "_npx_install":  set(),
 }
 
 # vMCP: the list UI shows a Status column (Running/Stopped) that reads
@@ -174,6 +210,29 @@ VNFS_FIELD_TAGS: FieldTags = {
     "running":     {"narrow", "wide", "full"},
     "export_path": {"narrow", "wide", "full"},
 }
+
+# ─── opt-in-only fields ────────────────────────────────────────────────
+#
+# Fields declared with an **empty** preset tag set: reachable only by
+# being named in an explicit CSV allowlist, never through a preset —
+# including ``full``. This is the documented exception to "``full`` is
+# the total set", and it exists for values that should not appear in a
+# payload nobody asked for: ``_npx_install`` emits a capability URL, and
+# ``fields="full"`` is used internally by paths that have no business
+# returning a credential (docs/design/npx.md §4.3.5).
+#
+# Declared here rather than inferred from an empty tag set so that adding
+# one is a deliberate act with a reviewable diff, and so the
+# preset-invariant tests have something concrete to exempt.
+OPT_IN_ONLY_FIELDS: Dict[str, Set[str]] = {
+    "skill": {"_npx_install"},
+}
+
+
+def is_opt_in_only(object_type: str, field: str) -> bool:
+    """Whether ``field`` is reachable only by being named explicitly."""
+    return field in OPT_IN_ONLY_FIELDS.get(object_type, set())
+
 
 _FIELD_TAGS_BY_TYPE: Dict[str, FieldTags] = {
     "snippet": SNIPPET_FIELD_TAGS,

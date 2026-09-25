@@ -28,9 +28,30 @@ body {
   min-height: 100vh;
 }
 
-/* Force all text elements to use dark color for better contrast */
+/* Force all text elements to use dark color for better contrast.
+ *
+ * A blanket element selector cannot know what is painted behind the element, so
+ * it has to be paired with the exception list below: PatternFly renders some
+ * surfaces on a dark ground, and there this rule produced dark-on-dark —
+ * invisible text. That was a real bug in every tooltip in the app. */
 p, span, div, li, td, th, label, .pf-v5-c-content {
   color: var(--pf-v5-global--Color--100);
+}
+
+/* Surfaces PatternFly paints DARK. The rule above would make their text
+ * invisible, so restore the component's own light color — on the container and
+ * on everything inside it, since the blanket rule matches descendants too.
+ *
+ * Symptom when this is missing: a tooltip appears as an empty black bubble
+ * (its text is there, painted #151515 on #151515). Add any further dark-ground
+ * component here rather than patching each call site. */
+.pf-v5-c-tooltip,
+.pf-v5-c-tooltip p,
+.pf-v5-c-tooltip span,
+.pf-v5-c-tooltip div,
+.pf-v5-c-tooltip__content,
+.pf-v5-c-tooltip__content * {
+  color: var(--pf-v5-global--Color--light-100);
 }
 
 /* Ensure PatternFly Text component uses dark color */
@@ -72,12 +93,22 @@ pre span {
   color: inherit;
 }
 
+/* Inline code takes the color of whatever it sits in.
+ *
+ * This used to hard-code the LIGHT token, on the assumption that every `code`
+ * element lives inside the dark `pre` above. Inline `<code>` in body text —
+ * `<code>npx</code>` in a sentence on a white card — was therefore white on
+ * white, readable only by selecting it. Code on a dark ground still gets its
+ * light color from the explicit rules below, which is where that belongs. */
 code {
   font-family: 'Red Hat Mono', 'Courier New', monospace;
   font-size: 0.875rem;
-  color: var(--pf-v5-global--Color--light-100);
+  color: inherit;
 }
 
+/* `pre` sets a dark background above, so it must set its own light text — both
+ * for bare `<pre>text</pre>` and for the `<pre><code>` pairing. */
+pre,
 pre code {
   color: var(--pf-v5-global--Color--light-100);
 }

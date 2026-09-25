@@ -7,6 +7,26 @@
 
 mode: disabled
 
+# Publish skills for `npx skills add` (docs/design/npx.md).
+# Serves SKILL.md CONTENT — not just metadata — to anyone holding a per-skill
+# install URL, with no session (§4.3.3). One skill per URL; the URL's ref grants
+# that skill only.
+#
+# Three values, independent of `mode` above:
+#   true        every visible skill is publishable
+#   false       nothing is; the /pub routes are not registered at all
+#   selective   each skill's own `npx_publish` flag decides (the DEFAULT when
+#               this key is absent). A skill that has not set it is NOT
+#               published — opt one in with the toggle on its page in the UI, or
+#               `PUT /skills/{name}` with `npx_publish: true`.
+#
+# `true`/`false` ignore the per-skill flag, so either one publishes or withdraws
+# the whole store in a single edit.
+#
+# This config is `mode: disabled`, where nothing is protected anyway, so it ships
+# `true` to make a bare dev checkout usable out of the box.
+npx_publish: true
+
 unauthenticated_paths:
   - GET /health
   - GET /health/ready
@@ -23,6 +43,16 @@ unauthenticated_paths:
   - HEAD /ui*
   - GET /control_sse*
   - POST /control_sse*
+  # Per-skill discovery for `npx skills add` (docs/design/npx.md §4.3.8).
+  # Read-only, one skill per URL, gated by `npx_publish` above — when that is
+  # off the routes are not registered at all and this entry matches nothing.
+  # The path segment is a scoped capability token that resolves to a tenant and
+  # is re-authorized on every request, so it stops working the moment that
+  # tenant loses `skills:list`.
+  # NOTE: `_path_matches` supports only a trailing '*' — a middle wildcard like
+  # /pub/*/.well-known/* is inexpressible, so /pub/ MUST remain a dedicated
+  # prefix with nothing else ever mounted under it (§5.10 #1).
+  - GET /pub/*
 
 # --- Mode-specific: standalone only -------------------------------------
 standalone:
@@ -35,7 +65,7 @@ standalone:
 
   # Informational message shown at login (UI sign-in screen and `sbs login`).
   # Both controls are independent: `enabled` gates the display, `message` holds
-  # the text, so a message can be committed here ahead of being switched on.
+  # the text, so a message can be committed, and dressed, ahead of being switched on.
   # `format` picks the presentation: `plain` (the default — one string, shown
   # verbatim, 1024 chars / 10 lines) or `rich`, which adds Markdown-flavoured
   # markup plus a `style` block for the UI banner's own chrome and raises the cap

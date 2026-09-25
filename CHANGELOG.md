@@ -10,6 +10,96 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`npx skills add` support.** A skill in a running store installs into Claude
+  Code, Cursor, Codex and ~70 other agents with one copy-pasted command and no
+  prior setup — no `npm install`, no CLI on the PATH, no git credentials, no
+  login from the terminal:
+
+  ```bash
+  npx skills add https://store.example.com/pub/pdf-forms -y -a claude-code
+  ```
+
+  This needs no npm package published and no registration with skills.sh: the
+  capability is an open, documented-by-implementation HTTP discovery convention
+  (`/.well-known/agent-skills/index.json`) that any web server can serve. The
+  store serves it over two read-only `GET` endpoints under a single `/pub/{ref}`
+  prefix, in schema v0.2.0 (archive + sha256 digest). Both are excluded from
+  `/openapi.json`, so neither appears in the generated Python SDK or as an `sbs`
+  command — they exist for npx and for nothing else.
+
+  **Publishing is opt-in, per skill by default.** `npx_publish` in
+  `access_control_config.yaml` takes three values, independent of the ACL `mode`:
+  `true` (every visible skill), `false` (none — the routes are not registered at
+  all), and `selective` (**the default**, where each skill's own `npx_publish`
+  flag decides and an unset flag means not published). `true`/`false` ignore the
+  per-skill flag, so either publishes or withdraws the whole store in one edit.
+  The setting is declared in the access-control config rather than an environment
+  variable because it *is* an access-control decision: it is the one setting that
+  makes skill **content**, not just metadata, readable without a session.
+
+  A skill's flag is an ordinary manifest field, so `PUT /skills/{id}` and its
+  existing `skills:update` permission already govern it — no new endpoint, no new
+  role. The UI puts a **Publish this skill with npx** switch in each skill's
+  *Install with npx* card, greyed out when the store-wide value is what decides or
+  when the caller lacks `skills:update`. It always shows the *effective* state:
+  two computed read-only fields, `npx_publish_mode` and `npx_publish_editable`,
+  give a client the context to render that, since a raw flag is not interpretable
+  on a store set to `true`. The shipped `mode: disabled` config ships
+  `true` (nothing is protected there anyway); the `.standalone` demo ships
+  `selective`, which is as closed as `false` until an operator opts a skill in.
+
+  **One skill per install URL.** Under `mode: standalone` the path segment is a
+  read-only capability token scoped to that one skill, derived by HMAC from a
+  durable seed (`SBS_PUBLISH_SEED`, confidential) rather than minted and stored — so it survives a restart, which
+  it must, because the URL lives in the user's `skills-lock.json` and is replayed
+  by every `npx skills update`. It is re-authorized on every request, so it stops
+  working the moment its tenant loses `skills:list`. It is never resolvable as an
+  `Authorization: Bearer` value. Under `mode: disabled` the segment is simply the
+  skill's slug. Namespace-scoped ("pack") and store-wide URLs are available as
+  opt-in capabilities.
+
+  You never have to compose the command: `sbs get-skill <name> --npx-agent
+  claude-code`, `sbs get-skill <name> --fields name,_npx_install`, `sbs
+  list-skills --fields name,_npx_install`, or the **Install with npx** card on
+  each skill's page in the UI, which has an agent picker, a copy button and a link
+  to the Node download. Passing `--npx-agent` also *requests* the command, since
+  it has no other effect. No preset returns it — `full` included — because it is a
+  capability URL. `-a` is always emitted — `-y` without it installs the
+  skill into every supported agent's directory, around 75 of them.
+
+  The emitted command carries **no** `DISABLE_TELEMETRY=1` prefix. The CLI does
+  report a successful install to `add-skill.vercel.sh` — hostname, skill name and
+  the URL you typed, which on a secured store contains the access token; file
+  contents are never sent — but a prefix is the wrong lever: it protects one
+  invocation and not the `npx skills update` runs that follow, and `VAR=1 command`
+  is POSIX syntax that fails outright in PowerShell and `cmd.exe`. The opt-out is
+  documented as an exported `DO_NOT_TRACK=1` instead, which covers every run, and
+  the UI states it next to the copy button where a reader about to paste a
+  credential-bearing URL will see it.
+
+  Set `SBS_PUBLIC_URL`. The install command is absolute, and behind an ingress
+  the server cannot derive its own externally-visible URL; without it the command
+  is omitted rather than guessed. See `docs/cli.md` and `docs/design/npx.md`.
+
+  Three pre-existing defects were fixed along the way, each of which would have
+  made skills silently uninstallable:
+
+  - `SKILL.md` frontmatter was built by string interpolation, so a description
+    containing a newline or a `: ` produced YAML no parser accepts, and one
+    containing a quote or a `#` parsed to a silently truncated string. It is now
+    serialised with `yaml.safe_dump`. **This changes the bytes of
+    `GET /skills/{name}/export-anthropic` and of the vNFS tree** wherever a
+    description previously needed quoting.
+  - The export ZIP was not byte-deterministic (`writestr` stamps each entry with
+    `time.localtime()`). There is now one deterministic zip builder, used by both
+    the well-known artifact and the existing download. **`export-anthropic`
+    output therefore changes too**: entries carry a fixed `1980-01-01` mtime and
+    sorted order, in exchange for being reproducible.
+  - A description that was absent, empty or `None` reached the file as the
+    literal string `"None"`; it now falls back to `Skill: <name>`.
+
+  Neither byte change affects stored data, and no migration is needed.
+
 - **Baked container env vars.** Application environment variables can be given
   fixed values that ship inside the image, by adding them to `container.env` at
   the repo root:

@@ -3,10 +3,23 @@
 from __future__ import annotations
 
 from typing import Optional, Annotated, List, Any
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form, Header
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    File,
+    Form,
+    Header,
+)
 from fastapi.responses import Response
 
 from skillberry_store.access_control.decorator import requires
+from skillberry_store.fast_api.publish_api import (
+    attach_npx_fields,
+    expand_npx_fields,
+)
 from skillberry_store.tools.endpoint_auth import ReauthRequired
 from skillberry_store.modules.lifecycle import LifecycleState
 from skillberry_store.schemas.skill_schema import SkillSchema
@@ -95,6 +108,7 @@ def register_skills_api(
         openapi_extra={"x-cli-name": "list-skills", "x-mcp-tool": True},
     )
     def list_skills(
+        request: Request,
         fields: Optional[str] = Query(
             "narrow",
             description=(
@@ -106,7 +120,9 @@ def register_skills_api(
                 "mechanism running — 'tools' and 'snippets' are "
                 "inlined from tool_uuids/snippet_uuids. Or supply a "
                 "comma-separated allowlist of field names (include "
-                "'_populate' to trigger inlining)."
+                "'_populate' to trigger inlining, or '_npx_install' "
+                "for each skill's `npx skills add` command — opt-in "
+                "only, never returned by a preset)."
             ),
         ),
         search: Optional[str] = Query(
@@ -142,6 +158,15 @@ def register_skills_api(
             ),
         ),
         offset: Optional[int] = Query(None, ge=0, description="Page offset."),
+        npx_agent: Optional[str] = Query(
+            None,
+            description=(
+                "Agent to pin with `-a` in the '_npx_install' command "
+                "(default 'claude-code'). Passing this also REQUESTS "
+                "'_npx_install' — it has no other effect, so asking which "
+                "agent to target is asking for the command."
+            ),
+        ),
     ):
         """List skills with optional filter / sort / paginate / project.
 
@@ -153,8 +178,13 @@ def register_skills_api(
             HTTPException: 400 if ``fields`` is invalid, 500 if listing fails.
         """
         try:
-            return service.list_all(
-                fields=fields,
+            # `_npx_install` is computed here rather than in the service: the
+            # command is composed from the request's base URL and the caller's
+            # ambient subject, neither of which the service layer has
+            # (docs/design/npx.md §4.3.5).
+            service_fields, strip = expand_npx_fields(fields, npx_agent)
+            result = service.list_all(
+                fields=service_fields,
                 search=search,
                 tags=tags_filter,
                 state=state,
@@ -162,6 +192,11 @@ def register_skills_api(
                 limit=limit,
                 offset=offset,
             )
+            items = result["items"] if isinstance(result, dict) else result
+            attach_npx_fields(
+                request, service, fields, items, strip=strip, agent=npx_agent
+            )
+            return result
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
@@ -176,6 +211,7 @@ def register_skills_api(
         openapi_extra={"x-cli-name": "get-skill", "x-mcp-tool": True},
     )
     def get_skill(
+        request: Request,
         uuid_or_name: str,
         fields: Optional[str] = Query(
             "narrow",
@@ -185,7 +221,22 @@ def register_skills_api(
                 "and snippet_uuids only, no inlining). 'wide' returns "
                 "every persisted manifest field. 'full' returns the "
                 "complete object with inlined ``tools`` / ``snippets`` "
-                "populated. Or supply a comma-separated allowlist."
+                "populated. Or supply a comma-separated allowlist — "
+                "include '_npx_install' for this skill's "
+                "`npx skills add` command (opt-in only, never returned "
+                "by a preset; omitted for a superseded version)."
+            ),
+        ),
+        npx_agent: Optional[str] = Query(
+            None,
+            description=(
+                "Agent to pin with `-a` in the '_npx_install' command "
+                "(default 'claude-code'). This is what the UI's agent "
+                "picker sends, so the command string has exactly one "
+                "author. Passing it also REQUESTS '_npx_install' — it has "
+                "no other effect. Note that no preset, 'full' included, "
+                "returns that field: it is a capability URL, so it is "
+                "opt-in only."
             ),
         ),
     ):
@@ -210,7 +261,12 @@ def register_skills_api(
                 500 for other errors.
         """
         try:
-            return service.get(uuid_or_name, fields=fields)
+            service_fields, strip = expand_npx_fields(fields, npx_agent)
+            skill = service.get(uuid_or_name, fields=service_fields)
+            attach_npx_fields(
+                request, service, fields, [skill], strip=strip, agent=npx_agent
+            )
+            return skill
         except KeyError as e:
             raise HTTPException(status_code=404, detail=str(e))
         except RuntimeError as e:

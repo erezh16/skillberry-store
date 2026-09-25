@@ -30,6 +30,10 @@ export interface Tool {
   modified_at?: string;
 }
 
+// The store-wide npx master switch. `selective` defers to each skill's own flag;
+// `true`/`false` decide for every skill and ignore it.
+export type NpxPublishMode = 'true' | 'false' | 'selective';
+
 export interface Skill {
   uuid: string;
   name: string;
@@ -48,6 +52,17 @@ export interface Skill {
   author?: string;
   created_at?: string;
   modified_at?: string;
+  // Whether this skill is published for `npx skills add`. Consulted only when
+  // the store's own `npx_publish` is `selective`; `null`/absent means not
+  // published. See docs/design/npx.md §5.12.
+  npx_publish?: boolean | null;
+  // Computed, read-only context for the flag above. Without the mode the flag is
+  // not interpretable: it decides only under `selective`, so rendering the raw
+  // value would show "not published" beside a working install command on a store
+  // set to `true`.
+  npx_publish_mode?: NpxPublishMode;
+  // Whether the current caller holds `skills:update` and may change the flag.
+  npx_publish_editable?: boolean;
 }
 
 export interface Snippet {

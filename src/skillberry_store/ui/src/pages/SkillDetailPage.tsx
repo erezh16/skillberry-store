@@ -45,6 +45,7 @@ import {
 import { EditIcon, TrashIcon, FolderIcon, FileIcon, FileCodeIcon, ExportIcon } from '@patternfly/react-icons';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { NpxInstallCommand } from '@/components/NpxInstallCommand';
 import { skillsApi, toolsApi, snippetsApi } from '@/services/api';
 import type { Skill } from '@/types';
 import { detectLanguage } from '@/utils/detectLanguage';
@@ -69,6 +70,7 @@ export function SkillDetailPage() {
     toolUuids: [] as string[],
     snippetUuids: [] as string[],
     extra: {} as Record<string, any>,
+    npxPublish: false,
   });
   const [tagInput, setTagInput] = useState('');
   const [extraInput, setExtraInput] = useState('{}');
@@ -159,6 +161,7 @@ export function SkillDetailPage() {
         toolUuids: skill.tools?.map(t => t.uuid) || [],
         snippetUuids: skill.snippets?.map(s => s.uuid) || [],
         extra: skill.extra || {},
+        npxPublish: skill.npx_publish === true,
       });
       setExtraInput(JSON.stringify(skill.extra || {}, null, 2));
       setIsEditModalOpen(true);
@@ -194,6 +197,10 @@ export function SkillDetailPage() {
       snippet_uuids: editedSkill.snippetUuids,
       state: skill!.state,
       extra: Object.keys(parsedExtra).length > 0 ? parsedExtra : undefined,
+      // Must be sent explicitly. `update` replaces the manifest, so omitting a
+      // field clears it — leaving this out would silently un-publish a skill on
+      // any unrelated edit.
+      npx_publish: editedSkill.npxPublish,
     } as unknown as Skill;
 
     updateMutation.mutate(updatedSkill);
@@ -658,6 +665,11 @@ export function SkillDetailPage() {
             </DescriptionList>
           </CardBody>
         </Card>
+
+        {/* Install into an agent with one copy-paste (docs/design/npx.md §4.3.2).
+            The component owns its whole card and renders nothing at all when
+            this store does not publish for npx, so no empty section appears. */}
+        <NpxInstallCommand skill={skill} />
 
         {/* Tabs for Tools and Snippets Content */}
         {((skill.tools && skill.tools.length > 0) || (skill.snippets && skill.snippets.length > 0)) && (
