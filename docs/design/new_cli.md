@@ -4,7 +4,7 @@ Status: **Proposed**
 Owner: skillberry-store
 Scope: `skillberry-store` — two usability changes to the `sbs` CLI: (A) remove every user-visible mention of `restish`, so `sbs` reads as the one command a user needs; (B) serve the CLI from the server as a **native single-file executable** for five platforms, pre-configured with the deployment's own public URL, downloadable without authentication from the API, the UI, and the CLI itself.
 
-**Central decision:** integrate restish as a **Go library** rather than as a subprocess. restish v2 publishes a supported embedding API for exactly this ([`github.com/rest-sh/restish/v2`](https://github.com/rest-sh/restish/blob/v2.3.0/restish.go), design record [042-custom-cli-embedding-surface.md](https://github.com/rest-sh/restish/blob/v2.3.0/docs/design/042-custom-cli-embedding-surface.md), example [`examples/example-cli`](https://github.com/rest-sh/restish/tree/v2.3.0/examples/example-cli)). That turns Feature A from a 150-line output rewriter into four configuration calls, and it removes Feature B's central blocker: Go cross-compiles all five platforms from the server's own container. The PyInstaller-over-the-Python-shim design that this supersedes is recorded, with its measurements, in §10.
+**Central decision:** integrate restish as a **Go library** rather than as a subprocess. restish v2 publishes a supported embedding API for exactly this ([`github.com/rest-sh/restish/v2`](https://github.com/rest-sh/restish/blob/v2.3.0/restish.go), design record [042-custom-cli-embedding-surface.md](https://github.com/rest-sh/restish/blob/v2.3.0/docs/design/042-custom-cli-embedding-surface.md), example [`examples/example-cli`](https://github.com/rest-sh/restish/tree/v2.3.0/examples/example-cli)). That turns Feature A from a 150-line output rewriter into four configuration calls, and it removes Feature B's central blocker: Go cross-compiles all five platforms from the server's own container. The PyInstaller-over-the-Python-shim design that this supersedes is recorded, with its measurements, in §10.1; a second review question — restish as a C shared library behind a Python CLI — is recorded in §10.2.
 
 Related: [access-control.md](access-control.md) (§8 the PEP as a router dependency, §10.1 the CLI/auth story), [login-info.md](login-info.md) (§7 the CLI's preflight probe), [npx.md](npx.md) (§5.11 `SBS_PUBLIC_URL` — adopted unchanged), [portable_storage.md](portable_storage.md), [build_concepts.md](build_concepts.md) (stamps and change detection).
 
@@ -50,7 +50,7 @@ Related: [access-control.md](access-control.md) (§8 the PEP as a router depende
 * Not code signing or notarization (§7.4, §12).
 * Not a package-manager story (Homebrew, winget, apt). The server-served binary, the install script and the platform wheels are the vehicles.
 * Not multi-version artifact hosting: a store serves the build matching its own spec.
-* **Not PyInstaller, and not a second Python implementation.** The Python shim is deleted (§4.6); §10 records why freezing a PyInstaller variant of it was rejected, and it is not a fallback, a phase, or an option to revisit.
+* **Not PyInstaller, and not a second Python implementation.** The Python shim is deleted (§4.6); §10.1 records why freezing a PyInstaller variant of it was rejected, and it is not a fallback, a phase, or an option to revisit.
 * Not a fork of restish. Every branding hook used here is a documented public API; the two strings that have no hook get an upstream PR (§3.3).
 
 ---
@@ -132,13 +132,14 @@ M4+M6 are why this design can do what the PyInstaller one could not: **prepare a
 | `doctor`: `Restish version:` label, and `run \`restish shell setup bash\`` | `sbs doctor` | The hint is also **wrong advice** (no `shell` command exists in a promoted surface). Set `SupportCommandNamespace: "cli"` so it is `sbs cli doctor`, and send the same upstream PR; `HideSupportCommands` removes it entirely if we prefer |
 | Config **filename** `restish.json` (in `doctor` and `config path`) | both | Set `RSH_CONFIG=<config dir>/sbs.json`; the *directories* are already branded by `RSH_CONFIG_DIR` / `RSH_CACHE_DIR` (verified: `~/.config/sbs`, `~/.cache/sbs`, `~/.cache/sbs/specs`) |
 
-So the worst case, with zero upstream changes, is **two flag descriptions in help**. Compare §10: the superseded design needed a stream rewriter, a protected-span list and a reserved-command passthrough to reach a weaker result.
+So the worst case, with zero upstream changes, is **two flag descriptions in help**. Compare §10.1: the superseded design needed a stream rewriter, a protected-span list and a reserved-command passthrough to reach a weaker result.
 
 ### 3.4 Gotchas found while prototyping
 
 1. **`-ldflags -X` silently no-ops unless the target variable has a constant string initializer.** The first prototype used `var urlSlot = "…" + strings.Repeat("#", 0)`; the flag was ignored and the binary fell back to its source default. It looked like it worked. What caught it was a control build pointed at a dead port that *should* have failed and didn't — so the implementation must keep that control as a test (§8.2 #12), not just eyeball the happy path.
 2. **A promoted API fetches its spec when help or dispatch needs command metadata.** With an unreachable `SpecURL` the root help fails hard (`generated commands for promoted API "store" are unavailable: spec discovery failed …`) rather than degrading. That is upstream's documented behaviour for promoted roots, and it means the artifact must ship pointing at a URL that will resolve — plus a friendly wrapper for the offline case (§4.7 G3).
-3. The fetched spec is cached under `RSH_CACHE_DIR`, so the first invocation pays the fetch and later ones do not; `sbs doctor` reports freshness.
+3. **`SetCommandDescription(short, "")` silently falls back to restish's own `**Restish** is a CLI for…` blurb.** Found while probing the FFI variant (§10.2): an empty long description reverted the branded root help. The long text must be non-empty, and §8.1 #6 asserts the root long help is ours.
+4. The fetched spec is cached under `RSH_CACHE_DIR`, so the first invocation pays the fetch and later ones do not; `sbs doctor` reports freshness.
 
 ---
 
@@ -218,7 +219,7 @@ Migration for existing users, once: if `~/.config/sbs/sbs.json` is absent and `~
 | `_preflight` (41 l) | **ported**, ~30 lines, inside the auth handler (§4.3) |
 | `_do_login`, `_do_logout` (85 l) | **absorbed** by the handler; ~40 lines of thin verbs remain |
 | `_do_connect`, `_retry_args`, `cli()` + `execvp` (57 l) | ~30 lines: one config write, one profile default, one dispatch |
-| Output scrubber, protected spans, reserved passthrough, help injection (~150 l, **planned** in §10) | **never written** |
+| Output scrubber, protected spans, reserved passthrough, help injection (~150 l, **planned** in §10.1) | **never written** |
 | New: `download-cli`, `self-update` (§5.8) | ~80 lines |
 
 Net ≈ **150–200 lines of Go** against 390 Python + 150 planned. The generated operations were never our code; they come from the spec either way.
@@ -528,7 +529,7 @@ We hand users an executable, so: sha256 in the manifest, shown in the UI, verifi
 3. `baseURL()` precedence: user config > `SBS_URL` > slot/ldflags > compiled default.
 4. `standaloneAuth`: cached token reused; `503 auth_disabled` → no header and no prompt; `401` with `login_info` → message to stderr **once**, before the first prompt; successful login stores the token; `Force` re-authenticates. These are the assertions inherited from the deleted `test_sdk_cli_login_info.py`, so the [login-info.md](login-info.md) §7 contract keeps a test after the Python shim is gone.
 5. Reserved-name guard (pytest, repo side): no `x-cli-name` in the OpenAPI spec collides with `cli`, `auth`, `cache`, `config`, `doctor`, `completion`, `version`, or a local verb — upstream makes such a collision a startup failure, and this catches it at PR time.
-6. Help assertions on a built binary: root usage says `sbs`, operations are at the root, and no `restish` appears outside the §3.3 allowlist (which is itself asserted to be exactly four entries, so an upstream fix or regression is visible).
+6. Help assertions on a built binary: root usage says `sbs`, **the root long description is ours** (guards §3.4 #3), operations are at the root, and no `restish` appears outside the §3.3 allowlist (which is itself asserted to be exactly four entries, so an upstream fix or regression is visible).
 
 ### 8.2 Feature B — server (pytest)
 
@@ -623,7 +624,11 @@ Required by this design, not optional:
 
 ---
 
-## 10. Rejected: PyInstaller over the Python shim — do not implement
+## 10. Rejected alternatives
+
+Recorded with their measurements so they are not relitigated, and so nobody mistakes either for a fallback.
+
+### 10.1 PyInstaller over the Python shim — do not implement
 
 This was the original plan and the first version of this document. It is recorded **only** so that the measurements behind the decision are not lost, and so nobody re-proposes it. It is not a fallback, not a phase, and not an option if Go turns out to be inconvenient: the Python shim it depends on is deleted by this design (§4.6), and PyInstaller appears nowhere in the implementation.
 
@@ -649,6 +654,27 @@ This was the original plan and the first version of this document. It is recorde
 
 Nothing about the *transport* half of that design was wrong, and it is carried over intact: the endpoints, the manifest, platform detection, the ACL floor, the install scripts, the UI modal and the security posture in §5–§7 are the same conclusions reached there.
 
+### 10.2 restish as a C shared/static library called from Python
+
+Asked during review: keep the CLI in Python and call restish through a `.so`/`.dll` (or a linkable `.a`), shipping the packed Python app and the library together. Probed rather than argued — a real `c-shared` build exporting `SbsRun(argc, argv)` was called from Python via `ctypes` and returned live data from a running store, with a **0.03 s** startup (lazy `dlopen`, faster than PyInstaller's extraction). One finding is in the idea's favour and worth keeping on record: **restish never calls `os.Exit` internally** (0 call sites across `exit.go`, `cli.go`, `root.go`, `setup.go`, `dispatch.go`, `completion.go`, `plugin_install.go`); it returns a typed `ExitCodeError`, so it is well-behaved inside a host process.
+
+It still loses, for four measured reasons:
+
+| # | Finding |
+| --- | --- |
+| 1 | **`c-shared` and `c-archive` require cgo**, which ends single-box cross-compilation. Verified: `CGO_ENABLED=0` refuses (`requires external (cgo) linking`); `GOOS=windows` needs mingw-w64 (`unrecognized option '-mthreads'`), `GOOS=darwin` needs clang + Apple's SDK (`unrecognized option '-arch'`), and even `linux/arm64` needs an aarch64 assembler. Upstream demonstrates the same constraint: every goreleaser build is `CGO_ENABLED=0` **except** `restish-pkcs11`, which is split into five per-platform build ids |
+| 2 | **It reinstates PyInstaller** — and with it five native CI runners, 0.17 s extraction per command, the build host's glibc floor, and the compressed-PYZ problem that forced the trailer/sidecar URL hacks (§10.1) |
+| 3 | **The C ABI cannot carry the API this design uses.** Only C types cross, so `SetDefaultConfig`, `SetCommandSurface` and `AddAuthHandler` (a Go *interface*) are unreachable from Python; the probe's `lib.go` had to hold all branding and config in Go while Python got ten lines of argv marshalling. A Python auth handler would need Go→Python callbacks across the GIL from a Go-owned thread. The result is two languages plus a hand-written ABI, with the logic still in Go |
+| 4 | **Bigger, not smaller**: the `.so` measured **48.4 MB** against a 32 MB static binary (cgo linking cannot drop unreachable code the way the pure-Go link does), before adding a packed interpreter |
+
+A linkable `.a` is the same trade plus wheel-build friction: on Windows, Go's `c-archive` emits mingw-format objects that do not link cleanly against MSVC-built CPython.
+
+**And there is no prebuilt library to download.** Checked exhaustively: release v2.3.0 ships 30 assets, all `.tar.gz`/`.zip` archives of *executables* (`restish` plus four plugin binaries) and `checksums.txt` — zero `.so`/`.dll`/`.dylib`/`.a`, and `-buildmode` appears nowhere in `.goreleaser.yml`, the `Makefile` or `docs/release-packaging.md`. Nor could a useful one exist without upstream work: a Go `c-shared` object exports only the functions *its own* main package marks `//export`, and restish marks none — its public surface is deliberately Go-typed. The library the project does offer is the **Go module**, which is what §3 consumes. Their cross-language extension mechanism is out-of-process plugins (`restish-bulk`, `restish-csv`, `restish-mcp` are separate executables), not FFI.
+
+**Where this would be the right tool:** if the *server* or a plugin ever needs restish's request pipeline callable from Python. That is an additive, independent decision, and it must not reshape the CLI, whose requirement is a single native executable on a machine with no Python.
+
+**On "no Go toolchain":** the goal is already met. The runtime image needs none — CI links the five static binaries once per release and the server bakes each deployment's URL by patching the slot in place (M9). Zero Go *anywhere* is only possible by shipping upstream's stock binary unmodified, which is today's state and is exactly what leaves Feature A unsolved (§2). Branding costs one link per release, in CI; this alternative would raise that bill to Go + cgo + mingw-w64 + aarch64-gcc + clang with Apple's SDK.
+
 ---
 
 ## 11. Issue index
@@ -656,6 +682,7 @@ Nothing about the *transport* half of that design was wrong, and it is carried o
 | Ref | One line | Where |
 | --- | --- | --- |
 | G1–G10 | Two unhookable upstream strings, a wrong `doctor` hint, offline promoted-root help, depending on a "first pass" API, pip distribution, a shared-subtree template, the breaking change for today's `sbs` users, the `-ldflags` no-op trap, config migration, a new toolchain dependency | §4.7 |
+| §10.1–10.2 | Why PyInstaller-over-the-shim and a C-shared library behind a Python CLI were both rejected, with the measurements | §10 |
 | B1–B18 | Cross-compilation, URL baking with and without a toolchain, the `darwin-arm64` signature, image size, a compiler in production, cache lifetime, concurrency, the ACL override footgun, platform detection, caching, bandwidth, traversal, `Host`/linker injection, spec drift, stale registration, quarantine/AV, verifiability | §5.11 |
 
 ---
