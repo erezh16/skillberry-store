@@ -206,6 +206,20 @@ update-sdk: ## Update the SDK, if needed
 
 PYTHON_SDK_DIR = client/python/$(SERVICE_NAME_CN)_sdk
 
+# Whether to inject the Python `restish` shim CLI (scripts/sdk_cli.py) into the
+# generated SDK and declare it as a console script.
+#
+# Defaults to 1 so every asset that relies on the shim today keeps its CLI with
+# no change. An asset that has replaced the shim with its own CLI sets
+# `SDK_PY_CLI := 0` in .mk/local.mk; skillberry-store does, because its `sbs` is
+# now a native Go binary that embeds restish as a library rather than shelling
+# out to it (skillberry-store docs/design/new_cli.md §4.6 / G6).
+#
+# The template itself is deprecated: the subprocess model it is built on is what
+# made the CLI's output impossible to brand. It is removed from
+# skillberry-common once no asset sets SDK_PY_CLI=1.
+SDK_PY_CLI ?= 1
+
 generate-sdk: install-requirements # Generate SDK
 	@mkdir -p $(PYTHON_SDK_DIR)
 	@rm -fr $(PYTHON_SDK_DIR)/*
@@ -213,22 +227,26 @@ generate-sdk: install-requirements # Generate SDK
 		-g python \
 		-o $(PYTHON_SDK_DIR) \
 		--package-name $(SERVICE_NAME_CN)_sdk
+	@echo "==> Backing up setup.py and pyproject.toml"; \
+		cp $(PYTHON_SDK_DIR)/setup.py $(PYTHON_SDK_DIR)/setup.py.bak; \
+		cp $(PYTHON_SDK_DIR)/pyproject.toml $(PYTHON_SDK_DIR)/pyproject.toml.bak;
+	@echo "==> Fixing pyproject.toml build backend to use Poetry..."
+	@toml set --to-array --toml-path $(PYTHON_SDK_DIR)/pyproject.toml "build-system.requires" "[\"poetry-core>=1.0.0\"]"
+	@toml set --toml-path $(PYTHON_SDK_DIR)/pyproject.toml "build-system.build-backend" "poetry.core.masonry.api"
+ifeq ($(SDK_PY_CLI),1)
 	@echo "==> Adding CLI module to SDK..."
 	@sed -e 's|{{API_NAME}}|$(ACRONYM_LC)|g' \
 	     -e 's|{{API_URL}}|$(OPEN_API_SPEC_URL)|g' \
 	     $(SB_COMMON_PATH)/scripts/sdk_cli.py > $(PYTHON_SDK_DIR)/$(SERVICE_NAME_CN)_sdk/sdk_cli.py
-	@echo "==> Backing up setup.py and pyproject.toml"; \
-		cp $(PYTHON_SDK_DIR)/setup.py $(PYTHON_SDK_DIR)/setup.py.bak; \
-		cp $(PYTHON_SDK_DIR)/pyproject.toml $(PYTHON_SDK_DIR)/pyproject.toml.bak;
 	@echo "==> Updating setup.py to add CLI entry point..."
 	@sed -i '/package_data=/i\    entry_points={\n        "console_scripts": [\n            "$(ACRONYM_LC)=$(SERVICE_NAME_CN)_sdk.sdk_cli:cli",\n        ],\n    },' $(PYTHON_SDK_DIR)/setup.py
-	@echo "==> Fixing pyproject.toml build backend to use Poetry..."
-	@toml set --to-array --toml-path $(PYTHON_SDK_DIR)/pyproject.toml "build-system.requires" "[\"poetry-core>=1.0.0\"]"
-	@toml set --toml-path $(PYTHON_SDK_DIR)/pyproject.toml "build-system.build-backend" "poetry.core.masonry.api"
 	@echo "==> Adding CLI entry point to [tool.poetry.scripts]..."
 	@toml add_section --toml-path $(PYTHON_SDK_DIR)/pyproject.toml "tool.poetry.scripts"
 	@toml set --toml-path $(PYTHON_SDK_DIR)/pyproject.toml "tool.poetry.scripts.$(ACRONYM_LC)" "$(SERVICE_NAME_CN)_sdk.sdk_cli:cli"
+else
+	@echo "==> SDK_PY_CLI=0: leaving the SDK a pure Python library (no $(ACRONYM_LC) console script)"
+endif
 	@echo "==> Removing [project.scripts] section if it exists..."
 	@sed -i '/^\[project\.scripts\]/,/^$$/d' $(PYTHON_SDK_DIR)/pyproject.toml
-	@echo "==> SDK generation complete with CLI support"
+	@echo "==> SDK generation complete$(if $(filter 1,$(SDK_PY_CLI)), with CLI support,)"
 

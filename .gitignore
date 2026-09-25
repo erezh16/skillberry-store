@@ -192,3 +192,14 @@ CLAUDE.md
 docs/demo-videos/**/out/
 .vercel
 .env*
+
+# Native `sbs` CLI build outputs (docs/design/new_cli.md).
+# The Go binary and the cross-compiled artifact matrix are build products, and
+# each artifact is ~32 MB. `vendor/` is deliberately not committed either:
+# measured at 44 MB / 2248 files, while go.mod + go.sum already pin every
+# module by hash. `make cli-vendor` materialises it when an offline build
+# needs it.
+cli/go/sbs
+cli/go/sbs.exe
+cli/go/vendor/
+cli-prebuilt/
