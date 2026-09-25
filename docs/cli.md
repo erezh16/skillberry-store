@@ -358,12 +358,19 @@ generated SDK nor `sbs` has a method or command for them.
 thing, flags included:
 
 ```bash
-# one skill
+# one skill — either spelling works
+sbs get-skill pdf-forms --npx-agent claude-code
 sbs get-skill pdf-forms --fields name,_npx_install
 
 # every skill you can see, each with its own command
 sbs list-skills --fields name,_npx_install
 ```
+
+`--npx-agent` both picks the agent and asks for the command, since it has no
+other effect. Note that **no preset returns the command — `--fields full`
+included**: it is a capability URL, so it is opt-in only, by one of the two
+spellings above (see [§4.3.5](design/npx.md)). `grep npx` over a `--fields full`
+response finding nothing is the designed behaviour, not a missing field.
 
 In the UI, each skill's detail page has an **Install with npx** card with an
 agent picker and a copy button.
@@ -447,14 +454,43 @@ credential-bearing URL will see it.
 
 ### Operator notes
 
-npx publishing is **off by default** and is turned on with `npx_publish: true` in
-`access_control_config.yaml`. It is declared there rather than in an environment
-variable because it *is* an access-control decision: it is the one setting that
-makes skill **content**, not just metadata, readable without a session.
+npx publishing is controlled by `npx_publish` in `access_control_config.yaml`.
+It is declared there rather than in an environment variable because it *is* an
+access-control decision: it is the one setting that makes skill **content**, not
+just metadata, readable without a session.
+
+It has three values, and is **independent of the `mode:` above** — every
+combination is legal, because a mode-dependent default is exactly the subtlety
+that surprises whoever later enables auth:
+
+| `npx_publish` | Effect |
+| --- | --- |
+| `true` | Every visible skill is publishable. Per-skill flags are ignored. |
+| `false` | Nothing is; the `/pub` routes are not registered at all. Per-skill flags are ignored. |
+| `selective` | **The default.** Each skill's own `npx_publish` flag decides. |
+
+`true` and `false` deliberately override the per-skill flag, so an operator can
+publish or withdraw the whole store in one edit and be certain that is what
+happened.
+
+Under `selective`, a skill that has **not** set its flag is **not** published, so
+a store that has configured nothing publishes nothing. Opt a skill in by editing
+it — it is an ordinary manifest field:
+
+```bash
+sbs update-skill pdf-forms --body='{"name":"pdf-forms","description":"…","npx_publish":true}'
+```
+
+…or with the **Publish for npx** checkbox in the skill's Edit dialog in the UI,
+where its current state also shows on the skill's page. Changing it needs the
+same `skills:update` permission as any other manifest edit; no separate role or
+endpoint is involved. A junk value for the store-wide setting fails **closed**
+(`false`) with a warning, rather than silently landing on the default.
 
 | Concern | What to know |
 | --- | --- |
-| **What gets published** | Every skill visible to a holder of `skills:list`, one per install URL. There is no lifecycle-state or tag filter: a `state: new` draft is already visible to every such user, so hiding it from npx would misreport what the store contains. To publish a curated subset, use a namespace — which users can see and filter by — rather than an invisible server-side filter. |
+| **What gets published** | Under `true`, every skill visible to a holder of `skills:list`; under `selective`, those of them that have opted in. One skill per install URL. There is still no lifecycle-state or tag filter: a `state: new` draft is already visible to every such user, so hiding it from npx would misreport what the store contains. The per-skill flag is a deliberate, visible, editable opt-in — not an invisible server-side rule. |
+| **Checking what is published** | The boot log states the mode and how many skills are publishable right now, so `selective` with nothing opted in reads as `0` rather than being discovered through a failed install. |
 | **`SBS_PUBLIC_URL`** | Set it. The install command is absolute, and behind an ingress or load balancer the server cannot derive its own externally-visible URL; without it, the command is omitted rather than guessed. Useful beyond npx — it is the value any copy-paste snippet needs. |
 | **Access tokens in URLs** | With access control on, the path segment is a read-only capability token scoped to **one skill**, derived from a durable seed (`SBS_PUBLISH_SEED`, which must be treated as confidential — anyone holding it can derive a URL for any skill without authenticating). It is re-authorized on every request, so it stops working the moment its tenant loses `skills:list` or its account is removed. It is not accepted as an `Authorization: Bearer` value anywhere. Note that it travels to `add-skill.vercel.sh` in `installUrl` unless `DO_NOT_TRACK=1` is set — see above. |
 | **The token is durable** | It keeps returning *future* edits to that skill, not only the version installed, until the secret is rotated. Where the skill's content is committed next to the lockfile that is immaterial; it matters if a published skill later gains sensitive content. |

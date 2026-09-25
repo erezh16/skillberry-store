@@ -77,14 +77,22 @@ say "Asking the store for the install command"
 # The store composes the whole command, flags included. Never hand-assemble it:
 # `-a` must be explicit (`-y` with no detected agent installs into ~75 agent
 # directories) and there is one definition of this string, server-side.
+# `npx_agent` alone would do — passing it requests the command — but naming the
+# field too keeps the intent obvious to whoever reads this next.
 response="$(curl -fsS "${auth[@]}" --get \
-    --data-urlencode 'fields=_npx_install' \
+    --data-urlencode 'fields=name,_npx_install' \
     --data-urlencode "npx_agent=${AGENT}" \
     "${SBS_URL}/skills/${SKILL}")"
 command_line="$(printf '%s' "$response" \
     | sed -n 's/.*"_npx_install":"\([^"]*\)".*/\1/p')"
 if [ -z "$command_line" ]; then
-    fail "no _npx_install in the response. Is npx_publish: true in access_control_config.yaml, and is SBS_PUBLIC_URL set? Response: ${response}"
+    fail "no _npx_install in the response. Check, in order:
+  * npx_publish in access_control_config.yaml — 'false' publishes nothing, and
+    'selective' (the default) needs THIS skill to have npx_publish: true of its
+    own (set it in the UI's Edit dialog, or PUT /skills/${SKILL});
+  * SBS_PUBLIC_URL is set, or the command cannot be composed;
+  * '${SKILL}' is the HEAD of its name, not a superseded version.
+Response: ${response}"
 fi
 echo "$command_line"
 

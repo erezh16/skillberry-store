@@ -94,6 +94,10 @@ from fastapi.responses import Response
 from prometheus_client import Counter
 
 from skillberry_store.tools import publish_refs as refs
+from skillberry_store.access_control.config import (
+    NPX_PUBLISH_NONE,
+    NPX_PUBLISH_SELECTIVE,
+)
 from skillberry_store.tools.publish import (
     DEFAULT_AGENT,
     PublishedSkill,
@@ -105,6 +109,7 @@ from skillberry_store.tools.publish import (
     namespaces_of,
     npx_install_command,
     publishable_entry,
+    skill_publishable,
 )
 
 logger = logging.getLogger(__name__)
@@ -162,8 +167,18 @@ class NpxPublisher:
     def __init__(self, cfg: Any, public_url: Optional[str] = None):
         self.cfg = cfg
         self.public_url = public_url.rstrip("/") if public_url else None
-        self.enabled = bool(getattr(cfg, "npx_publish", False))
+        # Tri-state: "true" | "false" | "selective" (the default). `enabled` is
+        # "does this surface exist at all", which is everything but "false";
+        # whether a *given* skill is published is `skill_publishable`.
+        self.npx_publish = str(
+            getattr(cfg, "npx_publish", NPX_PUBLISH_SELECTIVE) or NPX_PUBLISH_SELECTIVE
+        )
+        self.enabled = self.npx_publish != NPX_PUBLISH_NONE
         self._seed: Optional[bytes] = None
+
+    def publishable(self, skill: Dict[str, Any]) -> bool:
+        """Whether ``skill`` is published, under this store's master switch."""
+        return skill_publishable(skill, self.npx_publish)
 
     # -- configuration --------------------------------------------------- #
     @property
@@ -213,13 +228,27 @@ class NpxPublisher:
         return refs.derive_ref(self.seed, tenant_id, scope)
 
     def slug_map(self, service: Any) -> Dict[str, Dict[str, Any]]:
-        """``{slug: skill}`` over the store's current HEADs.
+        """``{slug: skill}`` over the store's current HEADs — **every** one.
 
         Exposed so a *list* handler computes it once rather than once per item:
         the mapping is store-wide by construction (a slug collision is resolved
         across every skill, not within a page).
+
+        Deliberately **unfiltered** by the publish flag. Slug assignment has to be
+        stable across store mutations (§5.6), and toggling one skill's flag must
+        not renumber anyone else's suffix — which is exactly what would happen if
+        collision resolution only saw the published subset. Filtering happens
+        after assignment, in :meth:`publishable_slug_map`.
         """
         return assign_slugs(head_skills(service))
+
+    def publishable_slug_map(self, service: Any) -> Dict[str, Dict[str, Any]]:
+        """:meth:`slug_map` restricted to the skills this store publishes."""
+        return {
+            slug: skill
+            for slug, skill in self.slug_map(service).items()
+            if self.publishable(skill)
+        }
 
     def install_command(
         self,
@@ -252,6 +281,10 @@ class NpxPublisher:
             )
             return None
         if not is_head(service, skill):
+            return None
+        if not self.publishable(skill):
+            # Under `selective` this is the normal answer for a skill nobody has
+            # opted in: there is no URL to offer, so the UI shows no card.
             return None
         slug = self._slug_for(service, skill, slug_map=slug_map)
         if slug is None:
@@ -325,7 +358,10 @@ class NpxPublisher:
         if not self.enabled or not ref:
             return None
 
-        slugs = assign_slugs(head_skills(service))
+        # Only publishable skills are candidates, so an un-opted-in skill's slug
+        # (disabled mode) and its derived ref (standalone) both 404 — the same
+        # answer a prober gets for a skill that does not exist.
+        slugs = self.publishable_slug_map(service)
         namespaces = sorted({n for s in slugs.values() for n in namespaces_of(s)})
 
         if self.acl_mode == "disabled":
@@ -377,7 +413,7 @@ class NpxPublisher:
         hash every archive before it can answer, because the digest is part of
         the index.
         """
-        slugs = assign_slugs(head_skills(service))
+        slugs = self.publishable_slug_map(service)
         if resolved.slug is not None:
             skill = slugs.get(resolved.slug)
             if skill is None:
@@ -406,9 +442,15 @@ class NpxPublisher:
         return entries
 
     def publishable_count(self, service: Any) -> int:
-        """How many skills this store would publish — for the boot log line."""
+        """How many skills this store would publish — for the boot log line.
+
+        Counts what the master switch and the per-skill flags actually allow, so
+        under ``selective`` a store where nobody has opted a skill in logs ``0``
+        and the operator can see that immediately rather than after a failed
+        install.
+        """
         try:
-            return len(assign_slugs(head_skills(service)))
+            return len(self.publishable_slug_map(service))
         except Exception as e:  # noqa: BLE001 — a log line must not break boot
             logger.warning("Could not count publishable skills: %s", e)
             return 0
@@ -417,9 +459,17 @@ class NpxPublisher:
 # --------------------------------------------------------------------------- #
 # The opt-in `_npx_install` field on GET /skills/ and GET /skills/{id} (§4.3.5)
 # --------------------------------------------------------------------------- #
-#: Keys the install command is composed from: ``uuid`` and ``name`` decide
-#: whether the skill is the HEAD and which slug it is published under.
-_NPX_IDENTITY_FIELDS = {"uuid", "name"}
+#: Keys the install command is *decided* from, which the caller need not have
+#: asked for: ``uuid`` and ``name`` decide whether the skill is the HEAD and which
+#: slug it is published under, and ``npx_publish`` decides whether it is published
+#: at all under a ``selective`` master switch.
+#:
+#: Every one of these has to be widened into the service's field allowlist and
+#: stripped again afterwards. Miss one and the decision silently reads ``None``
+#: from a projected-away key: omitting ``npx_publish`` here made
+#: ``?fields=name,_npx_install`` return no command for a skill that *was* opted
+#: in, because the flag had been projected out before the gate looked at it.
+_NPX_IDENTITY_FIELDS = {"uuid", "name", "npx_publish"}
 
 #: Shape of an agent name the CLI's ``-a`` flag accepts. A regex rather than an
 #: allow-list on purpose: the CLI supports ~75 agents and adds more, so a list
@@ -445,21 +495,37 @@ def normalise_agent(agent: Optional[str]) -> str:
     return DEFAULT_AGENT
 
 
-def npx_install_requested(fields: Optional[str]) -> bool:
-    """Whether ``fields`` asks for ``_npx_install``.
+def npx_install_requested(fields: Optional[str], agent: Optional[str] = None) -> bool:
+    """Whether this request asks for ``_npx_install``.
 
-    ``_npx_install`` carries no preset tag, so this is only ever true for an
-    explicit CSV allowlist that names it (§4.3.5).
+    Two ways to ask, because one of them was a trap:
+
+    * naming ``_npx_install`` in a CSV ``fields`` allowlist — it carries no preset
+      tag, so a preset never selects it (§4.3.5);
+    * passing ``npx_agent`` at all. That parameter pins the ``-a`` flag in the
+      install command and has **no other effect**, so a caller who passes it and
+      gets no command back has been silently ignored. ``sbs get-skill <name>
+      --npx-agent claude-code`` returning a skill with no install information was
+      reported as a bug, and it was one: asking which agent to target is asking
+      for the command.
+
+    Note what is deliberately *not* here: ``fields=full``. That preset is used
+    internally — gathering export inputs, populating skills for the vMCP bundle —
+    and none of those paths should start returning a capability URL (§4.3.5).
     """
     from skillberry_store.services.field_selection import (
         parse_fields_spec,
         should_run_mechanism,
     )
 
+    if agent is not None:
+        return True
     return should_run_mechanism(parse_fields_spec(fields, "skill"), "_npx_install")
 
 
-def expand_npx_fields(fields: Optional[str]) -> "tuple[Optional[str], set]":
+def expand_npx_fields(
+    fields: Optional[str], agent: Optional[str] = None
+) -> "tuple[Optional[str], set]":
     """Widen ``fields`` with the identity keys ``_npx_install`` needs.
 
     Returns ``(fields_to_pass_to_the_service, keys_to_strip_afterwards)``.
@@ -469,10 +535,14 @@ def expand_npx_fields(fields: Optional[str]) -> "tuple[Optional[str], set]":
     that back. So the allowlist is widened on the way in and narrowed again on
     the way out, which keeps the response shape the caller's choice and costs no
     extra store read.
+
+    Passing ``npx_agent`` with a preset works the same way: the preset is expanded
+    to an explicit list so the identity fields are present, and anything the
+    caller did not ask for is stripped again on the way out.
     """
     from skillberry_store.services.field_selection import parse_fields_spec
 
-    if not npx_install_requested(fields):
+    if not npx_install_requested(fields, agent):
         return fields, set()
     allow = parse_fields_spec(fields, "skill")
     needed = _NPX_IDENTITY_FIELDS - allow
@@ -498,7 +568,7 @@ def attach_npx_install(
     asked for a convenience, and there is nothing they could do about any of
     those conditions.
     """
-    if not npx_install_requested(fields):
+    if not npx_install_requested(fields, agent):
         return
     publisher: Optional[NpxPublisher] = getattr(request.app.state, "npx", None)
     if publisher is not None and publisher.enabled and items:
@@ -542,17 +612,25 @@ def register_publish_api(
 
     if not publisher.enabled:
         logger.info(
-            "npx publishing is OFF (npx_publish=false) — /pub/* is not registered"
+            "npx publishing is OFF (npx_publish=%s) — /pub/* is not registered",
+            publisher.npx_publish,
         )
         return
 
     logger.info(
-        "npx publishing is ON (acl mode=%s, %d skill(s) publishable, public_url=%s) "
-        "— serving SKILL.md content at GET /pub/{ref}/.well-known/agent-skills/*",
+        "npx publishing is ON (npx_publish=%s, acl mode=%s, %d skill(s) "
+        "publishable now, public_url=%s) — serving SKILL.md content at "
+        "GET /pub/{ref}/.well-known/agent-skills/*",
+        publisher.npx_publish,
         publisher.acl_mode,
         publisher.publishable_count(service),
         publisher.public_url or "(derived per request)",
     )
+    if publisher.npx_publish == NPX_PUBLISH_SELECTIVE:
+        logger.info(
+            "npx_publish=selective — each skill's own `npx_publish` flag decides; "
+            "a skill that has not set it is not published"
+        )
 
     # The two routes are matched by a distinct final segment — `index.json` does
     # not end in `.zip` — so neither can shadow the other whatever the
@@ -620,7 +698,7 @@ def register_publish_api(
         if digest:
             from skillberry_store.tools.publish import get_cache
 
-            slugs = assign_slugs(head_skills(service))
+            slugs = publisher.publishable_slug_map(service)
             skill = slugs.get(slug)
             entry = (
                 get_cache().by_digest(str(skill["uuid"]), slug, digest)

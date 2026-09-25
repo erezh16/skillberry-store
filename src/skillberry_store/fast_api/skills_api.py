@@ -162,8 +162,9 @@ def register_skills_api(
             None,
             description=(
                 "Agent to pin with `-a` in the '_npx_install' command "
-                "(default 'claude-code'). Ignored unless 'fields' names "
-                "'_npx_install'."
+                "(default 'claude-code'). Passing this also REQUESTS "
+                "'_npx_install' — it has no other effect, so asking which "
+                "agent to target is asking for the command."
             ),
         ),
     ):
@@ -181,7 +182,7 @@ def register_skills_api(
             # command is composed from the request's base URL and the caller's
             # ambient subject, neither of which the service layer has
             # (docs/design/npx.md §4.3.5).
-            service_fields, strip = expand_npx_fields(fields)
+            service_fields, strip = expand_npx_fields(fields, npx_agent)
             result = service.list_all(
                 fields=service_fields,
                 search=search,
@@ -232,7 +233,10 @@ def register_skills_api(
                 "Agent to pin with `-a` in the '_npx_install' command "
                 "(default 'claude-code'). This is what the UI's agent "
                 "picker sends, so the command string has exactly one "
-                "author. Ignored unless 'fields' names '_npx_install'."
+                "author. Passing it also REQUESTS '_npx_install' — it has "
+                "no other effect. Note that no preset, 'full' included, "
+                "returns that field: it is a capability URL, so it is "
+                "opt-in only."
             ),
         ),
     ):
@@ -257,7 +261,7 @@ def register_skills_api(
                 500 for other errors.
         """
         try:
-            service_fields, strip = expand_npx_fields(fields)
+            service_fields, strip = expand_npx_fields(fields, npx_agent)
             skill = service.get(uuid_or_name, fields=service_fields)
             attach_npx_install(
                 request, service, fields, [skill], strip=strip, agent=npx_agent

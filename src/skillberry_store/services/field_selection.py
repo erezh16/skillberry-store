@@ -124,6 +124,11 @@ SKILL_FIELD_TAGS: FieldTags = {
     "version":       {"narrow", "wide", "full"},
     "tool_uuids":    {"narrow", "wide", "full"},
     "snippet_uuids": {"narrow", "wide", "full"},
+    # Per-skill npx publish flag (docs/design/npx.md §5.12). Tagged for
+    # ``narrow`` so the UI's listing and detail views can render and edit it
+    # without opting in — it is a plain boolean describing the skill, not a
+    # capability like ``_npx_install``.
+    "npx_publish":   {"narrow", "wide", "full"},
     "extra":         {"wide", "full"},
     "parent":        {"wide", "full"},
     "created_at":    {"wide", "full"},

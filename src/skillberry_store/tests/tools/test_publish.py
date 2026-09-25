@@ -374,6 +374,42 @@ def test_the_namespace_allowlist_does_not_affect_other_scopes(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# The tri-state master switch and the per-skill flag (§5.12)
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("flag", [True, False, None])
+@pytest.mark.parametrize(
+    "master,expected_for",
+    [
+        # `true`/`false` ignore the skill's own flag — that is what makes them
+        # useful: one edit publishes or withdraws the whole store.
+        ("true", lambda flag: True),
+        ("false", lambda flag: False),
+        # `selective` consults it, and an unset flag means NOT published.
+        ("selective", lambda flag: flag is True),
+    ],
+)
+def test_skill_publishable_truth_table(master, expected_for, flag):
+    skill = make_skill("u1", "demo", npx_publish=flag)
+    assert pub.skill_publishable(skill, master) is expected_for(flag)
+
+
+def test_skill_publishable_treats_a_missing_key_as_not_published():
+    """A manifest written before the field existed is not silently published."""
+    skill = make_skill("u1", "demo")
+    skill.pop("npx_publish", None)
+    assert pub.skill_publishable(skill, "selective") is False
+    assert pub.skill_publishable(skill, "true") is True
+
+
+def test_skill_publishable_is_independent_of_every_other_gate():
+    """Not entangled with lifecycle state, tags or the internal marker — those
+    are separate concerns and conflating them would re-create the invisible
+    second visibility rule §4.3.1 argues against."""
+    skill = make_skill("u1", "demo", npx_publish=True, state="new", tags=[pub.INTERNAL_TAG])
+    assert pub.skill_publishable(skill, "selective") is True
+
+
+# --------------------------------------------------------------------------- #
 # The per-skill internal opt-out (§4.3)
 # --------------------------------------------------------------------------- #
 def test_is_internal_reads_an_ordinary_tag():

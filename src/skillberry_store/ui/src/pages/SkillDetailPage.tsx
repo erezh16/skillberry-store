@@ -70,6 +70,7 @@ export function SkillDetailPage() {
     toolUuids: [] as string[],
     snippetUuids: [] as string[],
     extra: {} as Record<string, any>,
+    npxPublish: false,
   });
   const [tagInput, setTagInput] = useState('');
   const [extraInput, setExtraInput] = useState('{}');
@@ -160,6 +161,7 @@ export function SkillDetailPage() {
         toolUuids: skill.tools?.map(t => t.uuid) || [],
         snippetUuids: skill.snippets?.map(s => s.uuid) || [],
         extra: skill.extra || {},
+        npxPublish: skill.npx_publish === true,
       });
       setExtraInput(JSON.stringify(skill.extra || {}, null, 2));
       setIsEditModalOpen(true);
@@ -195,6 +197,10 @@ export function SkillDetailPage() {
       snippet_uuids: editedSkill.snippetUuids,
       state: skill!.state,
       extra: Object.keys(parsedExtra).length > 0 ? parsedExtra : undefined,
+      // Must be sent explicitly. `update` replaces the manifest, so omitting a
+      // field clears it — leaving this out would silently un-publish a skill on
+      // any unrelated edit.
+      npx_publish: editedSkill.npxPublish,
     } as unknown as Skill;
 
     updateMutation.mutate(updatedSkill);
@@ -555,6 +561,22 @@ export function SkillDetailPage() {
                   <DescriptionListDescription>{skill.version}</DescriptionListDescription>
                 </DescriptionListGroup>
               )}
+
+              <DescriptionListGroup>
+                <DescriptionListTerm>Publish for npx</DescriptionListTerm>
+                <DescriptionListDescription>
+                  {/* Always shown, including when unset: "this skill is not
+                      published" is the information a reader is looking for, and
+                      hiding the row when the flag is absent would leave them
+                      unable to tell that from the feature being off. */}
+                  <Label
+                    color={skill.npx_publish === true ? 'green' : 'grey'}
+                    data-testid="npx-publish-state"
+                  >
+                    {skill.npx_publish === true ? 'Enabled' : 'Not enabled'}
+                  </Label>
+                </DescriptionListDescription>
+              </DescriptionListGroup>
 
               {skill.tags && skill.tags.length > 0 && (
                 <DescriptionListGroup>
@@ -1092,6 +1114,28 @@ export function SkillDetailPage() {
             />
             <Text component="small" style={{ color: '#6a6e73', marginTop: '0.25rem', display: 'block' }}>
               Optional key-value pairs for additional flexible information (must be valid JSON object)
+            </Text>
+          </FormGroup>
+
+          {/* Per-skill npx publish flag (docs/design/npx.md §5.12). It is an
+              ordinary manifest field, so it is saved by this modal like any
+              other and governed by the same `skills:update` permission — the
+              server refuses the whole update for a role that lacks it, and the
+              403 surfaces in `editError` above. */}
+          <FormGroup label="Publish for npx" fieldId="skill-npx-publish">
+            <Checkbox
+              id="skill-npx-publish"
+              label="Allow installing this skill with `npx skills add`"
+              isChecked={editedSkill.npxPublish}
+              onChange={(_, checked) =>
+                setEditedSkill({ ...editedSkill, npxPublish: checked })
+              }
+            />
+            <Text component="small" style={{ color: '#6a6e73', marginTop: '0.25rem', display: 'block' }}>
+              Applies when this store's <code>npx_publish</code> setting is{' '}
+              <code>selective</code>. With it set to <code>true</code> or{' '}
+              <code>false</code> the store-wide value decides and this checkbox
+              has no effect.
             </Text>
           </FormGroup>
         </Form>

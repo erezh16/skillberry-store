@@ -16,6 +16,9 @@ import pytest
 
 from skillberry_store.access_control.config import (
     _DEFAULT_UNAUTH_PATHS,
+    NPX_PUBLISH_ALL,
+    NPX_PUBLISH_NONE,
+    NPX_PUBLISH_SELECTIVE,
     load_config,
 )
 
@@ -28,34 +31,67 @@ def _write(tmp_path, contents: str) -> str:
     return str(path)
 
 
-def test_default_in_code_is_off():
-    """Fail-closed, and deliberately not mode-dependent."""
-    assert load_config("/nonexistent/acl.yaml").npx_publish is False
+def test_default_in_code_is_selective():
+    """The default is per-skill opt-in, not a blanket on or off.
+
+    Conservative in effect — a skill that has set no flag is not published — but
+    it makes publishing a per-skill decision rather than an all-or-nothing one.
+    """
+    assert load_config("/nonexistent/acl.yaml").npx_publish == NPX_PUBLISH_SELECTIVE
 
 
-def test_an_older_config_file_keeps_loading_with_the_feature_off(tmp_path):
-    """Purely additive: the loader reads known keys and ignores unknown ones."""
+def test_an_older_config_file_keeps_loading(tmp_path):
+    """Purely additive: the loader reads known keys and ignores unknown ones.
+
+    Such a file resolves to `selective`, which publishes nothing until a skill is
+    opted in — so it stays as closed as it was before the setting existed.
+    """
     cfg = load_config(_write(tmp_path, "mode: disabled\n"))
-    assert cfg.npx_publish is False
+    assert cfg.npx_publish == NPX_PUBLISH_SELECTIVE
 
 
 @pytest.mark.parametrize("value", ["true", "yes", "on", '"1"'])
-def test_truthy_spellings_enable_it(tmp_path, value):
+def test_truthy_spellings_publish_everything(tmp_path, value):
+    """YAML parses bare `true` as a bool; the quoted spellings normalise too."""
     cfg = load_config(_write(tmp_path, f"mode: disabled\nnpx_publish: {value}\n"))
-    assert cfg.npx_publish is True
+    assert cfg.npx_publish == NPX_PUBLISH_ALL
 
 
-@pytest.mark.parametrize("value", ["false", "no", "off", "null"])
-def test_falsy_spellings_leave_it_off(tmp_path, value):
+@pytest.mark.parametrize("value", ["false", "no", "off"])
+def test_falsy_spellings_publish_nothing(tmp_path, value):
     cfg = load_config(_write(tmp_path, f"mode: disabled\nnpx_publish: {value}\n"))
-    assert cfg.npx_publish is False
+    assert cfg.npx_publish == NPX_PUBLISH_NONE
+
+
+@pytest.mark.parametrize("value", ["selective", "SELECTIVE", " selective "])
+def test_selective_is_accepted_case_and_space_insensitively(tmp_path, value):
+    cfg = load_config(_write(tmp_path, f"mode: disabled\nnpx_publish: {value}\n"))
+    assert cfg.npx_publish == NPX_PUBLISH_SELECTIVE
+
+
+def test_an_explicit_null_resolves_to_the_default(tmp_path):
+    """`npx_publish: null` is "I did not set this", same as omitting the key."""
+    cfg = load_config(_write(tmp_path, "mode: disabled\nnpx_publish: null\n"))
+    assert cfg.npx_publish == NPX_PUBLISH_SELECTIVE
 
 
 def test_a_junk_value_fails_closed_with_a_warning(tmp_path, caplog):
+    """Closed, not defaulted: a typo should publish nothing rather than land the
+    operator in a mode they did not choose."""
     with caplog.at_level(logging.WARNING, logger="skillberry_store.access_control.config"):
         cfg = load_config(_write(tmp_path, "mode: disabled\nnpx_publish: maybe\n"))
-    assert cfg.npx_publish is False
+    assert cfg.npx_publish == NPX_PUBLISH_NONE
     assert "npx_publish" in caplog.text
+
+
+@pytest.mark.parametrize("value", ["true", "false", "selective"])
+@pytest.mark.parametrize("mode", ["disabled"])
+def test_every_value_is_legal_at_any_acl_mode(tmp_path, value, mode):
+    """Independent of `mode` by design — a mode-dependent default is exactly the
+    subtlety that surprises someone who later enables auth. (The `standalone`
+    half needs users/roles/bindings and lives in test_publish_api.py.)"""
+    cfg = load_config(_write(tmp_path, f"mode: {mode}\nnpx_publish: {value}\n"))
+    assert (cfg.mode, cfg.npx_publish) == (mode, value)
 
 
 def test_pub_prefix_is_in_the_built_in_allowlist():
@@ -96,14 +132,32 @@ def test_the_allowlist_entry_does_not_widen_anything_else():
     [
         # mode: disabled — nothing is protected there anyway, so a bare dev
         # checkout is usable out of the box.
-        ("access_control_config.yaml", True),
-        # The demo operator opts in deliberately.
-        ("access_control_config.yaml.standalone", False),
+        ("access_control_config.yaml", NPX_PUBLISH_ALL),
+        # The demo ships `true` so every seeded skill is installable out of the
+        # box; a deployment wanting npx for only some skills uses `selective`.
+        ("access_control_config.yaml.standalone", NPX_PUBLISH_ALL),
     ],
 )
 def test_shipped_configs_declare_the_switch(filename, expected):
     cfg = load_config(str(REPO_ROOT / filename))
-    assert cfg.npx_publish is expected
+    assert cfg.npx_publish == expected
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "access_control_config.yaml",
+        "access_control_config.yaml.standalone",
+        "access_control_config.yaml.disabled",
+    ],
+)
+def test_shipped_configs_document_all_three_values(filename):
+    """The comment above the setting is where an operator learns the options, so
+    a fourth value added in code without documenting it fails here."""
+    text = (REPO_ROOT / filename).read_text()
+    header = text.split("npx_publish:")[0]
+    for value in (NPX_PUBLISH_ALL, NPX_PUBLISH_NONE, NPX_PUBLISH_SELECTIVE):
+        assert value in header, (filename, value)
 
 
 @pytest.mark.parametrize(

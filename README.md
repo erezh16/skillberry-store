@@ -50,7 +50,7 @@ the whole command — from the skill's page in the UI, or with
 - **CLI Support**: Command-line interface for all API operations.
 - **MCP frontend**: Expose virtual [MCP](https://github.com/modelcontextprotocol) servers for any subset of the tools or all of them.
 - **NFS/WebDAV frontend**: Expose skills as mountable filesystems (vNFS) over WebDAV or NFSv3 — readable by any tool that can mount a network drive.
-- **`npx skills add` frontend**: Publish skills over the open `/.well-known/agent-skills` discovery convention, so any skill installs into Claude Code, Cursor, Codex and ~70 other agents with one copy-pasted command and no prior setup. Off by default; see [the npx section of the CLI guide](docs/cli.md#install-skills-into-your-agent-with-npx).
+- **`npx skills add` frontend**: Publish skills over the open `/.well-known/agent-skills` discovery convention, so any skill installs into Claude Code, Cursor, Codex and ~70 other agents with one copy-pasted command and no prior setup. Opt in per skill, or turn it on store-wide; see [the npx section of the CLI guide](docs/cli.md#install-skills-into-your-agent-with-npx).
 - **Support Multiple MCP backends**: Consume and route additional tools from multiple backend MCP servers.
 - **Agentic Framework Integration**: Connect to different agentic frameworks via the MCP frontend.
 - **MCP control API**: Exposes an MCP server API for each of the available REST operations ( e.g., add tools, semantic search etc.)

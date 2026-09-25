@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
-import { NpxInstallCommand, NPX_AGENTS, DEFAULT_NPX_AGENT } from './NpxInstallCommand';
+import {
+  NpxInstallCommand,
+  NPX_AGENTS,
+  DEFAULT_NPX_AGENT,
+  NODE_DOWNLOAD_URL,
+  NODE_MIN_VERSION,
+} from './NpxInstallCommand';
 import { skillsApi } from '@/services/api';
 
 const COMMAND = 'npx skills add http://store.test/pub/pdf-forms -y -a claude-code';
@@ -91,6 +97,32 @@ describe('NpxInstallCommand', () => {
     expect(NPX_AGENTS[0].id).toBe('claude-code');
     expect(DEFAULT_NPX_AGENT).toBe('claude-code');
     expect(new Set(NPX_AGENTS.map(a => a.id)).size).toBe(NPX_AGENTS.length);
+  });
+
+  it('breaks the guidance into one item per matter', async () => {
+    // Reported as crowded when it was one run-together paragraph: where to run
+    // it, what you need first, and what it reports are three separate concerns.
+    vi.spyOn(skillsApi, 'npxInstallCommand').mockResolvedValue(COMMAND);
+    const { container } = render(<NpxInstallCommand skillId="u1" />);
+    await screen.findByDisplayValue(COMMAND);
+    const items = container.querySelectorAll('li');
+    expect(items.length).toBe(3);
+    expect(items[0].textContent).toMatch(/^Paste this in your project\.$/);
+    expect(items[1].textContent).toMatch(/Nothing to install first/);
+    // "npx reports…", not "It reports…" — the subject was ambiguous.
+    expect(items[2].textContent).toMatch(/^npx reports a successful install/);
+  });
+
+  it('links to the Node download, since npx is not installed on its own', async () => {
+    vi.spyOn(skillsApi, 'npxInstallCommand').mockResolvedValue(COMMAND);
+    render(<NpxInstallCommand skillId="u1" />);
+    const link = (await screen.findByRole('link', {
+      name: new RegExp(`install Node ${NODE_MIN_VERSION}`),
+    })) as HTMLAnchorElement;
+    expect(link.href).toBe(NODE_DOWNLOAD_URL);
+    expect(link.target).toBe('_blank');
+    // Opening a third-party page from our tab must not hand it `window.opener`.
+    expect(link.rel).toContain('noopener');
   });
 
   it('surfaces the telemetry opt-out rather than hiding it in docs', async () => {

@@ -107,11 +107,18 @@ def disabled_client(tmp_path, monkeypatch):
     _teardown()
 
 
-def _standalone_yaml(npx_publish: bool) -> str:
-    """The shipped demo config, with only ``npx_publish`` changed."""
+def _standalone_yaml(npx_publish: str) -> str:
+    """The shipped demo config, with only ``npx_publish`` changed.
+
+    The shipped value is ``selective``, which publishes nothing until a skill
+    opts in. Tests that want the whole store published, or the surface absent
+    entirely, say so here rather than each creating their own YAML — everything
+    else stays the file as it ships, which is the point of the fixture.
+    """
     source = STANDALONE_CFG.read_text()
-    replacement = f"npx_publish: {'true' if npx_publish else 'false'}"
-    updated, count = re.subn(r"^npx_publish:.*$", replacement, source, flags=re.M)
+    updated, count = re.subn(
+        r"^npx_publish:.*$", f"npx_publish: {npx_publish}", source, flags=re.M
+    )
     assert count == 1, "access_control_config.yaml.standalone lost npx_publish"
     return updated
 
@@ -125,7 +132,7 @@ def skillberry_demo_client(tmp_path, monkeypatch):
     the ``/pub/*`` paths, this fixture is what catches it.
     """
     path = tmp_path / "standalone.yaml"
-    path.write_text(_standalone_yaml(npx_publish=True))
+    path.write_text(_standalone_yaml("true"))
     client = _build_client(path, monkeypatch, tmp_path)
     yield client
     _teardown()
@@ -133,8 +140,16 @@ def skillberry_demo_client(tmp_path, monkeypatch):
 
 @pytest.fixture
 def npx_off_client(tmp_path, monkeypatch):
-    """The shipped demo config exactly as it ships — publishing off."""
-    client = _build_client(STANDALONE_CFG, monkeypatch, tmp_path)
+    """The shipped demo config with publishing switched fully **off**.
+
+    Written explicitly rather than relying on what the file happens to ship:
+    the shipped value is ``selective``, which also publishes nothing out of the
+    box, so a test that meant "off" would silently be testing "selective" and
+    would keep passing if `false` ever stopped working.
+    """
+    path = tmp_path / "standalone-off.yaml"
+    path.write_text(_standalone_yaml("false"))
+    client = _build_client(path, monkeypatch, tmp_path)
     yield client
     _teardown()
 
@@ -312,7 +327,7 @@ def test_disabled_mode_install_command_is_slug_addressed(disabled_client):
 # =========================================================================== #
 def test_01_fixture_really_enabled_acl(skillberry_demo_client):
     assert skillberry_demo_client.app.state.acl_cfg.mode == "standalone"
-    assert skillberry_demo_client.app.state.acl_cfg.npx_publish is True
+    assert skillberry_demo_client.app.state.acl_cfg.npx_publish == "true"
 
 
 def test_02_the_store_is_genuinely_locked_down(skillberry_demo_client):
@@ -487,7 +502,7 @@ def test_12_with_publishing_off_no_route_exists(npx_off_client):
     admin = _auth(client, "skillberry-admin")
     _create_skill(client, "demo", "D.", headers=admin)
 
-    assert client.app.state.acl_cfg.npx_publish is False
+    assert client.app.state.acl_cfg.npx_publish == "false"
     assert client.get(INDEX.format(ref="demo")).status_code == 404
     assert client.get("/pub/anything").status_code == 404
     paths = {getattr(r, "path", "") for r in client.app.routes}
@@ -500,10 +515,19 @@ def test_12_with_publishing_off_no_route_exists(npx_off_client):
 def test_12b_with_publishing_off_no_install_command_is_emitted(npx_off_client):
     client = npx_off_client
     admin = _auth(client, "skillberry-admin")
-    _create_skill(client, "demo", "D.", headers=admin)
-    resp = client.get("/skills/demo", params={"fields": "name,_npx_install"}, headers=admin)
+    # Opted in at the skill level, which `false` must override — that is the
+    # whole point of the store-wide value.
+    _create_skill(client, "demo", "D.", headers=admin, npx_publish=True)
+    resp = client.get(
+        "/skills/demo",
+        params={"fields": "name,npx_publish,_npx_install"},
+        headers=admin,
+    )
     assert resp.status_code == 200
     assert "_npx_install" not in resp.json()
+    # The per-skill flag is still *stored* — `false` overrides it rather than
+    # erasing it, so flipping the store back to `selective` restores the opt-in.
+    assert resp.json()["npx_publish"] is True
 
 
 def test_13_a_draft_skill_is_publishable(skillberry_demo_client):
@@ -966,6 +990,203 @@ def test_artifact_downloads_are_counted(disabled_client):
 
 
 # =========================================================================== #
+# The tri-state master switch and the per-skill flag (docs/design/npx.md §5.12)
+# =========================================================================== #
+@pytest.fixture
+def modal_client(acl_client):
+    """``build(npx_publish)`` → a client with three skills: opted in, unset, out."""
+
+    def build(npx_publish: str, mode: str = "disabled"):
+        client = acl_client(f"mode: {mode}\nnpx_publish: {npx_publish}\n")
+        _create_skill(client, "opted-in", "A.", npx_publish=True)
+        _create_skill(client, "not-flagged", "B.")
+        _create_skill(client, "opted-out", "C.", npx_publish=False)
+        return client
+
+    return build
+
+
+@pytest.mark.parametrize(
+    "npx_publish,published",
+    [
+        # `true` and `false` override the per-skill flag entirely — that is the
+        # point of having them: one edit publishes or withdraws the whole store.
+        ("true", {"opted-in", "not-flagged", "opted-out"}),
+        ("false", set()),
+        # `selective` consults each skill. Unset means NOT published, so a skill
+        # is opted in deliberately rather than by default.
+        ("selective", {"opted-in"}),
+    ],
+)
+def test_the_master_switch_decides_which_skills_publish(
+    modal_client, npx_publish, published
+):
+    client = modal_client(npx_publish)
+    for slug in ("opted-in", "not-flagged", "opted-out"):
+        expected = 200 if slug in published else 404
+        resp = client.get(INDEX.format(ref=slug))
+        assert resp.status_code == expected, (npx_publish, slug, resp.status_code)
+
+
+@pytest.mark.parametrize("npx_publish", ["true", "false", "selective"])
+@pytest.mark.parametrize("mode", ["disabled", "standalone"])
+def test_the_master_switch_is_independent_of_the_acl_mode(
+    acl_client, npx_publish, mode
+):
+    """Every combination is legal. A mode-dependent default would surprise
+    whoever later enables auth."""
+    # `standalone` refuses to load without users/roles/bindings, so supply the
+    # minimum. Written flush-left: the fixture dedents, and a nested block here
+    # would leave the YAML mis-indented after concatenation.
+    users = (
+        "standalone:\n"
+        "  users:\n"
+        "    - username: alice\n"
+        "      tenant_id: alice\n"
+        '      password_hash: "$2b$12$notused"\n'
+        "roles:\n"
+        "  - name: reader\n"
+        "    rules:\n"
+        "      - resources: [skills]\n"
+        "        verbs: [list, get, create, update]\n"
+        "bindings:\n"
+        "  - name: b\n"
+        "    subjects: [{kind: tenant, name: alice}]\n"
+        "    roles: [reader]\n"
+        if mode == "standalone"
+        else ""
+    )
+    client = acl_client(f"mode: {mode}\nnpx_publish: {npx_publish}\n{users}")
+    assert client.app.state.acl_cfg.npx_publish == npx_publish
+    assert client.app.state.acl_cfg.mode == mode
+    # The surface exists for everything but "false", whatever the ACL mode is.
+    routes = [r for r in client.app.routes if getattr(r, "path", "").startswith("/pub/")]
+    assert bool(routes) is (npx_publish != "false")
+
+
+def test_selective_is_the_default_when_the_key_is_absent(acl_client):
+    """An older config file keeps loading, and publishes nothing until a skill
+    opts in — conservative, but a per-skill decision rather than a dead switch."""
+    client = acl_client("mode: disabled\n")
+    assert client.app.state.acl_cfg.npx_publish == "selective"
+    _create_skill(client, "unset", "U.")
+    assert client.get(INDEX.format(ref="unset")).status_code == 404
+    _update_skill(client, "unset", description="U.", npx_publish=True)
+    assert client.get(INDEX.format(ref="unset")).status_code == 200
+
+
+def test_the_flag_is_toggled_by_an_ordinary_skill_update(modal_client):
+    """No new endpoint and no new permission: it is a manifest field, so `PUT
+    /skills/{id}` and its existing `skills:update` marker already govern it."""
+    client = modal_client("selective")
+    assert client.get(INDEX.format(ref="not-flagged")).status_code == 404
+
+    _update_skill(client, "not-flagged", description="B.", npx_publish=True)
+    assert client.get("/skills/not-flagged").json()["npx_publish"] is True
+    assert client.get(INDEX.format(ref="not-flagged")).status_code == 200
+
+    _update_skill(client, "not-flagged", description="B.", npx_publish=False)
+    assert client.get(INDEX.format(ref="not-flagged")).status_code == 404
+
+
+def test_toggling_the_flag_needs_skills_update_under_acl(acl_client):
+    """A tenant that may read but not update cannot opt a skill in."""
+    client = acl_client(
+        """
+        mode: standalone
+        npx_publish: selective
+        standalone:
+          users:
+            - username: reader
+              tenant_id: reader
+              password_hash: "$2b$12$notused"
+            - username: author
+              tenant_id: author
+              password_hash: "$2b$12$notused"
+        roles:
+          - name: read-only
+            rules:
+              - resources: [skills]
+                verbs: [list, get]
+          - name: author
+            rules:
+              - resources: [skills]
+                verbs: [list, get, create, update]
+        bindings:
+          - name: b-reader
+            subjects: [{kind: tenant, name: reader}]
+            roles: [read-only]
+          - name: b-author
+            subjects: [{kind: tenant, name: author}]
+            roles: [author]
+        """
+    )
+    author = _auth(client, "author")
+    _create_skill(client, "demo", "D.", headers=author)
+
+    denied = client.put(
+        "/skills/demo",
+        json={"name": "demo", "description": "D.", "npx_publish": True},
+        headers=_auth(client, "reader"),
+    )
+    assert denied.status_code == 403
+    assert client.get("/skills/demo", headers=author).json()["npx_publish"] is None
+
+    _update_skill(client, "demo", headers=author, description="D.", npx_publish=True)
+    assert client.get("/skills/demo", headers=author).json()["npx_publish"] is True
+
+
+def test_the_flag_gates_the_install_command_too(modal_client):
+    """The UI's card is absent for a skill nobody opted in, because the command
+    is absent — one gate, not a second one in the frontend."""
+    client = modal_client("selective")
+    assert _install_ref(client, "opted-in") is not None
+    assert _install_ref(client, "not-flagged") is None
+    assert _install_ref(client, "opted-out") is None
+
+
+def test_the_flag_gates_the_artifact_and_multi_entry_indexes(modal_client):
+    client = modal_client("selective")
+    assert (
+        client.get(ARTIFACT.format(ref="opted-in", slug="opted-in")).status_code == 200
+    )
+    # A ref for a published skill cannot reach an unpublished skill's archive.
+    assert (
+        client.get(ARTIFACT.format(ref="opted-in", slug="not-flagged")).status_code
+        == 404
+    )
+    index = client.get(INDEX.format(ref="*")).json()
+    assert {e["name"] for e in index["skills"]} == {"opted-in"}
+
+
+def test_the_flag_is_visible_at_narrow_so_the_ui_can_render_it(modal_client):
+    """A plain boolean describing the skill, unlike the opt-in-only
+    `_npx_install` capability URL — the listing page needs it by default."""
+    client = modal_client("selective")
+    listing = client.get("/skills/", params={"fields": "narrow"}).json()
+    flags = {s["name"]: s.get("npx_publish") for s in listing}
+    assert flags == {"opted-in": True, "not-flagged": None, "opted-out": False}
+
+
+def test_toggling_one_skills_flag_does_not_shift_another_slug(acl_client):
+    """Slug assignment runs over every HEAD and is filtered afterwards, so a
+    flag change cannot renumber a colliding skill's suffix (§5.6) — which would
+    orphan an already-installed copy."""
+    client = acl_client("mode: disabled\nnpx_publish: selective\n")
+    _create_skill(client, "PDF Forms", "A.", npx_publish=True)
+    _create_skill(client, "pdf-forms", "B.", npx_publish=True)
+
+    from skillberry_store.services.registry import get_service
+
+    service = get_service("skill")
+    before = {s["name"]: slug for slug, s in client.app.state.npx.slug_map(service).items()}
+
+    _update_skill(client, "pdf-forms", description="B.", npx_publish=False)
+    after = {s["name"]: slug for slug, s in client.app.state.npx.slug_map(service).items()}
+    assert after == before
+
+
+# =========================================================================== #
 # The `_npx_install` field's hygiene contract (§4.3.5)
 # =========================================================================== #
 @pytest.mark.parametrize("preset", ["minimal", "narrow", "wide", "full"])
@@ -1084,13 +1305,60 @@ def test_an_unusable_agent_name_falls_back_rather_than_reaching_a_shell(
     assert agent not in command or agent in ("", "-rf")
 
 
-def test_the_agent_is_ignored_when_the_field_was_not_asked_for(skillberry_demo_client):
+def test_passing_the_agent_alone_requests_the_command(skillberry_demo_client):
+    """Reported: ``sbs get-skill <name> --npx-agent claude-code`` returned a full
+    skill descriptor and no install information.
+
+    That was a silent no-op — ``npx_agent`` pins the ``-a`` flag and has no other
+    effect — so asking which agent to target now counts as asking for the command.
+    """
     client = skillberry_demo_client
     admin = _auth(client, "skillberry-admin")
     _create_skill(client, "demo", "D.", headers=admin)
-    resp = client.get(
-        "/skills/demo", params={"fields": "narrow", "npx_agent": "cursor"}, headers=admin
-    )
+
+    resp = client.get("/skills/demo", params={"npx_agent": "claude-code"}, headers=admin)
+    assert resp.status_code == 200
+    assert resp.json()["_npx_install"].endswith("-y -a claude-code")
+
+
+def test_passing_the_agent_alone_works_on_list_too(skillberry_demo_client):
+    client = skillberry_demo_client
+    admin = _auth(client, "skillberry-admin")
+    _create_skill(client, "demo", "D.", headers=admin)
+    resp = client.get("/skills/", params={"npx_agent": "cursor"}, headers=admin)
+    assert resp.status_code == 200
+    assert resp.json()[0]["_npx_install"].endswith("-y -a cursor")
+
+
+@pytest.mark.parametrize("preset", ["minimal", "narrow", "wide", "full"])
+def test_the_agent_adds_the_command_to_a_preset_without_widening_it(
+    skillberry_demo_client, preset
+):
+    """The preset still decides the rest of the shape — the identity fields the
+    command is composed from are widened in and stripped out again."""
+    client = skillberry_demo_client
+    admin = _auth(client, "skillberry-admin")
+    _create_skill(client, "demo", "D.", headers=admin)
+
+    plain = client.get("/skills/demo", params={"fields": preset}, headers=admin).json()
+    withcmd = client.get(
+        "/skills/demo", params={"fields": preset, "npx_agent": "cursor"}, headers=admin
+    ).json()
+    assert "_npx_install" in withcmd
+    assert set(withcmd) - {"_npx_install"} == set(plain)
+
+
+def test_full_still_returns_no_command_without_the_agent(skillberry_demo_client):
+    """Reported alongside the above: ``--full | grep npx`` found nothing.
+
+    That one is deliberate and stays. ``fields=full`` is used internally, so it
+    must not start emitting a capability URL; ``--npx-agent`` (or naming
+    ``_npx_install``) is the way to ask (§4.3.5).
+    """
+    client = skillberry_demo_client
+    admin = _auth(client, "skillberry-admin")
+    _create_skill(client, "demo", "D.", headers=admin)
+    resp = client.get("/skills/demo", params={"fields": "full"}, headers=admin)
     assert resp.status_code == 200
     assert "_npx_install" not in resp.json()
 

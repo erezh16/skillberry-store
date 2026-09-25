@@ -25,20 +25,23 @@
 import { useEffect, useState } from 'react';
 import {
   Alert,
+  Button,
   Card,
   CardBody,
   CardTitle,
   ClipboardCopy,
   ClipboardCopyVariant,
   FormGroup,
+  List,
+  ListItem,
   MenuToggle,
   MenuToggleElement,
   Select,
   SelectList,
   SelectOption,
   Spinner,
-  Text,
 } from '@patternfly/react-core';
+import { ExternalLinkAltIcon } from '@patternfly/react-icons';
 import { getAclMode } from '@/contexts/AuthContext';
 import { skillsApi } from '@/services/api';
 
@@ -56,6 +59,14 @@ export const NPX_AGENTS = [
 ] as const;
 
 export const DEFAULT_NPX_AGENT = NPX_AGENTS[0].id;
+
+// `npx` is not installed on its own — it ships with Node.js, and the skills CLI
+// requires a recent one (`engines: node >= 22.20.0` in its package.json), so a
+// reader on an older Node hits a confusing failure rather than a version error.
+// Point at the official downloads page rather than a package manager, since the
+// right install route differs per platform.
+export const NODE_DOWNLOAD_URL = 'https://nodejs.org/en/download';
+export const NODE_MIN_VERSION = '22.20';
 
 // Remembered so the picker defaults to whatever she used last — the command is
 // something people copy repeatedly, and re-choosing the agent every time is the
@@ -183,12 +194,34 @@ export function NpxInstallCommand({ skillId }: Props) {
         {command}
       </ClipboardCopy>
 
-      <Text component="small" style={{ display: 'block', marginTop: '0.5rem' }}>
-        Paste this in your project. Nothing to install first — <code>npx</code>{' '}
-        fetches the CLI. It reports a successful install to a third party; export{' '}
-        <code>DO_NOT_TRACK=1</code> in your shell profile to opt out of that, here
-        and on every later <code>npx skills update</code>.
-      </Text>
+      {/* One sentence per item: these are three unrelated matters — where to run
+          it, what you need first, and what it reports — and they read as a wall
+          of text when run together. */}
+      <List isPlain style={{ marginTop: '0.75rem', fontSize: '0.875rem' }}>
+        <ListItem>Paste this in your project.</ListItem>
+        <ListItem>
+          Nothing to install first — <code>npx</code> fetches the skills CLI and
+          caches it. It ships with Node.js{' '}
+          <Button
+            variant="link"
+            isInline
+            component="a"
+            href={NODE_DOWNLOAD_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            icon={<ExternalLinkAltIcon />}
+            iconPosition="right"
+          >
+            (install Node {NODE_MIN_VERSION} or newer)
+          </Button>
+          .
+        </ListItem>
+        <ListItem>
+          <code>npx</code> reports a successful install to a third party. Export{' '}
+          <code>DO_NOT_TRACK=1</code> in your shell profile to opt out of that —
+          here, and on every later <code>npx skills update</code>.
+        </ListItem>
+      </List>
 
       {/* Not a buried note: the command contains a credential, and that is the
           cost of a CLI that cannot authenticate. It belongs next to the copy

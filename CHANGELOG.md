@@ -27,13 +27,22 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `/openapi.json`, so neither appears in the generated Python SDK or as an `sbs`
   command — they exist for npx and for nothing else.
 
-  **Off by default.** Turn it on with `npx_publish: true` in
-  `access_control_config.yaml`. It is declared there rather than in an
-  environment variable because it *is* an access-control decision: it is the one
-  setting that makes skill **content**, not just metadata, readable without a
-  session. When off, the routes are not registered at all. The shipped
-  `mode: disabled` config ships it on (nothing is protected there anyway); the
-  `.standalone` demo config ships it off.
+  **Publishing is opt-in, per skill by default.** `npx_publish` in
+  `access_control_config.yaml` takes three values, independent of the ACL `mode`:
+  `true` (every visible skill), `false` (none — the routes are not registered at
+  all), and `selective` (**the default**, where each skill's own `npx_publish`
+  flag decides and an unset flag means not published). `true`/`false` ignore the
+  per-skill flag, so either publishes or withdraws the whole store in one edit.
+  The setting is declared in the access-control config rather than an environment
+  variable because it *is* an access-control decision: it is the one setting that
+  makes skill **content**, not just metadata, readable without a session.
+
+  A skill's flag is an ordinary manifest field, so `PUT /skills/{id}` and its
+  existing `skills:update` permission already govern it — no new endpoint, no new
+  role. The UI shows the state on each skill's page and offers a **Publish for
+  npx** checkbox in its Edit dialog. The shipped `mode: disabled` config ships
+  `true` (nothing is protected there anyway); the `.standalone` demo ships
+  `selective`, which is as closed as `false` until an operator opts a skill in.
 
   **One skill per install URL.** Under `mode: standalone` the path segment is a
   read-only capability token scoped to that one skill, derived by HMAC from a
@@ -45,10 +54,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   skill's slug. Namespace-scoped ("pack") and store-wide URLs are available as
   opt-in capabilities.
 
-  You never have to compose the command: `sbs get-skill <name> --fields
-  name,_npx_install`, `sbs list-skills --fields name,_npx_install`, or the
-  **Install with npx** card on each skill's page in the UI, which has an agent
-  picker and a copy button. `-a` is always emitted — `-y` without it installs the
+  You never have to compose the command: `sbs get-skill <name> --npx-agent
+  claude-code`, `sbs get-skill <name> --fields name,_npx_install`, `sbs
+  list-skills --fields name,_npx_install`, or the **Install with npx** card on
+  each skill's page in the UI, which has an agent picker, a copy button and a link
+  to the Node download. Passing `--npx-agent` also *requests* the command, since
+  it has no other effect. No preset returns it — `full` included — because it is a
+  capability URL. `-a` is always emitted — `-y` without it installs the
   skill into every supported agent's directory, around 75 of them.
 
   The emitted command carries **no** `DISABLE_TELEMETRY=1` prefix. The CLI does

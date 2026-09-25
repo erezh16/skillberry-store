@@ -32,6 +32,10 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from skillberry_store.access_control.config import (
+    NPX_PUBLISH_ALL,
+    NPX_PUBLISH_NONE,
+)
 from skillberry_store.tools.anthropic.exporter import (
     _build_file_structure,
     build_deterministic_zip,
@@ -98,6 +102,31 @@ def allowed_namespaces() -> Optional[List[str]]:
 def is_internal(skill: Dict[str, Any]) -> bool:
     """Whether ``skill`` opted out of being offered in a multi-entry install."""
     return INTERNAL_TAG in (skill.get("tags") or [])
+
+
+def skill_publishable(skill: Dict[str, Any], npx_publish: str) -> bool:
+    """Whether ``skill`` may be published, under the store's master switch.
+
+    The master switch is tri-state (``access_control/config.py``):
+
+    ``"true"``
+        every visible skill is publishable; the skill's own flag is **ignored**.
+    ``"false"``
+        nothing is; the skill's own flag is **ignored**. (The routes are not even
+        registered in this state, so this branch is belt-and-braces.)
+    ``"selective"``
+        the skill's own ``npx_publish`` decides. Absent or ``None`` means **not**
+        published, so a skill is opted in deliberately rather than by default.
+
+    ``true``/``false`` overriding the per-skill flag is the point of having them:
+    an operator can publish or withdraw the whole store in one edit without
+    touching every manifest, and can be sure that is what happened.
+    """
+    if npx_publish == NPX_PUBLISH_ALL:
+        return True
+    if npx_publish == NPX_PUBLISH_NONE:
+        return False
+    return bool(skill.get("npx_publish"))
 
 
 _SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")

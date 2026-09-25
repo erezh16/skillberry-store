@@ -1378,6 +1378,26 @@ Worth setting regardless of this feature, and worth mentioning in the operator d
 
 ### 5.12 `npx_publish` — opt-in, declared in the access-control config
 
+> **Amended post-implementation: the switch is tri-state, not boolean.** It takes
+> `true`, `false` or `selective`, and **`selective` is the default**. Under
+> `selective` each skill carries its own `npx_publish` flag — a real manifest
+> field on `SkillSchema` — and a skill that has not set it is *not* published;
+> `true` and `false` ignore the per-skill flag so that one edit can publish or
+> withdraw the whole store. The flag is changed through an ordinary skill update,
+> so `skills:update` governs it with no new endpoint and no new verb, and the UI
+> shows it per skill with a checkbox in the Edit dialog.
+>
+> This is the one place the original "no manifest field, no migration" claim in
+> §4.0.2 no longer holds: `npx_publish` is a new optional field on skills.
+> Nothing on disk needs converting — an older manifest simply has no flag, which
+> reads as "not published" — so there is still no migration, but the claim as
+> written was stronger than the truth and is corrected here.
+>
+> The boolean rationale below still applies to `true`/`false`; what it lacked was
+> a way to publish some skills without inventing the invisible server-side filter
+> §4.3.1 rejects. A per-skill flag is the visible, editable form of that, which is
+> why it is the default rather than a fourth knob.
+
 **Decided: npx publishing is off unless the operator turns it on, and the switch lives in the ACL config file, not in an env var.**
 
 That is the right home because it *is* an access-control decision: it is the one setting that makes skill **content** reachable without a session. Putting it beside `unauthenticated_paths` means anyone reviewing the file's security posture sees it in the same glance, rather than having to correlate YAML with a container environment.

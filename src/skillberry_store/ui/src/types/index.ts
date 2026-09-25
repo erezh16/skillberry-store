@@ -48,6 +48,10 @@ export interface Skill {
   author?: string;
   created_at?: string;
   modified_at?: string;
+  // Whether this skill is published for `npx skills add`. Consulted only when
+  // the store's own `npx_publish` is `selective`; `null`/absent means not
+  // published. See docs/design/npx.md §5.12.
+  npx_publish?: boolean | null;
 }
 
 export interface Snippet {
