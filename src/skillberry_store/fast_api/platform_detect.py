@@ -243,7 +243,6 @@ def accept_ch_headers() -> dict[str, str]:
         # Permissions-Policy is what lets the hints be sent to this origin's
         # subresources too; without it some Chromium versions withhold them.
         "Permissions-Policy": ", ".join(
-            f'ch-ua-{suffix}=("self")'
-            for suffix in ("platform", "arch", "bitness")
+            f'ch-ua-{suffix}=("self")' for suffix in ("platform", "arch", "bitness")
         ),
     }

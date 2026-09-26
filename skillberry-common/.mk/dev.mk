@@ -245,8 +245,58 @@ ifeq ($(SDK_PY_CLI),1)
 	@toml set --toml-path $(PYTHON_SDK_DIR)/pyproject.toml "tool.poetry.scripts.$(ACRONYM_LC)" "$(SERVICE_NAME_CN)_sdk.sdk_cli:cli"
 else
 	@echo "==> SDK_PY_CLI=0: leaving the SDK a pure Python library (no $(ACRONYM_LC) console script)"
+	@echo "==> Adding the [cli] extra pointing at the native CLI wheel..."
+	@# The SDK stays pure Python and universal, but `pip install
+	@# <sdk>[cli]` should still get the user a working CLI. Environment
+	@# markers keep it to the platforms with a published wheel: on anything
+	@# else the extra resolves to nothing rather than failing the install.
+	@#
+	@# Re-applied here on every generation because `generate-sdk` wipes the
+	@# SDK directory first -- without this the extra would silently vanish
+	@# the next time the SDK is regenerated.
+	@python3 -c "$$SDK_CLI_EXTRA_PY" \
+		"$(PYTHON_SDK_DIR)" "$(ASSET_NAME)-cli"
 endif
 	@echo "==> Removing [project.scripts] section if it exists..."
 	@sed -i '/^\[project\.scripts\]/,/^$$/d' $(PYTHON_SDK_DIR)/pyproject.toml
 	@echo "==> SDK generation complete$(if $(filter 1,$(SDK_PY_CLI)), with CLI support,)"
+
+# Injects the `[cli]` extra into both setup.py and pyproject.toml. A Python
+# helper rather than a chain of `sed`/`toml` calls because the value is a
+# PEP 508 requirement containing commas, quotes and parentheses -- exactly the
+# characters that make shell-quoting through make fragile.
+define SDK_CLI_EXTRA_PY
+import pathlib, re, sys
+sdk_dir, cli_pkg = pathlib.Path(sys.argv[1]), sys.argv[2]
+markers = " or ".join([
+    "(sys_platform == 'linux' and platform_machine in 'x86_64 aarch64')",
+    "(sys_platform == 'darwin' and platform_machine in 'x86_64 arm64')",
+    "(sys_platform == 'win32' and platform_machine in 'AMD64 x86_64')",
+])
+req = f"{cli_pkg}; {markers}"
+
+setup_py = sdk_dir / "setup.py"
+if setup_py.is_file():
+    text = setup_py.read_text()
+    if "extras_require" not in text:
+        text = text.replace(
+            "    install_requires=REQUIRES,",
+            '    install_requires=REQUIRES,\n    extras_require={"cli": ["' + req + '"]},',
+            1,
+        )
+        setup_py.write_text(text)
+
+pyproject = sdk_dir / "pyproject.toml"
+if pyproject.is_file():
+    text = pyproject.read_text()
+    if "[project.optional-dependencies]" not in text:
+        block = '[project.optional-dependencies]\ncli = [\n  "' + req + '",\n]\n\n'
+        if "[project.urls]" in text:
+            text = text.replace("[project.urls]", block + "[project.urls]", 1)
+        else:
+            text += "\n" + block
+        pyproject.write_text(text)
+print("    [cli] extra -> " + cli_pkg)
+endef
+export SDK_CLI_EXTRA_PY
 

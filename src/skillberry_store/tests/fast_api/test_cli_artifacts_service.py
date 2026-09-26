@@ -745,6 +745,31 @@ def test_dist_dir_defaults_under_base_dir(monkeypatch, tmp_path):
     assert CliArtifactSettings.from_env().dist_dir == tmp_path / "cli-dist"
 
 
+def test_dist_dir_never_defaults_into_the_working_directory(monkeypatch):
+    """The prepared-artifact cache must not land in a checkout.
+
+    An earlier version defaulted to "." when SBS_BASE_DIR was unset, which dropped
+    a `cli-dist/` directory into the repository root on every test run and every
+    dev server start. It is a cache, so it belongs wherever the rest of the
+    store's state goes — which is what the store's own base-dir helper decides.
+    """
+    monkeypatch.delenv("SBS_CLI_DIST_DIR", raising=False)
+    monkeypatch.delenv("SBS_BASE_DIR", raising=False)
+
+    dist = CliArtifactSettings.from_env().dist_dir
+    assert dist.is_absolute(), f"dist_dir {dist} is relative to the cwd"
+    assert dist != Path("cli-dist")
+    assert Path.cwd() not in dist.parents, (
+        f"dist_dir {dist} is inside the working directory"
+    )
+
+    from skillberry_store.tools.configure import _default_sbs_dir
+
+    assert dist == Path(_default_sbs_dir("cli-dist")), (
+        "dist_dir should use the store's own base-directory resolution"
+    )
+
+
 def test_invalid_choices_fall_back_with_a_warning(monkeypatch, caplog):
     monkeypatch.setenv("SBS_CLI_PREPARE", "sometimes")
     monkeypatch.setenv("SBS_CLI_BUILD_MODE", "magic")

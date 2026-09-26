@@ -95,6 +95,18 @@ endif
 cli-clean: ## Remove built CLI artifacts
 	rm -rf $(CLI_PREBUILT) $(CLI_DIR)/sbs $(CLI_DIR)/sbs.exe $(CLI_DIR)/vendor
 
+.PHONY: cli-wheels
+# One wheel per platform, each carrying that platform's binary and tagged so pip
+# resolves the right one. Depends on cli-dist because there is nothing to compile
+# per platform — the binaries already exist, cross-compiled from one host, which
+# is why this is a script rather than a cibuildwheel matrix (§4.6, G5).
+cli-wheels: ## Build platform wheels for skillberry-store-cli (needs cli-dist first)
+	@test -f $(CLI_PREBUILT)/prebuilt-manifest.json || { \
+		echo "No artifacts in $(CLI_PREBUILT). Run 'make cli-dist' first."; exit 1; }
+	@$(MAKE) install-requirements ODEPS=build
+	python packaging/skillberry-store-cli/build_wheels.py \
+		--artifacts $(CLI_PREBUILT) --out dist
+
 # Hook the Go tests into `make test` and the format check into `make lint`, so
 # the CLI is covered by the gates the repo already runs rather than by a
 # separate command nobody remembers. Both no-op without a Go toolchain.

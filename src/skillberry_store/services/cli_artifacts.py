@@ -252,8 +252,17 @@ class CliArtifactSettings:
         derivation that reads more clearly as a line of code than as a pydantic
         validator.
         """
-        base = base_dir or os.environ.get("SBS_BASE_DIR") or "."
-        dist_default = Path(base) / "cli-dist"
+        if base_dir:
+            dist_default = Path(base_dir) / "cli-dist"
+        else:
+            # Delegated to the store's own base-directory helper rather than
+            # defaulting to ".". An earlier version did the latter and dropped a
+            # `cli-dist/` cache into the repository root on every test run and
+            # every dev server start — in a checkout, not a container. This is a
+            # cache, and it belongs wherever the rest of the store's state does.
+            from skillberry_store.tools.configure import _default_sbs_dir
+
+            dist_default = Path(_default_sbs_dir("cli-dist"))
         return cls(
             enabled=_env_flag("SBS_CLI_DOWNLOAD", default=True),
             prepare=_env_choice("SBS_CLI_PREPARE", ("auto", "always", "never"), "auto"),

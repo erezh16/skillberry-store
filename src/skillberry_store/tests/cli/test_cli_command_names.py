@@ -213,3 +213,102 @@ def test_promoted_api_name_is_not_itself_an_operation():
         f"an operation is named {api_name!r}, the promoted API's own key; "
         f"rename it to keep the root surface unambiguous."
     )
+
+
+# --------------------------------------------------------------------------- #
+# The §3.3 "restish" allowlist exists in three places and must agree
+# --------------------------------------------------------------------------- #
+#
+# The inventory of surviving "restish" strings is asserted in three independent
+# gates, each of which can only see part of the picture:
+#
+#   * cli/go/main_test.go            — the count, as a Go unit test
+#   * tests/cli/test_native_cli_e2e.py — a built binary on this platform
+#   * .github/workflows/cli-artifacts.yml — a built binary on all five OSes
+#
+# Three copies is a deliberate trade (each gate must run standalone), but a copy
+# that drifts silently widens the allowlist on one path while the others keep
+# failing — or worse, keeps passing after upstream fixes a string, hiding the
+# fix. This test makes the divergence itself a failure.
+
+WORKFLOW = REPO_ROOT / ".github" / "workflows" / "cli-artifacts.yml"
+E2E_TEST = REPO_ROOT / "src" / "skillberry_store" / "tests" / "cli" / "test_native_cli_e2e.py"
+
+# The four §3.3 entries plus the one we emit deliberately in `--version`.
+EXPECTED_ALLOWLIST = (
+    "--help-all",
+    "--rsh-config",
+    "Restish version:",
+    "restish shell setup",
+    "engine: restish",
+)
+
+
+def test_go_inventory_lists_the_four_residual_strings():
+    source = (CLI_GO_DIR / "main_test.go").read_text(encoding="utf-8")
+    block = re.search(
+        r"var knownRestishStrings = \[\]string\{(.*?)\n\}", source, re.DOTALL
+    )
+    assert block, "knownRestishStrings not found in cli/go/main_test.go"
+    entries = re.findall(r'"([^"]+)"', block.group(1))
+    # The Go list covers only §3.3 — the `engine: restish` string is ours, not
+    # upstream's, so it is deliberately not part of that inventory.
+    assert len(entries) == 4, (
+        f"knownRestishStrings has {len(entries)} entries, want exactly 4 "
+        f"(docs/design/new_cli.md §3.3): {entries}"
+    )
+
+
+@pytest.mark.parametrize("needle", EXPECTED_ALLOWLIST)
+def test_e2e_allowlist_covers_every_expected_string(needle):
+    source = E2E_TEST.read_text(encoding="utf-8")
+    block = re.search(
+        r"ALLOWED_RESTISH_SUBSTRINGS = \((.*?)\n\)", source, re.DOTALL
+    )
+    assert block, "ALLOWED_RESTISH_SUBSTRINGS not found in test_native_cli_e2e.py"
+    assert needle in block.group(1), (
+        f"{needle!r} is missing from the e2e allowlist, so that gate is stricter "
+        f"than the others and will fail on a string the design accepts"
+    )
+
+
+@pytest.mark.parametrize("needle", EXPECTED_ALLOWLIST)
+def test_ci_workflow_allowlist_covers_every_expected_string(needle):
+    """The CI gate runs on five OSes, so a missing entry breaks the build there.
+
+    And an *extra* entry is worse: it would silence a real regression on every
+    platform at once, which is the only place the branding is checked against a
+    real macOS or Windows binary.
+    """
+    if not WORKFLOW.is_file():
+        pytest.skip("cli-artifacts workflow not present in this checkout")
+    source = WORKFLOW.read_text(encoding="utf-8")
+    assert needle in source, (
+        f"{needle!r} is not in .github/workflows/cli-artifacts.yml's grep -v "
+        f"chain, so the CI branding gate is stricter than the local one"
+    )
+
+
+def test_ci_workflow_allowlist_is_not_wider_than_expected():
+    """No extra `grep -v` beyond the agreed allowlist.
+
+    An extra exclusion silently accepts a new "restish" mention on every
+    platform, which is exactly what the gate exists to catch.
+    """
+    if not WORKFLOW.is_file():
+        pytest.skip("cli-artifacts workflow not present in this checkout")
+    source = WORKFLOW.read_text(encoding="utf-8")
+    # The branding step's exclusions only; other `grep -v` uses in the file would
+    # be unrelated, so scope to the step.
+    step = re.search(
+        r"Assert no unexpected \"restish\".*?(?=\n      - name:)", source, re.DOTALL
+    )
+    assert step, "could not locate the branding assertion step"
+    exclusions = re.findall(r"grep -v(?: --)? '([^']+)'", step.group(0))
+    unexpected = [e for e in exclusions if e not in EXPECTED_ALLOWLIST]
+    assert not unexpected, (
+        f"the CI branding gate excludes {unexpected}, which is not in the agreed "
+        f"§3.3 allowlist. Either upstream changed (update EXPECTED_ALLOWLIST here, "
+        f"cli/go/main_test.go and test_native_cli_e2e.py together) or this is a "
+        f"regression being silenced."
+    )
