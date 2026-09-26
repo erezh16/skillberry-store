@@ -26,12 +26,24 @@ generate-sdk: install-build-requirements
 # The `sbs` CLI is a Go program that embeds restish as a library
 # (docs/design/new_cli.md). It replaces the deleted Python shim, which is why
 # `SDK_PY_CLI := 0` is set below: there is exactly one implementation of `sbs`.
-CLI_DIR        := cli/go
+# The Go module root. Inside it:
+#   cli/          the importable implementation (package cli)
+#   cli/cmd/sbs/  the binary's entry point (package main)
+#   tests/        the test suite (package tests)
+#
+# The split is required, not stylistic: Go refuses to import a `package main`
+# ("a program, not an importable package"), so tests in their own directory can
+# only exist if the implementation is a library. See client/go/cli/version.go.
+CLI_GO_ROOT    := client/go
+CLI_DIR        := $(CLI_GO_ROOT)/cli
+CLI_CMD        := ./cli/cmd/sbs
+CLI_PKG        := github.com/skillberry-ai/skillberry-store/client/go/cli
 CLI_PREBUILT   := cli-prebuilt
 # The closed platform enum of §5.1. The server validates `?platform=` against
 # the same list, so adding one here is necessary but not sufficient.
 CLI_PLATFORMS  ?= linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64
-CLI_SOURCES    := $(wildcard $(CLI_DIR)/*.go) $(CLI_DIR)/go.mod $(CLI_DIR)/go.sum
+CLI_SOURCES    := $(wildcard $(CLI_DIR)/*.go) $(wildcard $(CLI_DIR)/cmd/sbs/*.go) \
+                  $(CLI_GO_ROOT)/go.mod $(CLI_GO_ROOT)/go.sum
 
 # Every Go target is guarded on a toolchain being present rather than declaring
 # one as a prerequisite. A `pip`-only contributor must still be able to run
@@ -41,19 +53,22 @@ _HAVE_GO := $(shell command -v go >/dev/null 2>&1 && echo 1)
 
 .PHONY: cli-build cli-test cli-fmt cli-fmt-check cli-vet cli-dist cli-vendor cli-clean
 
-cli-build: ## Build the native sbs CLI for this platform into cli/go/sbs
+cli-build: ## Build the native sbs CLI for this platform into client/go/sbs
 ifeq ($(_HAVE_GO),1)
 	@echo "===> Building the native sbs CLI for this platform"
-	@cd $(CLI_DIR) && CGO_ENABLED=0 go build -trimpath \
-		-ldflags "-s -w -X main.version=$(VERSION) -X main.engineVersion=$$(go list -m -f '{{.Version}}' github.com/rest-sh/restish/v2 | sed 's/^v//')" \
-		-o sbs .
-	@echo "===> Built $(CLI_DIR)/sbs"
+	@# The -X target is the package's full import path, not `main`: the injected
+	@# variables live in the importable `cli` package. A stale `-X main.version=`
+	@# is accepted silently by the linker and injects nothing.
+	@cd $(CLI_GO_ROOT) && CGO_ENABLED=0 go build -trimpath \
+		-ldflags "-s -w -X $(CLI_PKG).Version=$(VERSION) -X $(CLI_PKG).EngineVersion=$$(go list -m -f '{{.Version}}' github.com/rest-sh/restish/v2 | sed 's/^v//')" \
+		-o sbs $(CLI_CMD)
+	@echo "===> Built $(CLI_GO_ROOT)/sbs"
 else
 	@echo "NOTE: no Go toolchain found - skipping the native CLI build."
 endif
 
 cli-dist: ## Cross-compile the CLI for every platform into cli-prebuilt/ (§5.10)
-	@./cli/build.sh --out $(CLI_PREBUILT) --platforms "$(CLI_PLATFORMS)" --version "$(VERSION)"
+	@./$(CLI_GO_ROOT)/build.sh --out $(CLI_PREBUILT) --platforms "$(CLI_PLATFORMS)" --version "$(VERSION)"
 
 # Vendoring is NOT committed: measured at 44 MB / 2248 files for restish's
 # dependency graph, which is a poor trade in a Python repo when go.mod + go.sum
@@ -61,17 +76,17 @@ cli-dist: ## Cross-compile the CLI for every platform into cli-prebuilt/ (§5.10
 # build reproducible — §7.4). This target materialises it on demand for the
 # opt-in air-gapped image variant of §5.4 option B, which wants GOFLAGS=-mod=vendor
 # and GOPROXY=off at *runtime* and can vendor at build time.
-cli-vendor: ## Materialise cli/go/vendor for an offline/air-gapped build (not committed)
-	@cd $(CLI_DIR) && go mod vendor && du -sh vendor
+cli-vendor: ## Materialise client/go/vendor for an offline/air-gapped build (not committed)
+	@cd $(CLI_GO_ROOT) && go mod vendor && du -sh vendor
 
 cli-fmt: ## Format the Go sources
 ifeq ($(_HAVE_GO),1)
-	@cd $(CLI_DIR) && gofmt -w .
+	@cd $(CLI_GO_ROOT) && gofmt -w .
 endif
 
 cli-fmt-check: ## Fail if any Go source is unformatted
 ifeq ($(_HAVE_GO),1)
-	@cd $(CLI_DIR) && out=$$(gofmt -l .); \
+	@cd $(CLI_GO_ROOT) && out=$$(gofmt -l .); \
 		if [ -n "$$out" ]; then \
 			echo "Lint Failed. Unformatted Go files:"; echo "$$out"; \
 			echo "Please run 'make cli-fmt' to fix the issues"; exit 1; \
@@ -80,20 +95,20 @@ endif
 
 cli-vet: ## Run go vet on the CLI
 ifeq ($(_HAVE_GO),1)
-	@cd $(CLI_DIR) && go vet ./...
+	@cd $(CLI_GO_ROOT) && go vet ./...
 endif
 
 cli-test: ## Run the Go unit tests for the CLI (§8.1)
 ifeq ($(_HAVE_GO),1)
 	@echo "===> Running the native CLI Go tests"
-	@cd $(CLI_DIR) && go test ./...
+	@cd $(CLI_GO_ROOT) && go test ./...
 else
 	@echo "NOTE: no Go toolchain found - skipping the native CLI tests."
 	@echo "      Install Go >= 1.25 to run them; see docs/cli.md."
 endif
 
 cli-clean: ## Remove built CLI artifacts
-	rm -rf $(CLI_PREBUILT) $(CLI_DIR)/sbs $(CLI_DIR)/sbs.exe $(CLI_DIR)/vendor
+	rm -rf $(CLI_PREBUILT) $(CLI_GO_ROOT)/sbs $(CLI_GO_ROOT)/sbs.exe $(CLI_GO_ROOT)/vendor
 
 .PHONY: cli-wheels
 # One wheel per platform, each carrying that platform's binary and tagged so pip

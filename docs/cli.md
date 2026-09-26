@@ -285,6 +285,20 @@ sbs list-tools -v
 
 `sbs` is a single Go executable that links restish in as a library. There is no subprocess, nothing to find on `PATH`, and nothing unpacked at startup.
 
+The source lives in `client/go`:
+
+| Path | Contents |
+| --- | --- |
+| `client/go/cli/` | The implementation (`package cli`) |
+| `client/go/cli/cmd/sbs/` | The binary's entry point (`package main`) |
+| `client/go/tests/` | The Go test suite |
+| `client/go/build.sh` | Cross-compiles every platform (`make cli-dist`) |
+
+Build it with `make cli-build` (this platform) or `make cli-dist` (all five). The
+library/entry-point split is required rather than stylistic: Go cannot import a
+`package main`, so the tests can only live in their own directory if the
+implementation is an importable package.
+
 1. **Compiled-in target**: the binary carries the store URL it was built or prepared for. Resolution order is user config (`sbs connect`) → `SBS_URL` → the compiled-in URL.
 
 2. **Generated commands**: on first use it fetches `/openapi.json` and caches it under `~/.cache/sbs/specs`. Operations appear as root commands (`sbs list-skills`), so the command surface tracks the store automatically.

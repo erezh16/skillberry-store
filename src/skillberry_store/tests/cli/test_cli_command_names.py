@@ -32,7 +32,8 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-CLI_GO_DIR = REPO_ROOT / "cli" / "go"
+CLI_GO_DIR = REPO_ROOT / "client" / "go" / "cli"
+CLI_TESTS_DIR = REPO_ROOT / "client" / "go" / "tests"
 
 
 def _cli_names_from_source() -> set[str]:
@@ -67,10 +68,10 @@ def _go_const(name: str) -> str:
 
 
 def _local_verbs() -> set[str]:
-    """The verbs localVerb() claims before restish sees argv (cli/go/verbs.go)."""
+    """The verbs LocalVerb() claims before restish sees argv (client/go/cli/verbs.go)."""
     source = (CLI_GO_DIR / "verbs.go").read_text(encoding="utf-8")
     body = re.search(r"switch argv\[1\] \{(.*?)\n\t\}", source, re.DOTALL)
-    assert body, "could not locate the localVerb switch in cli/go/verbs.go"
+    assert body, "could not locate the LocalVerb switch in client/go/cli/verbs.go"
     return set(re.findall(r'case "([^"]+)":', body.group(1)))
 
 
@@ -114,25 +115,25 @@ INTENTIONAL_SHADOWS = frozenset(
 
 def test_no_cli_name_collides_with_support_namespace():
     """An operation named like the support namespace makes the binary refuse to start."""
-    namespace = _go_const("supportNamespace")
+    namespace = _go_const("SupportNamespace")
     collisions = sorted(n for n in _cli_names_from_source() if n == namespace)
     assert not collisions, (
         f"x-cli-name {collisions} collides with the CLI's support command "
         f"namespace {namespace!r}. The shipped binary would refuse to start. "
-        f"Rename the endpoint's x-cli-name, or change supportNamespace in "
-        f"cli/go/main.go."
+        f"Rename the endpoint's x-cli-name, or change SupportNamespace in "
+        f"client/go/cli/branding.go."
     )
 
 
 def test_no_cli_name_is_silently_shadowed_by_a_local_verb():
     """A local verb shadows a generated operation with no error at all."""
     verbs = _local_verbs()
-    assert verbs, "expected localVerb to claim at least one verb"
+    assert verbs, "expected LocalVerb to claim at least one verb"
 
     cli_names = _cli_names_from_source()
     shadowed = sorted((cli_names & verbs) - INTENTIONAL_SHADOWS)
     assert not shadowed, (
-        f"x-cli-name {shadowed} is shadowed by a local verb in cli/go/verbs.go, "
+        f"x-cli-name {shadowed} is shadowed by a local verb in client/go/cli/verbs.go, "
         f"so typing it would never reach the store and nothing would report it. "
         f"Rename the endpoint, remove the verb, or — if the shadow is deliberate "
         f"— add it to INTENTIONAL_SHADOWS with the reason."
@@ -151,7 +152,7 @@ def test_every_intentional_shadow_still_shadows_something():
     assert not stale, (
         f"{stale} are listed as intentional shadows but are no longer generated "
         f"operations. Drop them from INTENTIONAL_SHADOWS — and check whether the "
-        f"corresponding local verb in cli/go/ is still wanted."
+        f"corresponding local verb in client/go/cli/ is still wanted."
     )
 
 
@@ -184,9 +185,9 @@ def test_support_commands_do_not_collide_when_namespaced():
     the namespace and all six return to the root, so this assertion is what
     tells you the guard above would need widening.
     """
-    namespace = _go_const("supportNamespace")
+    namespace = _go_const("SupportNamespace")
     assert namespace, (
-        "supportNamespace is empty, so restish's support commands sit at the "
+        "SupportNamespace is empty, so restish's support commands sit at the "
         "root and any of "
         f"{sorted(RESTISH_SUPPORT_COMMANDS)} could collide with an operation. "
         "Widen test_no_cli_name_collides_with_support_namespace to check all of "
@@ -208,7 +209,7 @@ def test_promoted_api_name_is_not_itself_an_operation():
     itself, which is the two-level shape (``sbs store list-skills``) this design
     removed.
     """
-    api_name = _go_const("apiName")
+    api_name = _go_const("APIName")
     assert api_name not in _cli_names_from_source(), (
         f"an operation is named {api_name!r}, the promoted API's own key; "
         f"rename it to keep the root surface unambiguous."
@@ -222,7 +223,7 @@ def test_promoted_api_name_is_not_itself_an_operation():
 # The inventory of surviving "restish" strings is asserted in three independent
 # gates, each of which can only see part of the picture:
 #
-#   * cli/go/main_test.go            — the count, as a Go unit test
+#   * client/go/tests/main_test.go   — the count, as a Go unit test
 #   * tests/cli/test_native_cli_e2e.py — a built binary on this platform
 #   * .github/workflows/cli-artifacts.yml — a built binary on all five OSes
 #
@@ -245,11 +246,11 @@ EXPECTED_ALLOWLIST = (
 
 
 def test_go_inventory_lists_the_four_residual_strings():
-    source = (CLI_GO_DIR / "main_test.go").read_text(encoding="utf-8")
+    source = (CLI_TESTS_DIR / "main_test.go").read_text(encoding="utf-8")
     block = re.search(
         r"var knownRestishStrings = \[\]string\{(.*?)\n\}", source, re.DOTALL
     )
-    assert block, "knownRestishStrings not found in cli/go/main_test.go"
+    assert block, "knownRestishStrings not found in client/go/tests/main_test.go"
     entries = re.findall(r'"([^"]+)"', block.group(1))
     # The Go list covers only §3.3 — the `engine: restish` string is ours, not
     # upstream's, so it is deliberately not part of that inventory.
@@ -309,6 +310,7 @@ def test_ci_workflow_allowlist_is_not_wider_than_expected():
     assert not unexpected, (
         f"the CI branding gate excludes {unexpected}, which is not in the agreed "
         f"§3.3 allowlist. Either upstream changed (update EXPECTED_ALLOWLIST here, "
-        f"cli/go/main_test.go and test_native_cli_e2e.py together) or this is a "
+        f"client/go/tests/main_test.go and test_native_cli_e2e.py together) or this "
+        f"is a "
         f"regression being silenced."
     )

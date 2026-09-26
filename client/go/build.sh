@@ -9,15 +9,20 @@
 # needed five native runners for the same matrix (§10).
 #
 # Usage:
-#   cli/build.sh [--out DIR] [--url URL] [--version V] [--platforms "a b c"]
+#   client/go/build.sh [--out DIR] [--url URL] [--version V] [--platforms "a b c"]
 #
 # The emitted prebuilt-manifest.json is what the server's artifact service reads
 # to learn each artifact's sha256 and slot offsets without executing it.
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CLI_DIR="$REPO_ROOT/cli/go"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# The Go module root. The importable library is $GO_ROOT/cli and the binary's
+# entry point is $GO_ROOT/cli/cmd/sbs -- see the note in cli/version.go for why
+# the two are separate packages.
+GO_ROOT="$REPO_ROOT/client/go"
+CLI_PKG="github.com/skillberry-ai/skillberry-store/client/go/cli"
+CMD_PKG="./cli/cmd/sbs"
 
 # The closed platform enum of §5.1. Ids are <goos>-<goarch> and the server
 # validates against this same list, so adding one here is not enough on its own.
@@ -65,7 +70,7 @@ fi
 # The engine version comes from go.mod rather than from a second place that
 # could disagree with what is actually linked in. It is part of the server's
 # preparation stamp key (§5.3), so it has to be the truth.
-ENGINE_VERSION="$(cd "$CLI_DIR" && go list -m -f '{{.Version}}' github.com/rest-sh/restish/v2 2>/dev/null | sed 's/^v//')"
+ENGINE_VERSION="$(cd "$GO_ROOT" && go list -m -f '{{.Version}}' github.com/rest-sh/restish/v2 2>/dev/null | sed 's/^v//')"
 ENGINE_VERSION="${ENGINE_VERSION:-unknown}"
 
 # §5.7 / §7.2 / B14: a URL that reaches a linker flag is argument injection into
@@ -107,18 +112,22 @@ for platform in $PLATFORMS; do
     # -s -w strips the symbol table and DWARF (M7: 30-33 MB per artifact).
     # -trimpath keeps build paths out of the binary, so builds are comparable
     # and no developer's home directory ships to users (§7.4).
-    ldflags="-s -w -X main.version=$VERSION -X main.engineVersion=$ENGINE_VERSION"
+    # The -X target is the full import path of the package holding the variable,
+    # not `main`: these live in the importable `cli` package. A stale
+    # `-X main.version=...` is accepted silently by the linker and injects
+    # nothing -- see the note in cli/version.go.
+    ldflags="-s -w -X $CLI_PKG.Version=$VERSION -X $CLI_PKG.EngineVersion=$ENGINE_VERSION"
     if [[ -n "$BAKE_URL" ]]; then
         # An argv element, never a shell string: see B14.
-        ldflags="$ldflags -X main.urlSlot=$BAKE_URL"
+        ldflags="$ldflags -X $CLI_PKG.URLSlot=$BAKE_URL"
     fi
 
     printf '    %-16s ' "$platform"
     start=$(date +%s)
     (
-        cd "$CLI_DIR"
+        cd "$GO_ROOT"
         CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-            go build -trimpath -ldflags "$ldflags" -o "$dest" .
+            go build -trimpath -ldflags "$ldflags" -o "$dest" "$CMD_PKG"
     )
     elapsed=$(( $(date +%s) - start ))
 
@@ -159,7 +168,7 @@ mv "$manifest.tmp" "$manifest"
 # LICENSE is the more common convention and a future release could switch.
 # Shipping no licence while redistributing an MIT binary is the one outcome that
 # is not acceptable, so a miss is a hard failure rather than a warning.
-engine_dir="$(cd "$CLI_DIR" && go list -m -f '{{.Dir}}' github.com/rest-sh/restish/v2)"
+engine_dir="$(cd "$GO_ROOT" && go list -m -f '{{.Dir}}' github.com/rest-sh/restish/v2)"
 engine_license=""
 for candidate in LICENSE.md LICENSE LICENSE.txt COPYING; do
     if [[ -f "$engine_dir/$candidate" ]]; then

@@ -149,7 +149,7 @@ So the worst case, with zero upstream changes, is **two flag descriptions in hel
 ### 4.1 The whole of it
 
 ```go
-// cli/go/main.go  (new; the entire branding layer)
+// client/go/cli/branding.go  (new; the entire branding layer)
 func main() {
 	brandPaths()                       // RSH_CONFIG_DIR / RSH_CACHE_DIR / RSH_CONFIG -> ~/.config/sbs, ~/.cache/sbs
 	if handled, code := local(os.Args); handled { os.Exit(code) }   // connect | download-cli | self-update | version
@@ -283,7 +283,7 @@ Two mechanisms, both verified (M6, M9). The manifest records which one produced 
 
 | | `rebuild` | `patch` |
 | --- | --- | --- |
-| How | `GOOS/GOARCH go build -ldflags "-X main.urlSlot=<url>"` | Rewrite the padded 60-byte slot in a CI-built artifact, in place, same length |
+| How | `GOOS/GOARCH go build -ldflags "-X <cli-pkg>.URLSlot=<url>"` (see the layout note in §9) | Rewrite the padded 60-byte slot in a CI-built artifact, in place, same length |
 | Needs | Go toolchain + vendored deps in the image | nothing but the artifact |
 | Cost | 2.3 s per platform (~12 s for five) | ~milliseconds |
 | Verified | M4/M6 — all five targets | M9 — Linux, 0 size delta, runs |
@@ -508,7 +508,7 @@ We hand users an executable, so: sha256 in the manifest, shown in the UI, verifi
 
 ## 8. Test plan
 
-### 8.1 Feature A — Go unit tests (`cli/go/*_test.go`)
+### 8.1 Feature A — Go unit tests (`client/go/tests/*_test.go`)
 
 1. `brandPaths` sets the three env vars, respects a user-set value, and produces branded paths.
 2. Config migration copies only `apis.sbs`, sets `0600`, leaves the old file, prints one line.
@@ -547,7 +547,7 @@ We hand users an executable, so: sha256 in the manifest, shown in the UI, verifi
 
 | Area | Files |
 | --- | --- |
-| The CLI | **new** `cli/go/main.go`, `auth.go`, `dist.go`, `paths.go`, `go.mod`, `go.sum`, `vendor/` |
+| The CLI | **new** `client/go/go.mod`, `go.sum`, `build.sh`; `client/go/cli/` (`branding.go`, `auth.go`, `dist.go`, `login.go`, `paths.go`, `verbs.go`, `version.go`); `client/go/cli/cmd/sbs/main.go`; `client/go/tests/*_test.go`. **Layout note** below |
 | **Deletions** (§4.6) | `client/python/skillberry_store_sdk/skillberry_store_sdk/sdk_cli.py`; `src/skillberry_store/tests/cli/test_sdk_cli_login_info.py`; the CLI injection in [dev.mk:216-233](../../skillberry-common/.mk/dev.mk#L216-L233), gated by a new `SDK_PY_CLI` flag set to `0` in [.mk/local.mk](../../.mk/local.mk); `skillberry-common/scripts/sdk_cli.py` gains a deprecation note and is removed in a follow-up once no sibling asset opts in |
 | Packaging | **new** `skillberry-store-cli` platform wheels (binary + launcher); `skillberry-store-sdk[cli]` extra with environment markers |
 | Server | **new** `fast_api/cli_api.py`, `fast_api/platform_detect.py`, `services/cli_artifacts.py`; `fast_api/server.py` (settings, lifespan task, registration, `Accept-CH`) |
@@ -556,9 +556,35 @@ We hand users an executable, so: sha256 in the manifest, shown in the UI, verifi
 | Build & CI | `Dockerfile` (bake artifacts; optional toolchain variant), **new** `.github/workflows/cli-artifacts.yml` |
 | Docs | `docs/cli.md`, `site/cli.html`, `docs/config-env-vars.md`, `container.env`, `README.md`, `CHANGELOG.md` |
 
+**Layout note (as built).** §4.1 sketches the branding layer as a single
+`package main`. The implementation splits it in two, because Go requires it:
+
+```
+client/go/
+  cli/            package cli   — the implementation, exported API
+  cli/cmd/sbs/    package main  — the entry point, ~20 lines
+  tests/          package tests — the test suite
+```
+
+A `package main` is *"a program, not an importable package"* — the compiler
+refuses the import outright — so a test living in any directory other than the
+code's own can only exist if the implementation is a library. Keeping `main` to
+an entry point is therefore the precondition for the test suite's location, not a
+stylistic choice.
+
+One consequence worth stating: the identifiers the tests exercise are **exported**
+(`BrandPaths`, `BaseURL`, `LocalVerb`, `StandaloneAuth`, …), which is a wider API
+surface than a single `main` package would have needed. The `-ldflags -X` targets
+move with them — from `main.urlSlot` to
+`github.com/skillberry-ai/skillberry-store/client/go/cli.URLSlot`. That path is
+load-bearing: `-X` with a wrong package path is accepted **silently** by the
+linker and injects nothing, so it is a named constant on the Python side
+(`GO_LDFLAGS_PKG`) and asserted against the Go source by
+`test_ldflags_target_matches_the_go_package`.
+
 | Phase | Content | Why this order |
 | --- | --- | --- |
-| **1** | `cli/go` with branding, promoted surface, auth handler, verbs; CI build + the "no restish" assertion; **delete the Python shim and its generation step** | Delivers Feature A entirely, with no server change and no new surface. The deletion lands here, not later, so there is never a release with two CLIs |
+| **1** | `client/go` with branding, promoted surface, auth handler, verbs; CI build + the "no restish" assertion; **delete the Python shim and its generation step** | Delivers Feature A entirely, with no server change and no new surface. The deletion lands here, not later, so there is never a release with two CLIs |
 | **2** | `SBS_PUBLIC_URL`, `CliArtifactService` with `patch`, `/cli/manifest`, `/cli/download`, ACL floor, `sbs download-cli` | The whole download loop, no toolchain in the image |
 | **3** | Platform wheels + the `[cli]` extra, install scripts, UI modal (masthead, home card, **login screen**), sidecar for `darwin-arm64`, optional `rebuild` mode | Distribution and polish on a working contract |
 | **4** | Signing/notarization, provenance, upstream PR for the two flag strings | Needs accounts, keys and an upstream review cycle |

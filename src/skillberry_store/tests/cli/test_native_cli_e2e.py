@@ -34,7 +34,9 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-CLI_GO_DIR = REPO_ROOT / "cli" / "go"
+GO_ROOT = REPO_ROOT / "client" / "go"
+CLI_PKG = "github.com/skillberry-ai/skillberry-store/client/go/cli"
+CMD_PKG = "./cli/cmd/sbs"
 
 # Where the e2e fixture serves the store (see conftest.wait_until_server_ready).
 STORE_URL = "http://127.0.0.1:8000"
@@ -46,20 +48,27 @@ pytestmark = pytest.mark.skipif(
 
 
 def _build(tmp_path: Path, url: str, name: str = "sbs") -> Path:
-    """Cross-compile-free local build with ``url`` baked into the slot."""
+    """Local build with ``url`` baked into the slot.
+
+    The ``-X`` targets name the ``cli`` package's full import path, not ``main``:
+    the injected variables live in the importable library so that the Go test
+    suite can live in ``client/go/tests``. A stale ``-X main.urlSlot=`` is
+    accepted silently by the linker and injects nothing, which is exactly the
+    failure ``test_dead_port_build_must_fail`` below exists to catch.
+    """
     out = tmp_path / name
     ldflags = " ".join(
         [
             "-s",
             "-w",
-            f"-X main.urlSlot={url}",
-            "-X main.version=e2e-test",
-            "-X main.engineVersion=test",
+            f"-X {CLI_PKG}.URLSlot={url}",
+            f"-X {CLI_PKG}.Version=e2e-test",
+            f"-X {CLI_PKG}.EngineVersion=test",
         ]
     )
     proc = subprocess.run(
-        ["go", "build", "-trimpath", "-ldflags", ldflags, "-o", str(out), "."],
-        cwd=CLI_GO_DIR,
+        ["go", "build", "-trimpath", "-ldflags", ldflags, "-o", str(out), CMD_PKG],
+        cwd=GO_ROOT,
         capture_output=True,
         text=True,
         env={**os.environ, "CGO_ENABLED": "0"},
@@ -217,7 +226,7 @@ def test_no_unexpected_restish_mentions_across_surfaces(built_cli, clean_home):
         + "\n".join(f"  {label}: {lines}" for label, lines in offenders.items())
         + "\n\nIf upstream added a new mention, either it belongs in the §3.3 "
         "inventory (update ALLOWED_RESTISH_SUBSTRINGS here *and* "
-        "knownRestishStrings in cli/go/main_test.go) or it is a regression."
+        "knownRestishStrings in client/go/tests/main_test.go) or it is a regression."
     )
 
 
@@ -318,7 +327,8 @@ def test_env_url_overrides_the_baked_slot(built_cli, clean_home, tmp_path):
 def test_dead_port_build_must_fail(tmp_path, clean_home):
     """The control that caught a false positive during prototyping.
 
-    If ``-X main.urlSlot`` were being ignored, this binary would silently fall
+    If the ``-X …cli.URLSlot`` injection were being ignored — a wrong package
+    path is enough — this binary would silently fall
     back to its source default — which in a dev checkout points at a port that
     may well be serving something — and the happy-path tests above would keep
     passing while nothing was actually being injected.

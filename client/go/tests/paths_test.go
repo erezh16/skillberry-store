@@ -1,4 +1,4 @@
-package main
+package tests
 
 import (
 	"encoding/json"
@@ -7,16 +7,18 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/skillberry-ai/skillberry-store/client/go/cli"
 )
 
-// §8.1 #1 — brandPaths sets the three env vars, respects a user-set value, and
+// §8.1 #1 — cli.BrandPaths sets the three env vars, respects a user-set value, and
 // produces branded paths.
 
 func TestBrandPathsSetsBrandedPaths(t *testing.T) {
-	env := mapEnviron{}
-	got, err := brandPaths(env, "/home/alice")
+	env := cli.MapEnviron{}
+	got, err := cli.BrandPaths(env, "/home/alice")
 	if err != nil {
-		t.Fatalf("brandPaths: %v", err)
+		t.Fatalf("cli.BrandPaths: %v", err)
 	}
 
 	wantDir := filepath.Join("/home/alice", ".config", "sbs")
@@ -45,13 +47,13 @@ func TestBrandPathsSetsBrandedPaths(t *testing.T) {
 }
 
 func TestBrandPathsRespectsUserSetValues(t *testing.T) {
-	env := mapEnviron{
+	env := cli.MapEnviron{
 		"RSH_CONFIG_DIR": "/custom/cfg",
 		"RSH_CACHE_DIR":  "/custom/cache",
 	}
-	got, err := brandPaths(env, "/home/alice")
+	got, err := cli.BrandPaths(env, "/home/alice")
 	if err != nil {
-		t.Fatalf("brandPaths: %v", err)
+		t.Fatalf("cli.BrandPaths: %v", err)
 	}
 	if got.ConfigDir != "/custom/cfg" {
 		t.Errorf("ConfigDir = %q, want the user's /custom/cfg", got.ConfigDir)
@@ -69,10 +71,10 @@ func TestBrandPathsRespectsUserSetValues(t *testing.T) {
 }
 
 func TestBrandPathsRespectsUserSetConfigFile(t *testing.T) {
-	env := mapEnviron{"RSH_CONFIG": "/ci/pinned.json"}
-	got, err := brandPaths(env, "/home/alice")
+	env := cli.MapEnviron{"RSH_CONFIG": "/ci/pinned.json"}
+	got, err := cli.BrandPaths(env, "/home/alice")
 	if err != nil {
-		t.Fatalf("brandPaths: %v", err)
+		t.Fatalf("cli.BrandPaths: %v", err)
 	}
 	if got.ConfigFile != "/ci/pinned.json" {
 		t.Errorf("ConfigFile = %q, want the user's /ci/pinned.json", got.ConfigFile)
@@ -80,10 +82,10 @@ func TestBrandPathsRespectsUserSetConfigFile(t *testing.T) {
 }
 
 func TestBrandPathsHonoursXDG(t *testing.T) {
-	env := mapEnviron{"XDG_CONFIG_HOME": "/xdg/cfg", "XDG_CACHE_HOME": "/xdg/cache"}
-	got, err := brandPaths(env, "/home/alice")
+	env := cli.MapEnviron{"XDG_CONFIG_HOME": "/xdg/cfg", "XDG_CACHE_HOME": "/xdg/cache"}
+	got, err := cli.BrandPaths(env, "/home/alice")
 	if err != nil {
-		t.Fatalf("brandPaths: %v", err)
+		t.Fatalf("cli.BrandPaths: %v", err)
 	}
 	// restish honours XDG too, so ignoring it would put our config somewhere
 	// restish would not look for it.
@@ -96,24 +98,24 @@ func TestBrandPathsHonoursXDG(t *testing.T) {
 }
 
 func TestBrandPathsWithoutHomeFails(t *testing.T) {
-	if _, err := brandPaths(mapEnviron{}, ""); err == nil {
-		t.Fatal("brandPaths with no home should fail rather than build /.config/sbs")
+	if _, err := cli.BrandPaths(cli.MapEnviron{}, ""); err == nil {
+		t.Fatal("cli.BrandPaths with no home should fail rather than build /.config/sbs")
 	}
 }
 
 // ---------------------------------------------------------------------------
-// ensureConfigFile — the fix without which the whole branded surface reverts
-// to stock restish on a fresh install. See the doc comment on ensureConfigFile.
+// cli.EnsureConfigFile — the fix without which the whole branded surface reverts
+// to stock restish on a fresh install. See the doc comment on cli.EnsureConfigFile.
 // ---------------------------------------------------------------------------
 
 func TestEnsureConfigFileCreatesPrivateEmptyConfig(t *testing.T) {
 	dir := t.TempDir()
-	paths := brandedPaths{
+	paths := cli.BrandedPaths{
 		ConfigDir:  filepath.Join(dir, ".config", "sbs"),
 		ConfigFile: filepath.Join(dir, ".config", "sbs", "sbs.json"),
 	}
-	if err := ensureConfigFile(paths); err != nil {
-		t.Fatalf("ensureConfigFile: %v", err)
+	if err := cli.EnsureConfigFile(paths); err != nil {
+		t.Fatalf("cli.EnsureConfigFile: %v", err)
 	}
 
 	body, err := os.ReadFile(paths.ConfigFile)
@@ -145,13 +147,13 @@ func TestEnsureConfigFileCreatesPrivateEmptyConfig(t *testing.T) {
 
 func TestEnsureConfigFileLeavesExistingUntouched(t *testing.T) {
 	dir := t.TempDir()
-	paths := brandedPaths{ConfigDir: dir, ConfigFile: filepath.Join(dir, "sbs.json")}
+	paths := cli.BrandedPaths{ConfigDir: dir, ConfigFile: filepath.Join(dir, "sbs.json")}
 	original := `{"apis":{"store":{"base_url":"http://example.test"}}}`
 	if err := os.WriteFile(paths.ConfigFile, []byte(original), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureConfigFile(paths); err != nil {
-		t.Fatalf("ensureConfigFile: %v", err)
+	if err := cli.EnsureConfigFile(paths); err != nil {
+		t.Fatalf("cli.EnsureConfigFile: %v", err)
 	}
 	body, _ := os.ReadFile(paths.ConfigFile)
 	if string(body) != original {
@@ -160,23 +162,23 @@ func TestEnsureConfigFileLeavesExistingUntouched(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// §8.1 #3 — baseURL precedence
+// §8.1 #3 — BaseURL precedence
 // ---------------------------------------------------------------------------
 
 func TestBaseURLPrefersEnvOverSlot(t *testing.T) {
-	got := baseURL(mapEnviron{urlEnvVar: "http://from-env.test:9000/"})
+	got := cli.BaseURL(cli.MapEnviron{cli.URLEnvVar: "http://from-env.test:9000/"})
 	if got != "http://from-env.test:9000" {
-		t.Errorf("baseURL = %q, want the env value with the trailing slash stripped", got)
+		t.Errorf("cli.BaseURL = %q, want the env value with the trailing slash stripped", got)
 	}
 }
 
 func TestBaseURLFallsBackToSlot(t *testing.T) {
-	got := baseURL(mapEnviron{})
-	if got != slotValue() {
-		t.Errorf("baseURL = %q, want the slot value %q", got, slotValue())
+	got := cli.BaseURL(cli.MapEnviron{})
+	if got != cli.SlotValue() {
+		t.Errorf("cli.BaseURL = %q, want the slot value %q", got, cli.SlotValue())
 	}
-	if strings.Contains(got, string(slotPad)) {
-		t.Errorf("baseURL = %q still carries slot padding", got)
+	if strings.Contains(got, string(cli.SlotPad)) {
+		t.Errorf("cli.BaseURL = %q still carries slot padding", got)
 	}
 }
 
@@ -184,27 +186,27 @@ func TestBaseURLIgnoresBlankEnv(t *testing.T) {
 	// An exported-but-empty SBS_URL is a very common shell accident
 	// (`export SBS_URL=$SOME_UNSET_VAR`). Treating it as a real override would
 	// point the CLI at "" and fail obscurely.
-	if got := baseURL(mapEnviron{urlEnvVar: "   "}); got != slotValue() {
-		t.Errorf("baseURL = %q, want the slot value for a blank env var", got)
+	if got := cli.BaseURL(cli.MapEnviron{cli.URLEnvVar: "   "}); got != cli.SlotValue() {
+		t.Errorf("cli.BaseURL = %q, want the slot value for a blank env var", got)
 	}
 }
 
 // TestURLSlotIsPatchable guards the §3.4 #1 / G8 trap: `-ldflags -X` silently
 // no-ops unless the target is a package-level string with a constant
-// initializer, and the slot must stay exactly slotWidth bytes wide so the
+// initializer, and the slot must stay exactly cli.SlotWidth bytes wide so the
 // `patch` mechanism can rewrite it without changing the file size.
 func TestURLSlotIsPatchable(t *testing.T) {
-	if len(urlSlot) != slotWidth {
-		t.Errorf("len(urlSlot) = %d, want exactly slotWidth (%d); "+
+	if len(cli.URLSlot) != cli.SlotWidth {
+		t.Errorf("len(cli.URLSlot) = %d, want exactly cli.SlotWidth (%d); "+
 			"the patch mechanism locates and rewrites a fixed-width slot",
-			len(urlSlot), slotWidth)
+			len(cli.URLSlot), cli.SlotWidth)
 	}
-	if !strings.HasSuffix(urlSlot, string(slotPad)) {
-		t.Errorf("urlSlot = %q has no %q padding, so a shorter URL could not be patched in",
-			urlSlot, string(slotPad))
+	if !strings.HasSuffix(cli.URLSlot, string(cli.SlotPad)) {
+		t.Errorf("cli.URLSlot = %q has no %q padding, so a shorter URL could not be patched in",
+			cli.URLSlot, string(cli.SlotPad))
 	}
-	if trimmed := slotValue(); trimmed == "" {
-		t.Error("slotValue() is empty; the compiled-in default must be usable")
+	if trimmed := cli.SlotValue(); trimmed == "" {
+		t.Error("cli.SlotValue() is empty; the compiled-in default must be usable")
 	}
 }
 
@@ -234,8 +236,8 @@ func TestValidateURLRejectsInjection(t *testing.T) {
 		"http://" + strings.Repeat("a", 80) + ".com",
 	}
 	for _, u := range bad {
-		if err := validateURL(u); err == nil {
-			t.Errorf("validateURL(%q) = nil, want an error", u)
+		if err := cli.ValidateURL(u); err == nil {
+			t.Errorf("cli.ValidateURL(%q) = nil, want an error", u)
 		}
 	}
 }
@@ -250,8 +252,8 @@ func TestValidateURLAcceptsRealURLs(t *testing.T) {
 		"https://my-store.internal",
 	}
 	for _, u := range good {
-		if err := validateURL(u); err != nil {
-			t.Errorf("validateURL(%q) = %v, want nil", u, err)
+		if err := cli.ValidateURL(u); err != nil {
+			t.Errorf("cli.ValidateURL(%q) = %v, want nil", u, err)
 		}
 	}
 }
@@ -260,11 +262,11 @@ func TestValidateURLForConnectAllowsLongURLs(t *testing.T) {
 	// A URL the user types into their own config never has to fit a patchable
 	// slot, so the width limit must not leak into `connect`.
 	long := "https://" + strings.Repeat("a", 80) + ".example.com/store"
-	if err := validateURLForConnect(long); err != nil {
-		t.Errorf("validateURLForConnect(long) = %v, want nil", err)
+	if err := cli.ValidateURLForConnect(long); err != nil {
+		t.Errorf("cli.ValidateURLForConnect(long) = %v, want nil", err)
 	}
-	if err := validateURL(long); err == nil {
-		t.Error("validateURL(long) should still enforce the slot width")
+	if err := cli.ValidateURL(long); err == nil {
+		t.Error("cli.ValidateURL(long) should still enforce the slot width")
 	}
 }
 
@@ -291,13 +293,13 @@ func TestMigrateLegacyConfigCopiesOnlySBSEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	paths := brandedPaths{
+	paths := cli.BrandedPaths{
 		ConfigDir:  filepath.Join(dir, "sbs"),
 		ConfigFile: filepath.Join(dir, "sbs", "sbs.json"),
 	}
-	notice, err := migrateLegacyConfig(paths, legacy)
+	notice, err := cli.MigrateLegacyConfig(paths, legacy)
 	if err != nil {
-		t.Fatalf("migrateLegacyConfig: %v", err)
+		t.Fatalf("cli.MigrateLegacyConfig: %v", err)
 	}
 	if notice == "" {
 		t.Error("migration should return exactly one notice line for stderr")
@@ -320,17 +322,17 @@ func TestMigrateLegacyConfigCopiesOnlySBSEntry(t *testing.T) {
 		t.Fatalf("migrated config is not valid JSON: %v", err)
 	}
 
-	if got.APIs[cliName].BaseURL != "http://store.test:8000" {
+	if got.APIs[cli.CLIName].BaseURL != "http://store.test:8000" {
 		t.Errorf("apis.%s.base_url = %q, want the legacy value (the '//' in the URL must survive comment stripping)",
-			cliName, got.APIs[cliName].BaseURL)
+			cli.CLIName, got.APIs[cli.CLIName].BaseURL)
 	}
 	// Only apis.sbs: inheriting the user's other APIs or their theme would
 	// silently import configuration they never gave this CLI.
 	if _, ok := got.APIs["other"]; ok {
-		t.Error("migration copied apis.other; it must copy only apis." + cliName)
+		t.Error("migration copied apis.other; it must copy only apis." + cli.CLIName)
 	}
 	if len(got.Theme) != 0 {
-		t.Error("migration copied the theme; it must copy only apis." + cliName)
+		t.Error("migration copied the theme; it must copy only apis." + cli.CLIName)
 	}
 
 	if runtime.GOOS != "windows" {
@@ -356,15 +358,15 @@ func TestMigrateLegacyConfigNeverOverwrites(t *testing.T) {
 	if err := os.WriteFile(legacy, []byte(`{"apis":{"sbs":{"base_url":"http://old.test"}}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	paths := brandedPaths{ConfigDir: dir, ConfigFile: filepath.Join(dir, "sbs.json")}
+	paths := cli.BrandedPaths{ConfigDir: dir, ConfigFile: filepath.Join(dir, "sbs.json")}
 	current := `{"apis":{"store":{"base_url":"http://current.test"}}}`
 	if err := os.WriteFile(paths.ConfigFile, []byte(current), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	notice, err := migrateLegacyConfig(paths, legacy)
+	notice, err := cli.MigrateLegacyConfig(paths, legacy)
 	if err != nil {
-		t.Fatalf("migrateLegacyConfig: %v", err)
+		t.Fatalf("cli.MigrateLegacyConfig: %v", err)
 	}
 	if notice != "" {
 		t.Errorf("notice = %q, want none when a config already exists", notice)
@@ -377,10 +379,10 @@ func TestMigrateLegacyConfigNeverOverwrites(t *testing.T) {
 
 func TestMigrateLegacyConfigNoLegacyFileIsSilent(t *testing.T) {
 	dir := t.TempDir()
-	paths := brandedPaths{ConfigDir: dir, ConfigFile: filepath.Join(dir, "sbs.json")}
-	notice, err := migrateLegacyConfig(paths, filepath.Join(dir, "does-not-exist.json"))
+	paths := cli.BrandedPaths{ConfigDir: dir, ConfigFile: filepath.Join(dir, "sbs.json")}
+	notice, err := cli.MigrateLegacyConfig(paths, filepath.Join(dir, "does-not-exist.json"))
 	if err != nil {
-		t.Fatalf("migrateLegacyConfig: %v", err)
+		t.Fatalf("cli.MigrateLegacyConfig: %v", err)
 	}
 	if notice != "" {
 		t.Errorf("notice = %q, want silence on the common path", notice)
@@ -397,13 +399,13 @@ func TestMigrateLegacyConfigWithoutSBSEntryIsSilent(t *testing.T) {
 	if err := os.WriteFile(legacy, []byte(`{"apis":{"other":{"base_url":"http://other.test"}}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	paths := brandedPaths{ConfigDir: dir, ConfigFile: filepath.Join(dir, "sbs.json")}
-	notice, err := migrateLegacyConfig(paths, legacy)
+	paths := cli.BrandedPaths{ConfigDir: dir, ConfigFile: filepath.Join(dir, "sbs.json")}
+	notice, err := cli.MigrateLegacyConfig(paths, legacy)
 	if err != nil {
-		t.Fatalf("migrateLegacyConfig: %v", err)
+		t.Fatalf("cli.MigrateLegacyConfig: %v", err)
 	}
 	if notice != "" {
-		t.Errorf("notice = %q, want silence when there is no apis.%s entry", notice, cliName)
+		t.Errorf("notice = %q, want silence when there is no apis.%s entry", notice, cli.CLIName)
 	}
 }
 
@@ -412,13 +414,13 @@ func TestStripJSONCKeepsURLsInStrings(t *testing.T) {
 	// "http://store.test" and turns a valid config into a parse error.
 	in := `{"url": "http://store.test/x", /* block */ "a": 1 // line
 }`
-	out := stripJSONC(in)
+	out := cli.StripJSONC(in)
 	if !strings.Contains(out, "http://store.test/x") {
-		t.Errorf("stripJSONC ate a URL inside a string: %q", out)
+		t.Errorf("cli.StripJSONC ate a URL inside a string: %q", out)
 	}
 	var parsed map[string]any
 	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
-		t.Fatalf("stripJSONC output is not valid JSON (%q): %v", out, err)
+		t.Fatalf("cli.StripJSONC output is not valid JSON (%q): %v", out, err)
 	}
 	if parsed["url"] != "http://store.test/x" {
 		t.Errorf("url = %v, want the original", parsed["url"])
@@ -426,15 +428,15 @@ func TestStripJSONCKeepsURLsInStrings(t *testing.T) {
 }
 
 func TestLegacyConfigPathUsesRestishDir(t *testing.T) {
-	got := legacyConfigPath(mapEnviron{}, "/home/alice")
+	got := cli.LegacyConfigPath(cli.MapEnviron{}, "/home/alice")
 	want := filepath.Join("/home/alice", ".config", "restish", "restish.json")
 	if got != want {
-		t.Errorf("legacyConfigPath = %q, want %q", got, want)
+		t.Errorf("cli.LegacyConfigPath = %q, want %q", got, want)
 	}
 	// A user with XDG set had restish put its config under XDG too, so looking
 	// in ~/.config would miss the very config we are migrating.
-	gotXDG := legacyConfigPath(mapEnviron{"XDG_CONFIG_HOME": "/xdg"}, "/home/alice")
+	gotXDG := cli.LegacyConfigPath(cli.MapEnviron{"XDG_CONFIG_HOME": "/xdg"}, "/home/alice")
 	if wantXDG := filepath.Join("/xdg", "restish", "restish.json"); gotXDG != wantXDG {
-		t.Errorf("legacyConfigPath with XDG = %q, want %q", gotXDG, wantXDG)
+		t.Errorf("cli.LegacyConfigPath with XDG = %q, want %q", gotXDG, wantXDG)
 	}
 }

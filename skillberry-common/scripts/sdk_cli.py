@@ -28,7 +28,7 @@ The replacement embeds restish as a Go *library*
 (``github.com/rest-sh/restish/v2``), which takes the command name, root
 description, config/cache paths and auth handler as configuration. See
 skillberry-store ``docs/design/new_cli.md`` for the full design and
-``cli/go/`` for the implementation.
+``client/go/cli/`` for the implementation.
 
 Opting out
 ----------

@@ -1,4 +1,4 @@
-package main
+package tests
 
 import (
 	"bytes"
@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/rest-sh/restish/v2/auth"
+	"github.com/skillberry-ai/skillberry-store/client/go/cli"
 )
 
 // §8.1 #4 — the assertions inherited from the deleted
@@ -86,7 +87,7 @@ func (f *fakePrompter) PromptSecret(string) (string, error) {
 
 // authFixture wires a handler against a test server.
 type authFixture struct {
-	handler  *standaloneAuth
+	handler  *cli.StandaloneAuth
 	store    *fakeTokenStore
 	prompter *fakePrompter
 	stderr   *bytes.Buffer
@@ -95,10 +96,10 @@ type authFixture struct {
 
 func (f *authFixture) ctx(force bool) auth.AuthContext {
 	return auth.AuthContext{
-		APIName:     apiName,
+		APIName:     cli.APIName,
 		ProfileName: "default",
 		BaseURL:     f.server.URL,
-		CacheKey:    apiName + ":default",
+		CacheKey:    cli.APIName + ":default",
 		Params:      map[string]string{},
 		TokenStore:  f.store,
 		Prompter:    f.prompter,
@@ -124,7 +125,7 @@ func newAuthFixture(t *testing.T, h http.HandlerFunc) *authFixture {
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	return &authFixture{
-		handler:  &standaloneAuth{},
+		handler:  &cli.StandaloneAuth{},
 		store:    newFakeTokenStore(),
 		prompter: &fakePrompter{username: "alice", password: "s3cret"},
 		stderr:   &bytes.Buffer{},
@@ -177,9 +178,9 @@ func (b storeBehaviour) handler() http.HandlerFunc {
 // authenticate at all — a failure that no other test in this file would catch,
 // because they all set Force explicitly.
 func TestStandaloneAuthIsForceCapable(t *testing.T) {
-	var h auth.Handler = &standaloneAuth{}
+	var h auth.Handler = &cli.StandaloneAuth{}
 	if _, ok := h.(auth.ForceCapable); !ok {
-		t.Fatal("standaloneAuth must implement auth.ForceCapable, or restish will " +
+		t.Fatal("cli.StandaloneAuth must implement auth.ForceCapable, or restish will " +
 			"never retry after a 401 and the CLI will never prompt for credentials")
 	}
 }
@@ -190,7 +191,7 @@ func TestAuthReusesCachedToken(t *testing.T) {
 		whoamiStatus: http.StatusUnauthorized,
 		whoamiCalls:  &whoami,
 	}.handler())
-	f.store.tokens[apiName+":default"] = auth.CachedToken{AccessToken: "cached-tok"}
+	f.store.tokens[cli.APIName+":default"] = auth.CachedToken{AccessToken: "cached-tok"}
 
 	req, err := f.authenticate(t, false)
 	if err != nil {
@@ -216,8 +217,8 @@ func TestAuthIgnoresExpiredCachedToken(t *testing.T) {
 		loginBody:    map[string]any{"token": "fresh-tok", "tenant_id": "alice"},
 		loginCalls:   &login,
 	}.handler())
-	f.handler.now = func() time.Time { return time.Unix(2000, 0) }
-	f.store.tokens[apiName+":default"] = auth.CachedToken{
+	f.handler.Now = func() time.Time { return time.Unix(2000, 0) }
+	f.store.tokens[cli.APIName+":default"] = auth.CachedToken{
 		AccessToken: "stale-tok",
 		Expiry:      time.Unix(1000, 0), // already expired relative to now
 	}
@@ -404,7 +405,7 @@ func TestSuccessfulLoginStoresAndAttachesToken(t *testing.T) {
 	if sent["username"] != "alice" || sent["password"] != "s3cret" {
 		t.Errorf("POST /auth/login body = %v, want the prompted credentials", sent)
 	}
-	cached, _ := f.store.Get(apiName + ":default")
+	cached, _ := f.store.Get(cli.APIName + ":default")
 	if cached == nil || cached.AccessToken != "issued-tok" {
 		t.Errorf("token was not cached: %+v", cached)
 	}
@@ -431,14 +432,14 @@ func TestLoginResponseExpiryParsing(t *testing.T) {
 		{"3600", true}, // an `expires_in`-style value must not be mistaken for an instant
 	}
 	for _, c := range cases {
-		got := (&loginResponse{ExpiresAt: c.in}).expiry()
+		got := (&cli.LoginResponse{ExpiresAt: c.in}).Expiry()
 		if got.IsZero() != c.zero {
 			t.Errorf("expiry(%q).IsZero() = %v, want %v", c.in, got.IsZero(), c.zero)
 		}
 	}
 	// A parsed expiry must be in the future for a future timestamp — i.e. it is
 	// an absolute instant, not an offset from now.
-	got := (&loginResponse{ExpiresAt: "2099-01-01T00:00:00Z"}).expiry()
+	got := (&cli.LoginResponse{ExpiresAt: "2099-01-01T00:00:00Z"}).Expiry()
 	if got.Year() != 2099 {
 		t.Errorf("expiry year = %d, want 2099 (expires_at is an instant)", got.Year())
 	}

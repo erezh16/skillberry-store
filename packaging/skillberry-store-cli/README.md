@@ -34,7 +34,7 @@ curl -fsSL https://store.example.com/cli/install.sh | sh
 
 Wheels are published for `linux-amd64`, `linux-arm64`, `darwin-amd64`,
 `darwin-arm64` and `windows-amd64`. Anywhere else, use a store's install script
-(above) or build from source — `cli/go` in the repository.
+(above) or build from source — `client/go` in the repository.
 
 ## Upgrading from `skillberry-store-sdk`
 

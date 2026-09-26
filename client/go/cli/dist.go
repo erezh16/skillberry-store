@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"crypto/sha256"
@@ -17,23 +17,23 @@ import (
 // The CLI downloading the CLI (§5.8).
 //
 // Deliberately implemented with net/http against /cli/manifest rather than as a
-// generated operation, for the reason documented at the localVerb call site: a
+// generated operation, for the reason documented at the LocalVerb call site: a
 // promoted API cannot build any command until it has fetched the store's spec,
 // and these two verbs are what a user reaches for when that fetch is exactly
 // what is failing. Routing them through the engine would make them unavailable
 // in the situation they exist to fix.
 
-// manifestDoc mirrors the /cli/manifest document of §5.5.1. Only the fields
+// ManifestDoc mirrors the /cli/manifest document of §5.5.1. Only the fields
 // this side acts on are declared; unknown fields are ignored, so the server can
 // add to the document without breaking already-downloaded binaries.
-type manifestDoc struct {
+type ManifestDoc struct {
 	CLIName    string                      `json:"cli_name"`
 	CLIVersion string                      `json:"cli_version"`
 	PublicURL  string                      `json:"public_url"`
-	Platforms  map[string]manifestPlatform `json:"platforms"`
+	Platforms  map[string]ManifestPlatform `json:"platforms"`
 }
 
-type manifestPlatform struct {
+type ManifestPlatform struct {
 	State         string `json:"state"` // ready | preparing | unavailable
 	Filename      string `json:"filename"`
 	Size          int64  `json:"size"`
@@ -46,55 +46,55 @@ type manifestPlatform struct {
 	RetryAfter    int    `json:"retry_after"`
 }
 
-// currentPlatform is this binary's own platform id.
+// CurrentPlatform is this binary's own platform id.
 //
 // runtime.GOOS/GOARCH is exact — unlike the server-side User-Agent sniffing of
 // §5.6, which cannot tell Apple Silicon from Intel. So the CLI always sends an
 // explicit ?platform=, and never relies on detection.
-func currentPlatform() string {
+func CurrentPlatform() string {
 	return runtime.GOOS + "-" + runtime.GOARCH
 }
 
-// doDownloadCLI implements `sbs download-cli`.
-func doDownloadCLI(args []string, stdout, stderr *os.File, env environ) int {
-	opts, err := parseDistFlags(args, "download-cli")
+// DoDownloadCLI implements `sbs download-cli`.
+func DoDownloadCLI(args []string, stdout, stderr *os.File, env Environ) int {
+	opts, err := ParseDistFlags(args, "download-cli")
 	if err != nil {
-		writeLine(stderr, fmt.Sprintf("%s: %v", cliName, err))
+		WriteLine(stderr, fmt.Sprintf("%s: %v", CLIName, err))
 		return 2
 	}
 
-	base := baseURL(env)
-	plat := opts.platform
+	base := BaseURL(env)
+	plat := opts.Platform
 	if plat == "" {
-		plat = currentPlatform()
+		plat = CurrentPlatform()
 	}
 
-	entry, doc, err := fetchPlatform(base, plat)
+	entry, doc, err := FetchPlatform(base, plat)
 	if err != nil {
-		writeLine(stderr, fmt.Sprintf("%s: %v", cliName, err))
+		WriteLine(stderr, fmt.Sprintf("%s: %v", CLIName, err))
 		return 1
 	}
 
-	target := opts.output
+	target := opts.Output
 	if target == "" {
 		target = entry.Filename
 		if target == "" {
-			target = cliName
+			target = CLIName
 		}
-		if opts.format == "archive" {
-			target = fmt.Sprintf("%s-%s%s", cliName, plat, archiveSuffix(plat))
+		if opts.Format == "archive" {
+			target = fmt.Sprintf("%s-%s%s", CLIName, plat, ArchiveSuffix(plat))
 		}
 	}
 
-	written, sum, err := downloadVerified(base, entry, opts.format, target)
+	written, sum, err := DownloadVerified(base, entry, opts.Format, target)
 	if err != nil {
-		writeLine(stderr, fmt.Sprintf("%s: %v", cliName, err))
+		WriteLine(stderr, fmt.Sprintf("%s: %v", CLIName, err))
 		return 1
 	}
 
 	fmt.Fprintf(stdout, "Downloaded %s %s for %s to %s (%d bytes, sha256 %s)\n",
 		doc.CLIName, doc.CLIVersion, plat, target, written, sum)
-	if opts.format != "archive" && entry.URLInjection == "sidecar" {
+	if opts.Format != "archive" && entry.URLInjection == "sidecar" {
 		// The one platform/mechanism combination that needs a second file
 		// (§5.2): the binary itself carries no baked URL, so a raw download
 		// would come up pointing at its compile-time default.
@@ -106,26 +106,26 @@ func doDownloadCLI(args []string, stdout, stderr *os.File, env environ) int {
 	return 0
 }
 
-// doSelfUpdate implements `sbs self-update`: replace the running binary.
-func doSelfUpdate(args []string, stdout, stderr *os.File, env environ) int {
-	opts, err := parseDistFlags(args, "self-update")
+// DoSelfUpdate implements `sbs self-update`: replace the running binary.
+func DoSelfUpdate(args []string, stdout, stderr *os.File, env Environ) int {
+	opts, err := ParseDistFlags(args, "self-update")
 	if err != nil {
-		writeLine(stderr, fmt.Sprintf("%s: %v", cliName, err))
+		WriteLine(stderr, fmt.Sprintf("%s: %v", CLIName, err))
 		return 2
 	}
-	if opts.format == "archive" {
-		writeLine(stderr, fmt.Sprintf("%s: self-update cannot use --format archive", cliName))
+	if opts.Format == "archive" {
+		WriteLine(stderr, fmt.Sprintf("%s: self-update cannot use --format archive", CLIName))
 		return 2
 	}
 
 	// Always this platform: self-update replaces *this* binary, so honouring a
 	// --platform here would install an artifact that cannot execute.
-	plat := currentPlatform()
-	base := baseURL(env)
+	plat := CurrentPlatform()
+	base := BaseURL(env)
 
 	self, err := os.Executable()
 	if err != nil {
-		writeLine(stderr, fmt.Sprintf("%s: cannot locate the running binary: %v", cliName, err))
+		WriteLine(stderr, fmt.Sprintf("%s: cannot locate the running binary: %v", CLIName, err))
 		return 1
 	}
 	// Resolve symlinks so an update through ~/.local/bin/sbs -> /opt/sbs/sbs
@@ -134,22 +134,22 @@ func doSelfUpdate(args []string, stdout, stderr *os.File, env environ) int {
 		self = resolved
 	}
 
-	entry, doc, err := fetchPlatform(base, plat)
+	entry, doc, err := FetchPlatform(base, plat)
 	if err != nil {
-		writeLine(stderr, fmt.Sprintf("%s: %v", cliName, err))
+		WriteLine(stderr, fmt.Sprintf("%s: %v", CLIName, err))
 		return 1
 	}
 
-	if doc.CLIVersion != "" && doc.CLIVersion == version {
-		fmt.Fprintf(stdout, "Already running %s %s; nothing to do.\n", cliName, version)
+	if doc.CLIVersion != "" && doc.CLIVersion == Version {
+		fmt.Fprintf(stdout, "Already running %s %s; nothing to do.\n", CLIName, Version)
 		return 0
 	}
 
 	// Staged in the target's own directory: os.Rename cannot cross filesystems,
 	// and /tmp is very often a different one (tmpfs, or a separate volume).
 	staged := self + ".new"
-	if _, _, err := downloadVerified(base, entry, "raw", staged); err != nil {
-		writeLine(stderr, fmt.Sprintf("%s: %v", cliName, err))
+	if _, _, err := DownloadVerified(base, entry, "raw", staged); err != nil {
+		WriteLine(stderr, fmt.Sprintf("%s: %v", CLIName, err))
 		return 1
 	}
 
@@ -160,33 +160,33 @@ func doSelfUpdate(args []string, stdout, stderr *os.File, env environ) int {
 		// mover would be worse than telling the user one line to run.
 		fmt.Fprintf(stdout,
 			"Downloaded %s %s to %s.\nWindows cannot replace a running executable, so finish with:\n  move /Y \"%s\" \"%s\"\n",
-			cliName, doc.CLIVersion, staged, staged, self)
+			CLIName, doc.CLIVersion, staged, staged, self)
 		return 0
 	}
 
 	if err := os.Rename(staged, self); err != nil {
 		os.Remove(staged)
-		writeLine(stderr, fmt.Sprintf("%s: could not replace %s: %v", cliName, self, err))
+		WriteLine(stderr, fmt.Sprintf("%s: could not replace %s: %v", CLIName, self, err))
 		return 1
 	}
-	fmt.Fprintf(stdout, "Updated %s to %s at %s\n", cliName, doc.CLIVersion, self)
+	fmt.Fprintf(stdout, "Updated %s to %s at %s\n", CLIName, doc.CLIVersion, self)
 	return 0
 }
 
-// distOptions is the parsed flag set shared by both verbs.
-type distOptions struct {
-	platform string
-	output   string
-	format   string
+// DistOptions is the parsed flag set shared by both verbs.
+type DistOptions struct {
+	Platform string
+	Output   string
+	Format   string
 }
 
-// parseDistFlags parses the flags by hand rather than with the flag package.
+// ParseDistFlags parses the flags by hand rather than with the flag package.
 //
 // Two reasons: these verbs run before cobra exists, and `flag` would print its
 // own unbranded usage to stderr and call os.Exit on a bad value, which would
 // bypass the error handling the rest of this program uses.
-func parseDistFlags(args []string, verb string) (distOptions, error) {
-	opts := distOptions{format: "raw"}
+func ParseDistFlags(args []string, verb string) (DistOptions, error) {
+	opts := DistOptions{Format: "raw"}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		// Accept both `--flag value` and `--flag=value`: the second is what
@@ -207,13 +207,13 @@ func parseDistFlags(args []string, verb string) (distOptions, error) {
 		var err error
 		switch name {
 		case "--platform":
-			opts.platform, err = value()
+			opts.Platform, err = value()
 		case "--output", "-o":
-			opts.output, err = value()
+			opts.Output, err = value()
 		case "--format":
-			opts.format, err = value()
+			opts.Format, err = value()
 		case "--help", "-h":
-			return opts, fmt.Errorf("usage: %s %s [--platform <id>] [--output <path>] [--format raw|archive]", cliName, verb)
+			return opts, fmt.Errorf("usage: %s %s [--platform <id>] [--output <path>] [--format raw|archive]", CLIName, verb)
 		default:
 			return opts, fmt.Errorf("%s: unknown option %q", verb, arg)
 		}
@@ -221,38 +221,38 @@ func parseDistFlags(args []string, verb string) (distOptions, error) {
 			return opts, err
 		}
 	}
-	if opts.format != "raw" && opts.format != "archive" {
-		return opts, fmt.Errorf("%s: --format must be raw or archive (got %q)", verb, opts.format)
+	if opts.Format != "raw" && opts.Format != "archive" {
+		return opts, fmt.Errorf("%s: --format must be raw or archive (got %q)", verb, opts.Format)
 	}
 	return opts, nil
 }
 
-// fetchPlatform gets the manifest and resolves one platform's entry, turning the
+// FetchPlatform gets the manifest and resolves one platform's entry, turning the
 // non-ready states into the actionable messages §5.8 #2 asks for.
-func fetchPlatform(base, platform string) (manifestPlatform, manifestDoc, error) {
-	var doc manifestDoc
+func FetchPlatform(base, platform string) (ManifestPlatform, ManifestDoc, error) {
+	var doc ManifestDoc
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Get(base + "/cli/manifest")
 	if err != nil {
-		return manifestPlatform{}, doc, fmt.Errorf("could not reach %s: %w", base, err)
+		return ManifestPlatform{}, doc, fmt.Errorf("could not reach %s: %w", base, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
-		return manifestPlatform{}, doc, fmt.Errorf(
+		return ManifestPlatform{}, doc, fmt.Errorf(
 			"%s does not offer CLI downloads (the operator may have set SBS_CLI_DOWNLOAD=off)", base)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return manifestPlatform{}, doc, fmt.Errorf("%s/cli/manifest returned HTTP %d", base, resp.StatusCode)
+		return ManifestPlatform{}, doc, fmt.Errorf("%s/cli/manifest returned HTTP %d", base, resp.StatusCode)
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&doc); err != nil {
-		return manifestPlatform{}, doc, fmt.Errorf("could not parse %s/cli/manifest: %w", base, err)
+		return ManifestPlatform{}, doc, fmt.Errorf("could not parse %s/cli/manifest: %w", base, err)
 	}
 
 	entry, ok := doc.Platforms[platform]
 	if !ok {
-		return manifestPlatform{}, doc, fmt.Errorf("%s does not offer a build for %s (available: %s)",
-			base, platform, strings.Join(readyPlatforms(doc), ", "))
+		return ManifestPlatform{}, doc, fmt.Errorf("%s does not offer a build for %s (available: %s)",
+			base, platform, strings.Join(ReadyPlatforms(doc), ", "))
 	}
 
 	switch entry.State {
@@ -273,8 +273,8 @@ func fetchPlatform(base, platform string) (manifestPlatform, manifestDoc, error)
 	}
 }
 
-// readyPlatforms lists the platform ids in the ready state, for error messages.
-func readyPlatforms(doc manifestDoc) []string {
+// ReadyPlatforms lists the platform ids in the ready state, for error messages.
+func ReadyPlatforms(doc ManifestDoc) []string {
 	var out []string
 	for id, p := range doc.Platforms {
 		if p.State == "ready" {
@@ -287,14 +287,14 @@ func readyPlatforms(doc manifestDoc) []string {
 	return out
 }
 
-// downloadVerified streams the artifact to a temp file beside the target,
+// DownloadVerified streams the artifact to a temp file beside the target,
 // verifies its sha256 against the manifest, then renames it into place.
 //
 // Verifying *before* the rename is the whole point (§5.8 #3, B18): the store is
 // handing the user an executable, so a truncated or tampered download must never
 // end up at the target path, let alone with the executable bit set. Returns the
 // byte count and the hex digest actually computed.
-func downloadVerified(base string, entry manifestPlatform, format, target string) (int64, string, error) {
+func DownloadVerified(base string, entry ManifestPlatform, format, target string) (int64, string, error) {
 	url, want := entry.DownloadURL, entry.SHA256
 	if format == "archive" {
 		url, want = entry.ArchiveURL, entry.ArchiveSHA256
@@ -374,9 +374,9 @@ func downloadVerified(base string, entry manifestPlatform, format, target string
 	return written, sum, nil
 }
 
-// archiveSuffix is the archive extension per platform, matching what the server
+// ArchiveSuffix is the archive extension per platform, matching what the server
 // generates in §5.5.2.
-func archiveSuffix(platform string) string {
+func ArchiveSuffix(platform string) string {
 	if strings.HasPrefix(platform, "windows-") {
 		return ".zip"
 	}

@@ -19,11 +19,11 @@ on:
   push:
     branches: [main]
     paths:
-      - 'cli/**'
+      - 'client/go/**'
       - '.github/workflows/cli-artifacts.yml'
   pull_request:
     paths:
-      - 'cli/**'
+      - 'client/go/**'
       - '.github/workflows/cli-artifacts.yml'
   # Release builds: the same artifacts the image bakes in.
   release:
@@ -35,7 +35,7 @@ permissions:
 
 env:
   GO_VERSION: '1.27.1'
-  # Must match cli/go/version.go's slotWidth and the Python
+  # Must match client/go/cli/version.go's SlotWidth and the Python
   # services/cli_artifacts.py SLOT_WIDTH. A test asserts the first two agree.
   SLOT_WIDTH: '60'
 
@@ -54,17 +54,17 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: cli/go/go.sum
+          cache-dependency-path: client/go/go.sum
 
       # go.sum pins every module by hash, so this is the reproducibility
       # guarantee — `make cli-vendor` exists for air-gapped builds but the
       # vendor tree is deliberately not committed (44 MB / 2248 files measured).
       - name: Verify the dependency graph is unchanged
-        working-directory: cli/go
+        working-directory: client/go
         run: go mod verify
 
       - name: Vet and test
-        working-directory: cli/go
+        working-directory: client/go
         run: |
           gofmt -l . | tee /tmp/unformatted
           test ! -s /tmp/unformatted || { echo "::error::unformatted Go files"; exit 1; }
@@ -74,7 +74,7 @@ jobs:
       - name: Cross-compile all five platforms
         id: build
         run: |
-          ./cli/build.sh --out cli-prebuilt
+          ./client/go/build.sh --out cli-prebuilt
           echo "cli-version=$(python3 -c "
           import json
           print(json.load(open('cli-prebuilt/prebuilt-manifest.json'))['cli_version'])
@@ -175,7 +175,7 @@ jobs:
           # The §3.3 inventory, plus the engine version we emit on purpose. Kept
           # in step with ALLOWED_RESTISH_SUBSTRINGS in
           # src/skillberry_store/tests/cli/test_native_cli_e2e.py and
-          # knownRestishStrings in cli/go/main_test.go.
+          # knownRestishStrings in client/go/tests/main_test.go.
           #
           # $HOME is scrubbed first: the runner's own temp path can contain
           # anything, and a path is not the CLI's vocabulary.

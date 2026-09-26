@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bytes"
@@ -14,12 +14,12 @@ import (
 	"github.com/rest-sh/restish/v2/auth"
 )
 
-// authSchemeName is the auth `type` our baked default config selects. It is
+// AuthSchemeName is the auth `type` our baked default config selects. It is
 // registered with AddAuthHandler, so restish resolves it the same way it
 // resolves its own built-in schemes.
-const authSchemeName = "sbs-standalone"
+const AuthSchemeName = "sbs-standalone"
 
-// standaloneAuth authenticates against the store's own /auth/login endpoint
+// StandaloneAuth authenticates against the store's own /auth/login endpoint
 // (docs/design/access-control.md §10.1) as a restish auth.Handler.
 //
 // This replaces the Python shim's intercepted `login` command, and the change
@@ -62,9 +62,10 @@ const authSchemeName = "sbs-standalone"
 // endpoints never prompt, protected ones prompt exactly once at the moment
 // authentication is genuinely required, and an unreachable host reports a
 // connection error instead of asking for a password.
-type standaloneAuth struct {
-	// now is injected so token-expiry logic is testable without sleeping.
-	now func() time.Time
+type StandaloneAuth struct {
+	// Now is injected so token-expiry logic is testable without sleeping.
+	// Exported because the test suite lives in a separate package (client/go/tests).
+	Now func() time.Time
 
 	// loginInfoOnce guards the "print the operator's message exactly once"
 	// rule. It is per-handler rather than per-process because the handler *is*
@@ -79,23 +80,23 @@ type standaloneAuth struct {
 // password. No `password` parameter exists, deliberately: a password in
 // restish.json is a password in a plaintext file, and the TokenStore already
 // gives us somewhere better to put the *result* of authenticating.
-func (s *standaloneAuth) Parameters() []auth.Param {
+func (s *StandaloneAuth) Parameters() []auth.Param {
 	return []auth.Param{
 		{
 			Name:        "username",
-			Description: fmt.Sprintf("Username for %s; prompted for when unset", cliName),
+			Description: fmt.Sprintf("Username for %s; prompted for when unset", CLIName),
 		},
 	}
 }
 
-// loginResponse is the shape of POST /auth/login's 200 body (auth_api.py's
+// LoginResponse is the shape of POST /auth/login's 200 body (auth_api.py's
 // LoginResponse: token, expires_at, tenant_id).
 //
 // ExpiresAt is an ISO-8601 UTC *instant*, not a duration — so it is stored as a
 // string and parsed leniently below. Treating it as a number of seconds (the
 // OAuth `expires_in` convention) would silently cache every token as already
 // expired, re-prompting on every command.
-type loginResponse struct {
+type LoginResponse struct {
 	Token     string `json:"token"`
 	TenantID  string `json:"tenant_id"`
 	ExpiresAt string `json:"expires_at"`
@@ -113,7 +114,7 @@ type loginResponse struct {
 // "+00:00" offset or a bare naive stamp depending on how the datetime was
 // built, and neither is RFC3339-with-Z. Both spellings are tried rather than
 // assuming one, because guessing wrong costs a prompt per command.
-func (r *loginResponse) expiry() time.Time {
+func (r *LoginResponse) Expiry() time.Time {
 	raw := strings.TrimSpace(r.ExpiresAt)
 	if raw == "" {
 		return time.Time{}
@@ -144,27 +145,27 @@ func (r *loginResponse) expiry() time.Time {
 // Guarded by TestStandaloneAuthIsForceCapable, because nothing else in this
 // package references it and it would otherwise look like dead code to a reader
 // or a linter.
-func (s *standaloneAuth) SupportsForce() {}
+func (s *StandaloneAuth) SupportsForce() {}
 
 // Compile-time proof that the marker is on the pointer type restish receives
 // from AddAuthHandler. A value receiver here would type-assert differently.
 var (
-	_ auth.Handler      = (*standaloneAuth)(nil)
-	_ auth.ForceCapable = (*standaloneAuth)(nil)
+	_ auth.Handler      = (*StandaloneAuth)(nil)
+	_ auth.ForceCapable = (*StandaloneAuth)(nil)
 )
 
-// whoamiProbe is the subset of GET /auth/whoami we act on.
-type whoamiProbe struct {
-	// authDisabled is true for a 503 whose detail is `auth_disabled`.
-	authDisabled bool
+// WhoamiProbe is the subset of GET /auth/whoami we act on.
+type WhoamiProbe struct {
+	// AuthDisabled is true for a 503 whose detail is `auth_disabled`.
+	AuthDisabled bool
 	// loginInfo is the operator's pre-login message from a 401 body, if any.
 	loginInfo string
 }
 
 // Authenticate attaches a bearer token to req, acquiring one if needed.
-func (s *standaloneAuth) Authenticate(ctx context.Context, req *http.Request, ac auth.AuthContext) error {
-	if s.now == nil {
-		s.now = time.Now
+func (s *StandaloneAuth) Authenticate(ctx context.Context, req *http.Request, ac auth.AuthContext) error {
+	if s.Now == nil {
+		s.Now = time.Now
 	}
 
 	// 1. A cached, unexpired token is the fast path and by far the common one.
@@ -174,7 +175,7 @@ func (s *standaloneAuth) Authenticate(ctx context.Context, req *http.Request, ac
 	// Without this branch a revoked or expired-server-side token would loop.
 	if !ac.Force {
 		if tok, err := ac.TokenStore.Get(ac.CacheKey); err == nil && tok != nil && tok.AccessToken != "" {
-			if tok.Expiry.IsZero() || tok.Expiry.After(s.now()) {
+			if tok.Expiry.IsZero() || tok.Expiry.After(s.Now()) {
 				req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
 				return nil
 			}
@@ -195,8 +196,8 @@ func (s *standaloneAuth) Authenticate(ctx context.Context, req *http.Request, ac
 	//    answers two questions with one request: is auth switched off entirely
 	//    (so this 401 came from something else), and does the operator have a
 	//    message to show before the prompt.
-	probe := s.probe(ctx, base, ac)
-	if probe.authDisabled {
+	probe := s.Probe(ctx, base, ac)
+	if probe.AuthDisabled {
 		// mode: disabled. Attach nothing, prompt for nothing, and let the
 		// request through — the server does not want credentials.
 		return nil
@@ -205,7 +206,7 @@ func (s *standaloneAuth) Authenticate(ctx context.Context, req *http.Request, ac
 	// 4. Prompt, exchange, cache.
 	if probe.loginInfo != "" {
 		// sync.Once, not a bool: this must hold across the Force retry.
-		s.loginInfoOnce.Do(func() { writeLine(ac.Stderr, probe.loginInfo) })
+		s.loginInfoOnce.Do(func() { WriteLine(ac.Stderr, probe.loginInfo) })
 	}
 
 	username := strings.TrimSpace(ac.Params["username"])
@@ -230,12 +231,12 @@ func (s *standaloneAuth) Authenticate(ctx context.Context, req *http.Request, ac
 		return err
 	}
 
-	cached := auth.CachedToken{AccessToken: tok.Token, TokenType: "Bearer", Expiry: tok.expiry()}
+	cached := auth.CachedToken{AccessToken: tok.Token, TokenType: "Bearer", Expiry: tok.Expiry()}
 	// A token we cannot cache is still a token we can use for this request:
 	// warn, do not fail. The alternative is refusing to run a command purely
 	// because a cache directory is read-only.
 	if err := ac.TokenStore.Set(ac.CacheKey, cached); err != nil {
-		writeLine(ac.Stderr, fmt.Sprintf("Warning: could not cache the access token: %v", err))
+		WriteLine(ac.Stderr, fmt.Sprintf("Warning: could not cache the access token: %v", err))
 	}
 
 	req.Header.Set("Authorization", "Bearer "+tok.Token)
@@ -248,7 +249,7 @@ func (s *standaloneAuth) Authenticate(ctx context.Context, req *http.Request, ac
 // Every failure mode returns a zero probe rather than an error: an unreachable
 // or unexpected /auth/whoami must not stop us from trying to log in, because
 // the login attempt produces a far better error message than the probe could.
-func (s *standaloneAuth) probe(ctx context.Context, base string, ac auth.AuthContext) whoamiProbe {
+func (s *StandaloneAuth) Probe(ctx context.Context, base string, ac auth.AuthContext) WhoamiProbe {
 	client := ac.HTTPClient
 	if client == nil {
 		client = http.DefaultClient
@@ -256,11 +257,11 @@ func (s *standaloneAuth) probe(ctx context.Context, base string, ac auth.AuthCon
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/auth/whoami", nil)
 	if err != nil {
-		return whoamiProbe{}
+		return WhoamiProbe{}
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return whoamiProbe{}
+		return WhoamiProbe{}
 	}
 	defer resp.Body.Close()
 
@@ -269,7 +270,7 @@ func (s *standaloneAuth) probe(ctx context.Context, base string, ac auth.AuthCon
 	// unbounded ReadAll is a memory-exhaustion vector on our own side.
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	if err != nil {
-		return whoamiProbe{}
+		return WhoamiProbe{}
 	}
 
 	var parsed struct {
@@ -280,15 +281,15 @@ func (s *standaloneAuth) probe(ctx context.Context, base string, ac auth.AuthCon
 
 	switch resp.StatusCode {
 	case http.StatusServiceUnavailable:
-		return whoamiProbe{authDisabled: parsed.Detail == "auth_disabled"}
+		return WhoamiProbe{AuthDisabled: parsed.Detail == "auth_disabled"}
 	case http.StatusUnauthorized:
-		return whoamiProbe{loginInfo: parsed.LoginInfo}
+		return WhoamiProbe{loginInfo: parsed.LoginInfo}
 	}
-	return whoamiProbe{}
+	return WhoamiProbe{}
 }
 
 // login exchanges credentials for a bearer token via POST /auth/login.
-func (s *standaloneAuth) login(ctx context.Context, base, username, password string, client *http.Client) (*loginResponse, error) {
+func (s *StandaloneAuth) login(ctx context.Context, base, username, password string, client *http.Client) (*LoginResponse, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
@@ -331,7 +332,7 @@ func (s *standaloneAuth) login(ctx context.Context, base, username, password str
 		return nil, fmt.Errorf("login failed: %s returned HTTP %d", base+"/auth/login", resp.StatusCode)
 	}
 
-	var parsed loginResponse
+	var parsed LoginResponse
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return nil, fmt.Errorf("login failed: %s did not return valid JSON", base+"/auth/login")
 	}

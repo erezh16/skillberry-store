@@ -1,4 +1,4 @@
-package main
+package tests
 
 import (
 	"encoding/json"
@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/skillberry-ai/skillberry-store/client/go/cli"
 )
 
 // devNull gives the verbs a real *os.File to write to without polluting the
@@ -36,10 +38,10 @@ func captureFile(t *testing.T) (*os.File, func() string) {
 	}
 }
 
-func testPaths(t *testing.T) brandedPaths {
+func testPaths(t *testing.T) cli.BrandedPaths {
 	t.Helper()
 	dir := t.TempDir()
-	return brandedPaths{
+	return cli.BrandedPaths{
 		ConfigDir:  filepath.Join(dir, "sbs"),
 		ConfigFile: filepath.Join(dir, "sbs", "sbs.json"),
 		CacheDir:   filepath.Join(dir, "cache"),
@@ -63,13 +65,13 @@ func TestConnectWritesBaseAndSpecURL(t *testing.T) {
 	paths := testPaths(t)
 	out, read := captureFile(t)
 
-	if code := doConnect([]string{"http://store.test:8000/"}, out, devNull(t), paths); code != 0 {
-		t.Fatalf("doConnect = %d, want 0", code)
+	if code := cli.DoConnect([]string{"http://store.test:8000/"}, out, devNull(t), paths); code != 0 {
+		t.Fatalf("cli.DoConnect = %d, want 0", code)
 	}
 
 	cfg := readConfig(t, paths.ConfigFile)
 	apis, _ := cfg["apis"].(map[string]any)
-	entry, _ := apis[apiName].(map[string]any)
+	entry, _ := apis[cli.APIName].(map[string]any)
 	if entry["base_url"] != "http://store.test:8000" {
 		t.Errorf("base_url = %v, want the trailing slash stripped", entry["base_url"])
 	}
@@ -89,8 +91,8 @@ func TestConnectWritesPrivateConfig(t *testing.T) {
 		t.Skip("POSIX permissions")
 	}
 	paths := testPaths(t)
-	if code := doConnect([]string{"http://store.test"}, devNull(t), devNull(t), paths); code != 0 {
-		t.Fatalf("doConnect = %d", code)
+	if code := cli.DoConnect([]string{"http://store.test"}, devNull(t), devNull(t), paths); code != 0 {
+		t.Fatalf("cli.DoConnect = %d", code)
 	}
 	info, err := os.Stat(paths.ConfigFile)
 	if err != nil {
@@ -120,8 +122,8 @@ func TestConnectPreservesOtherConfigKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code := doConnect([]string{"http://new.test"}, devNull(t), devNull(t), paths); code != 0 {
-		t.Fatalf("doConnect = %d", code)
+	if code := cli.DoConnect([]string{"http://new.test"}, devNull(t), devNull(t), paths); code != 0 {
+		t.Fatalf("cli.DoConnect = %d", code)
 	}
 
 	cfg := readConfig(t, paths.ConfigFile)
@@ -132,7 +134,7 @@ func TestConnectPreservesOtherConfigKeys(t *testing.T) {
 	if apis["other"] == nil {
 		t.Error("connect discarded another registered API")
 	}
-	entry, _ := apis[apiName].(map[string]any)
+	entry, _ := apis[cli.APIName].(map[string]any)
 	if entry["base_url"] != "http://new.test" {
 		t.Errorf("base_url = %v, want the new URL", entry["base_url"])
 	}
@@ -152,20 +154,20 @@ func TestConnectRejectsInjectionURLs(t *testing.T) {
 		"",
 	} {
 		paths := testPaths(t)
-		code := doConnect([]string{bad}, devNull(t), devNull(t), paths)
+		code := cli.DoConnect([]string{bad}, devNull(t), devNull(t), paths)
 		if code == 0 {
-			t.Errorf("doConnect(%q) = 0, want a non-zero usage failure", bad)
+			t.Errorf("cli.DoConnect(%q) = 0, want a non-zero usage failure", bad)
 		}
 		if _, err := os.Stat(paths.ConfigFile); err == nil {
-			t.Errorf("doConnect(%q) wrote a config despite refusing the URL", bad)
+			t.Errorf("cli.DoConnect(%q) wrote a config despite refusing the URL", bad)
 		}
 	}
 }
 
 func TestConnectUsageErrors(t *testing.T) {
 	for _, args := range [][]string{{}, {"a", "b"}, {"  "}} {
-		if code := doConnect(args, devNull(t), devNull(t), testPaths(t)); code != 2 {
-			t.Errorf("doConnect(%v) = %d, want 2 for a usage error", args, code)
+		if code := cli.DoConnect(args, devNull(t), devNull(t), testPaths(t)); code != 2 {
+			t.Errorf("cli.DoConnect(%v) = %d, want 2 for a usage error", args, code)
 		}
 	}
 }
@@ -179,7 +181,7 @@ func TestConnectRefusesToClobberUnparseableConfig(t *testing.T) {
 	if err := os.WriteFile(paths.ConfigFile, []byte(broken), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if code := doConnect([]string{"http://new.test"}, devNull(t), devNull(t), paths); code == 0 {
+	if code := cli.DoConnect([]string{"http://new.test"}, devNull(t), devNull(t), paths); code == 0 {
 		t.Error("connect should refuse rather than silently discard a config it cannot parse")
 	}
 	body, _ := os.ReadFile(paths.ConfigFile)
@@ -200,19 +202,19 @@ func TestConnectAcceptsJSONCConfig(t *testing.T) {
 	if err := os.WriteFile(paths.ConfigFile, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if code := doConnect([]string{"http://new.test"}, devNull(t), devNull(t), paths); code != 0 {
-		t.Fatalf("doConnect on a JSONC config = %d, want 0", code)
+	if code := cli.DoConnect([]string{"http://new.test"}, devNull(t), devNull(t), paths); code != 0 {
+		t.Fatalf("cli.DoConnect on a JSONC config = %d, want 0", code)
 	}
 	cfg := readConfig(t, paths.ConfigFile)
 	apis, _ := cfg["apis"].(map[string]any)
-	entry, _ := apis[apiName].(map[string]any)
+	entry, _ := apis[cli.APIName].(map[string]any)
 	if entry["base_url"] != "http://new.test" {
 		t.Errorf("base_url = %v, want the new URL", entry["base_url"])
 	}
 }
 
 // ---------------------------------------------------------------------------
-// localVerb routing
+// cli.LocalVerb routing
 // ---------------------------------------------------------------------------
 
 func TestLocalVerbOnlyClaimsOurOwnVerbs(t *testing.T) {
@@ -223,23 +225,23 @@ func TestLocalVerbOnlyClaimsOurOwnVerbs(t *testing.T) {
 		{"sbs", "list-skills"},
 		{"sbs", "get-skill", "x"},
 		{"sbs", "--help"},
-		{"sbs", "--version"},
+		{"sbs", "--cli.Version"},
 		{"sbs", "cli", "doctor"},
 		{"sbs", "whoami"},
-		{"sbs", "login"},  // handled later, via the engine, not by localVerb
+		{"sbs", "login"},  // handled later, via the engine, not by cli.LocalVerb
 		{"sbs", "logout"}, // ditto
 	} {
-		if handled, _ := localVerb(argv, devNull(t), devNull(t), mapEnviron{}, testPaths(t)); handled {
-			t.Errorf("localVerb claimed %v; it must fall through to restish", argv)
+		if handled, _ := cli.LocalVerb(argv, devNull(t), devNull(t), cli.MapEnviron{}, testPaths(t)); handled {
+			t.Errorf("cli.LocalVerb claimed %v; it must fall through to restish", argv)
 		}
 	}
 }
 
 func TestLocalVerbClaimsConnect(t *testing.T) {
 	paths := testPaths(t)
-	handled, code := localVerb([]string{"sbs", "connect", "http://x.test"}, devNull(t), devNull(t), mapEnviron{}, paths)
+	handled, code := cli.LocalVerb([]string{"sbs", "connect", "http://x.test"}, devNull(t), devNull(t), cli.MapEnviron{}, paths)
 	if !handled {
-		t.Fatal("localVerb must claim `connect`")
+		t.Fatal("cli.LocalVerb must claim `connect`")
 	}
 	if code != 0 {
 		t.Errorf("connect exit = %d, want 0", code)
@@ -251,11 +253,11 @@ func TestLocalVerbClaimsConnect(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseDistFlags(t *testing.T) {
-	got, err := parseDistFlags([]string{"--platform", "darwin-arm64", "--output", "/tmp/sbs", "--format", "archive"}, "download-cli")
+	got, err := cli.ParseDistFlags([]string{"--platform", "darwin-arm64", "--output", "/tmp/sbs", "--format", "archive"}, "download-cli")
 	if err != nil {
-		t.Fatalf("parseDistFlags: %v", err)
+		t.Fatalf("cli.ParseDistFlags: %v", err)
 	}
-	if got.platform != "darwin-arm64" || got.output != "/tmp/sbs" || got.format != "archive" {
+	if got.Platform != "darwin-arm64" || got.Output != "/tmp/sbs" || got.Format != "archive" {
 		t.Errorf("parsed = %+v", got)
 	}
 }
@@ -264,22 +266,22 @@ func TestParseDistFlagsAcceptsInlineValues(t *testing.T) {
 	// `--flag=value` is what people actually type, and every generated operation
 	// on this same CLI accepts it. Rejecting it here would be a gratuitous
 	// inconsistency.
-	got, err := parseDistFlags([]string{"--platform=linux-arm64", "--format=raw"}, "download-cli")
+	got, err := cli.ParseDistFlags([]string{"--platform=linux-arm64", "--format=raw"}, "download-cli")
 	if err != nil {
-		t.Fatalf("parseDistFlags: %v", err)
+		t.Fatalf("cli.ParseDistFlags: %v", err)
 	}
-	if got.platform != "linux-arm64" || got.format != "raw" {
+	if got.Platform != "linux-arm64" || got.Format != "raw" {
 		t.Errorf("parsed = %+v", got)
 	}
 }
 
 func TestParseDistFlagsDefaultsToRaw(t *testing.T) {
-	got, err := parseDistFlags(nil, "download-cli")
+	got, err := cli.ParseDistFlags(nil, "download-cli")
 	if err != nil {
-		t.Fatalf("parseDistFlags: %v", err)
+		t.Fatalf("cli.ParseDistFlags: %v", err)
 	}
-	if got.format != "raw" {
-		t.Errorf("format = %q, want raw by default (a CLI user wants an executable, not a tarball)", got.format)
+	if got.Format != "raw" {
+		t.Errorf("format = %q, want raw by default (a CLI user wants an executable, not a tarball)", got.Format)
 	}
 }
 
@@ -290,8 +292,8 @@ func TestParseDistFlagsRejectsBadInput(t *testing.T) {
 		{"--nonsense"},
 		{"positional"},
 	} {
-		if _, err := parseDistFlags(args, "download-cli"); err == nil {
-			t.Errorf("parseDistFlags(%v) = nil error, want a failure", args)
+		if _, err := cli.ParseDistFlags(args, "download-cli"); err == nil {
+			t.Errorf("cli.ParseDistFlags(%v) = nil error, want a failure", args)
 		}
 	}
 }
@@ -301,8 +303,8 @@ func TestCurrentPlatformIsGoosGoarch(t *testing.T) {
 	// runtime.GOARCH, which is exact — unlike the server's User-Agent sniffing,
 	// which cannot distinguish Apple Silicon from Intel.
 	want := runtime.GOOS + "-" + runtime.GOARCH
-	if got := currentPlatform(); got != want {
-		t.Errorf("currentPlatform() = %q, want %q", got, want)
+	if got := cli.CurrentPlatform(); got != want {
+		t.Errorf("cli.CurrentPlatform() = %q, want %q", got, want)
 	}
 	if !strings.Contains(want, "-") {
 		t.Errorf("platform id %q is not <goos>-<goarch>", want)
@@ -315,8 +317,8 @@ func TestArchiveSuffixPerPlatform(t *testing.T) {
 		"darwin-arm64":  ".tar.gz",
 		"windows-amd64": ".zip",
 	} {
-		if got := archiveSuffix(platform); got != want {
-			t.Errorf("archiveSuffix(%q) = %q, want %q", platform, got, want)
+		if got := cli.ArchiveSuffix(platform); got != want {
+			t.Errorf("cli.ArchiveSuffix(%q) = %q, want %q", platform, got, want)
 		}
 	}
 }

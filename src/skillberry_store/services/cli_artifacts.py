@@ -15,7 +15,8 @@ Two mechanisms, both measured:
     A). Verified on Linux with a 0-byte size delta and a working binary (M9).
 
 ``rebuild``
-    ``GOOS/GOARCH go build -ldflags -X main.urlSlot=<url>``. ~2.3 s per platform,
+    ``GOOS/GOARCH go build -ldflags -X <cli-pkg>.URLSlot=<url>``. ~2.3 s per
+    platform,
     needs a Go toolchain and the module cache, and is the only mechanism that
     covers ``darwin-arm64`` — Go's linker ad-hoc signs that target, so patching
     its bytes is expected to break execution (B3).
@@ -53,18 +54,27 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 # The URL slot
 # --------------------------------------------------------------------------- #
-# Must match cli/go/version.go exactly. The Go side declares
+# Must match client/go/cli/version.go exactly. The Go side declares
 #
-#     var urlSlot = "http://localhost:8000#######################################"
-#     const slotWidth = 60
+#     var URLSlot = "http://localhost:8000#######################################"
+#     const SlotWidth = 60
 #
 # and this module locates that byte sequence in a linked binary and overwrites
 # it. The two constants are a contract between a Python writer and a Go reader,
-# so `test_cli_artifacts.py` reads them back out of the Go source and asserts
-# they agree — a silent drift here produces a binary that points at the wrong
-# store, which is the single worst failure this feature can have.
+# so `test_cli_artifacts_service.py` reads them back out of the Go source and
+# asserts they agree — a silent drift here produces a binary that points at the
+# wrong store, which is the single worst failure this feature can have.
 SLOT_WIDTH = 60
 SLOT_PAD = b"#"
+
+# The Go package holding the `-ldflags -X` targets, and the package to build.
+#
+# Both are coupled to client/go's layout: the implementation is the importable
+# `cli` package and the binary is `cli/cmd/sbs`. Named constants rather than
+# inline strings because a wrong `-X` package path is silently ignored by the
+# linker — the build succeeds and nothing is injected.
+GO_LDFLAGS_PKG = "github.com/skillberry-ai/skillberry-store/client/go/cli"
+GO_CMD_PKG = "./cli/cmd/sbs"
 SLOT_DEFAULT_URL = b"http://localhost:8000"
 SLOT_PATTERN = SLOT_DEFAULT_URL + SLOT_PAD * (SLOT_WIDTH - len(SLOT_DEFAULT_URL))
 
@@ -738,7 +748,7 @@ class CliArtifactService:
     def _source_artifact(self, source_dir: Path, platform: str) -> Optional[Path]:
         """Locate the CI-built artifact for a platform.
 
-        Two layouts are accepted: ``<dir>/<platform>/sbs`` (what cli/build.sh
+        Two layouts are accepted: ``<dir>/<platform>/sbs`` (what client/go/build.sh
         emits) and a flat ``<dir>/sbs-<platform>``, because a release-asset
         download naturally produces the latter and making operators rename files
         would be a pointless obstacle.
@@ -833,7 +843,8 @@ class CliArtifactService:
             entry.reason = REASON_NO_SLOT
             logger.error(
                 "The %s artifact contains no URL slot. The prebuilt binary and "
-                "this server disagree about cli/go/version.go's urlSlot. Rebuild "
+                "this server disagree about client/go/cli/version.go's URLSlot. "
+                "Rebuild "
                 "the artifacts with `make cli-dist`.",
                 platform,
             )
@@ -914,8 +925,11 @@ class CliArtifactService:
         if not self._have_toolchain():
             raise _NoToolchain(platform)
 
-        cli_dir = Path(__file__).resolve().parents[3] / "cli" / "go"
-        if not (cli_dir / "go.mod").is_file():
+        # The Go module root, which is where `go build` must run from. The
+        # binary's entry point is the `cli/cmd/sbs` package inside it; the
+        # implementation is the importable `cli` package next to it.
+        go_root = Path(__file__).resolve().parents[3] / "client" / "go"
+        if not (go_root / "go.mod").is_file():
             raise _NoToolchain(platform)
 
         url = validate_public_url(self.public_url or "", for_slot=True)
@@ -925,10 +939,21 @@ class CliArtifactService:
         os.close(fd)
         tmp = Path(tmp_name)
         try:
+            # `-X` addresses a variable by its package's full IMPORT PATH, not
+            # by `main`. The injected variables live in the importable `cli`
+            # package (client/go/cli/version.go) so that the test suite can live
+            # in a separate directory — a `package main` cannot be imported.
+            #
+            # A stale `-X main.urlSlot=...` is accepted silently by the linker and
+            # injects nothing, which is the same failure shape as the
+            # constant-initializer gotcha of §3.4 #1: the build succeeds and the
+            # artifact quietly points at its compile-time default. Hence
+            # GO_LDFLAGS_PKG is a named constant, asserted against the Go source
+            # by test_ldflags_target_matches_the_go_package.
             ldflags = (
-                f"-s -w -X main.urlSlot={url} "
-                f"-X main.version={self._cli_version} "
-                f"-X main.engineVersion={self._engine_version}"
+                f"-s -w -X {GO_LDFLAGS_PKG}.URLSlot={url} "
+                f"-X {GO_LDFLAGS_PKG}.Version={self._cli_version} "
+                f"-X {GO_LDFLAGS_PKG}.EngineVersion={self._engine_version}"
             )
             env = {
                 **os.environ,
@@ -945,8 +970,17 @@ class CliArtifactService:
             # exec-without-a-shell is what makes that validation a second line of
             # defence rather than the only one.
             proc = subprocess.run(
-                ["go", "build", "-trimpath", "-ldflags", ldflags, "-o", str(tmp), "."],
-                cwd=str(cli_dir),
+                [
+                    "go",
+                    "build",
+                    "-trimpath",
+                    "-ldflags",
+                    ldflags,
+                    "-o",
+                    str(tmp),
+                    GO_CMD_PKG,
+                ],
+                cwd=str(go_root),
                 capture_output=True,
                 text=True,
                 env=env,

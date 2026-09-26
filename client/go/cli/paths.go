@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"encoding/json"
@@ -10,27 +10,27 @@ import (
 	"strings"
 )
 
-// cliName is the one name the user ever sees. It is also the config/cache
+// CLIName is the one name the user ever sees. It is also the config/cache
 // directory name and the config file's basename, which is what removes the
 // last "restish" string from `doctor` and `config path` (§3.3, D3).
-const cliName = "sbs"
+const CLIName = "sbs"
 
-// urlEnvVar / tokenEnvVar are the client-side knobs from §6.
+// URLEnvVar / TokenEnvVar are the client-side knobs from §6.
 const (
-	urlEnvVar   = "SBS_URL"
-	tokenEnvVar = "SBS_TOKEN"
+	URLEnvVar   = "SBS_URL"
+	TokenEnvVar = "SBS_TOKEN"
 )
 
-// brandedPaths is where brandPaths() decided the three RSH_* variables should
+// BrandedPaths is where BrandPaths() decided the three RSH_* variables should
 // point. Returned so tests can assert on it without reading the environment
 // back, and so `doctor`-adjacent code has one source of truth.
-type brandedPaths struct {
+type BrandedPaths struct {
 	ConfigDir  string
 	ConfigFile string
 	CacheDir   string
 }
 
-// brandPaths points restish's config, config-file and cache locations at
+// BrandPaths points restish's config, config-file and cache locations at
 // ~/.config/sbs, ~/.config/sbs/sbs.json and ~/.cache/sbs (§4.4).
 //
 // This is what makes `sbs cli doctor` and `sbs cli config path` print branded
@@ -46,26 +46,26 @@ type brandedPaths struct {
 //
 // Returns the effective paths, including any the user supplied, so the caller
 // reports what is actually in force rather than what we would have chosen.
-func brandPaths(env environ, homeDir string) (brandedPaths, error) {
+func BrandPaths(env Environ, homeDir string) (BrandedPaths, error) {
 	if homeDir == "" {
 		// No HOME at all (a scratch container, a daemon). restish has its own
 		// fallbacks and its own error message for this; forcing a path built
 		// from an empty string would produce "/.config/sbs", which is worse
 		// than letting upstream explain itself.
-		return brandedPaths{}, fmt.Errorf("cannot determine home directory")
+		return BrandedPaths{}, fmt.Errorf("cannot determine home directory")
 	}
 
-	configDir := filepath.Join(homeDir, ".config", cliName)
-	cacheDir := filepath.Join(homeDir, ".cache", cliName)
+	configDir := filepath.Join(homeDir, ".config", CLIName)
+	cacheDir := filepath.Join(homeDir, ".cache", CLIName)
 
 	// XDG wins over ~/.config when the user has set it: that is the whole
 	// point of the variable, and restish honours it too, so ignoring it here
 	// would put our config somewhere restish would not look.
 	if xdg := env.Get("XDG_CONFIG_HOME"); xdg != "" {
-		configDir = filepath.Join(xdg, cliName)
+		configDir = filepath.Join(xdg, CLIName)
 	}
 	if xdg := env.Get("XDG_CACHE_HOME"); xdg != "" {
-		cacheDir = filepath.Join(xdg, cliName)
+		cacheDir = filepath.Join(xdg, CLIName)
 	}
 
 	if v := env.Get("RSH_CONFIG_DIR"); v != "" {
@@ -83,17 +83,17 @@ func brandPaths(env environ, homeDir string) (brandedPaths, error) {
 	// RSH_CONFIG is the *file*. Derived from the effective config dir rather
 	// than recomputed, so a user-set RSH_CONFIG_DIR still yields
 	// <their dir>/sbs.json instead of a file outside the directory they chose.
-	configFile := filepath.Join(configDir, cliName+".json")
+	configFile := filepath.Join(configDir, CLIName+".json")
 	if v := env.Get("RSH_CONFIG"); v != "" {
 		configFile = v
 	} else {
 		env.Set("RSH_CONFIG", configFile)
 	}
 
-	return brandedPaths{ConfigDir: configDir, ConfigFile: configFile, CacheDir: cacheDir}, nil
+	return BrandedPaths{ConfigDir: configDir, ConfigFile: configFile, CacheDir: cacheDir}, nil
 }
 
-// ensureConfigFile creates an empty JSON config when none exists.
+// EnsureConfigFile creates an empty JSON config when none exists.
 //
 // This is not housekeeping — without it the CLI does not work at all on a fresh
 // install, and it fails in a way that is actively misleading. Setting RSH_CONFIG
@@ -120,7 +120,7 @@ func brandPaths(env environ, homeDir string) (brandedPaths, error) {
 //
 // Failures are returned but not fatal at the call site: a read-only HOME should
 // degrade to a clear config error from restish, not a panic from us.
-func ensureConfigFile(paths brandedPaths) error {
+func EnsureConfigFile(paths BrandedPaths) error {
 	if paths.ConfigFile == "" {
 		return nil
 	}
@@ -146,25 +146,25 @@ func ensureConfigFile(paths brandedPaths) error {
 	return err
 }
 
-// environ abstracts the process environment so brandPaths is testable without
+// Environ abstracts the process environment so BrandPaths is testable without
 // mutating the real one (Go's t.Setenv serialises tests and cannot express
 // "the user set this but not that" as cleanly).
-type environ interface {
+type Environ interface {
 	Get(key string) string
 	Set(key, value string) error
 }
 
-// osEnviron is the production environ: the actual process environment.
-type osEnviron struct{}
+// OSEnviron is the production Environ: the actual process environment.
+type OSEnviron struct{}
 
-func (osEnviron) Get(key string) string       { return os.Getenv(key) }
-func (osEnviron) Set(key, value string) error { return os.Setenv(key, value) }
+func (OSEnviron) Get(key string) string       { return os.Getenv(key) }
+func (OSEnviron) Set(key, value string) error { return os.Setenv(key, value) }
 
-// mapEnviron is an in-memory environ for tests.
-type mapEnviron map[string]string
+// MapEnviron is an in-memory Environ for tests.
+type MapEnviron map[string]string
 
-func (m mapEnviron) Get(key string) string { return m[key] }
-func (m mapEnviron) Set(key, value string) error {
+func (m MapEnviron) Get(key string) string { return m[key] }
+func (m MapEnviron) Set(key, value string) error {
 	m[key] = value
 	return nil
 }
@@ -173,7 +173,7 @@ func (m mapEnviron) Set(key, value string) error {
 // Base URL resolution
 // ---------------------------------------------------------------------------
 
-// baseURL resolves the store URL the artifact should talk to, in the order
+// BaseURL resolves the store URL the artifact should talk to, in the order
 // documented in §4.1:
 //
 //	SBS_URL env  >  the patched slot / -ldflags value  >  the compiled default
@@ -182,39 +182,39 @@ func (m mapEnviron) Set(key, value string) error {
 // *above* everything here, and it gets there for free: SetDefaultConfig merges
 // underneath the user's config file, so restish resolves that precedence
 // itself. Re-implementing it would mean owning a merge we do not need to own.
-func baseURL(env environ) string {
-	if v := strings.TrimSpace(env.Get(urlEnvVar)); v != "" {
+func BaseURL(env Environ) string {
+	if v := strings.TrimSpace(env.Get(URLEnvVar)); v != "" {
 		return strings.TrimRight(v, "/")
 	}
-	return slotValue()
+	return SlotValue()
 }
 
-// slotValue trims the '#' padding off urlSlot and normalises the trailing
+// SlotValue trims the '#' padding off URLSlot and normalises the trailing
 // slash. A slot that was never patched still reads as its source default, and
 // a slot patched with a shorter URL reads as exactly that URL.
-func slotValue() string {
-	v := strings.TrimRight(urlSlot, string(slotPad))
+func SlotValue() string {
+	v := strings.TrimRight(URLSlot, string(SlotPad))
 	v = strings.TrimSpace(v)
 	return strings.TrimRight(v, "/")
 }
 
-// urlPattern is the §5.7 validator, shared by every place a URL can reach a
+// URLPattern is the §5.7 validator, shared by every place a URL can reach a
 // shell, a linker flag or a patched artifact. Kept identical to the Python
 // side (services/cli_artifacts.py) — a validator that drifts between the two
 // is the same as no validator, since each guards a different injection point.
-var urlPattern = regexp.MustCompile(`^https?://[A-Za-z0-9.\-]+(:\d{1,5})?(/[A-Za-z0-9._~\-/]*)?$`)
+var URLPattern = regexp.MustCompile(`^https?://[A-Za-z0-9.\-]+(:\d{1,5})?(/[A-Za-z0-9._~\-/]*)?$`)
 
-// validateURL rejects anything that could turn into command or argument
+// ValidateURL rejects anything that could turn into command or argument
 // injection downstream. A value like `evil.com/"$(id)"` is code execution on
 // the user's machine once it lands in a generated shell script (§7.2, B14).
-func validateURL(raw string) error {
+func ValidateURL(raw string) error {
 	if raw == "" {
 		return fmt.Errorf("URL is empty")
 	}
-	if len(raw) > slotWidth {
-		return fmt.Errorf("URL is %d bytes, which exceeds the %d-byte slot", len(raw), slotWidth)
+	if len(raw) > SlotWidth {
+		return fmt.Errorf("URL is %d bytes, which exceeds the %d-byte slot", len(raw), SlotWidth)
 	}
-	if !urlPattern.MatchString(raw) {
+	if !URLPattern.MatchString(raw) {
 		return fmt.Errorf("URL %q is not an acceptable http(s) URL", raw)
 	}
 	return nil
@@ -224,17 +224,17 @@ func validateURL(raw string) error {
 // One-time config migration from ~/.config/restish
 // ---------------------------------------------------------------------------
 
-// legacyConfigPath is where a user who drove `sbs` through the Python shim has
+// LegacyConfigPath is where a user who drove `sbs` through the Python shim has
 // their registration today: the shim called `restish api connect sbs …`, so the
 // entry lives under restish's own config as `apis.sbs`.
-func legacyConfigPath(env environ, homeDir string) string {
+func LegacyConfigPath(env Environ, homeDir string) string {
 	if xdg := env.Get("XDG_CONFIG_HOME"); xdg != "" {
 		return filepath.Join(xdg, "restish", "restish.json")
 	}
 	return filepath.Join(homeDir, ".config", "restish", "restish.json")
 }
 
-// migrateLegacyConfig copies *only* the `apis.sbs` entry out of restish's
+// MigrateLegacyConfig copies *only* the `apis.sbs` entry out of restish's
 // config into ours, once, and returns a one-line notice for stderr (§4.4, G9).
 //
 // Three properties are deliberate:
@@ -248,7 +248,7 @@ func legacyConfigPath(env environ, homeDir string) string {
 //     `restish` keeps working exactly as before.
 //
 // Returns ("", nil) when there is nothing to do, which is the common case.
-func migrateLegacyConfig(paths brandedPaths, legacyPath string) (string, error) {
+func MigrateLegacyConfig(paths BrandedPaths, legacyPath string) (string, error) {
 	if _, err := os.Stat(paths.ConfigFile); err == nil {
 		return "", nil // already configured; never overwrite
 	} else if !os.IsNotExist(err) {
@@ -266,16 +266,16 @@ func migrateLegacyConfig(paths brandedPaths, legacyPath string) (string, error) 
 	// restish writes JSONC (it adds a `//` migration header), so plain
 	// json.Unmarshal would fail on a perfectly valid config file. Strip
 	// comments first — the same problem the shim's _strip_jsonc solved.
-	if err := json.Unmarshal([]byte(stripJSONC(string(raw))), &legacy); err != nil {
+	if err := json.Unmarshal([]byte(StripJSONC(string(raw))), &legacy); err != nil {
 		return "", nil // unreadable legacy config is not our problem to report
 	}
 
-	entry, ok := legacy.APIs[cliName]
+	entry, ok := legacy.APIs[CLIName]
 	if !ok {
 		return "", nil
 	}
 
-	out := map[string]any{"apis": map[string]json.RawMessage{cliName: entry}}
+	out := map[string]any{"apis": map[string]json.RawMessage{CLIName: entry}}
 	body, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return "", err
@@ -308,7 +308,7 @@ func migrateLegacyConfig(paths brandedPaths, legacyPath string) (string, error) 
 	}
 
 	return fmt.Sprintf("Migrated your %s configuration from %s to %s (the original was left in place).",
-		cliName, legacyPath, paths.ConfigFile), nil
+		CLIName, legacyPath, paths.ConfigFile), nil
 }
 
 // jsoncToken matches, in one alternation, a JSON string literal *or* a comment.
@@ -317,7 +317,7 @@ func migrateLegacyConfig(paths brandedPaths, legacyPath string) (string, error) 
 // direct port of the shim's _strip_jsonc, which existed for exactly that bug.
 var jsoncToken = regexp.MustCompile(`"(?:[^"\\]|\\.)*"|/\*[\s\S]*?\*/|//[^\n]*`)
 
-func stripJSONC(text string) string {
+func StripJSONC(text string) string {
 	return jsoncToken.ReplaceAllStringFunc(text, func(m string) string {
 		if strings.HasPrefix(m, `"`) {
 			return m
@@ -326,8 +326,8 @@ func stripJSONC(text string) string {
 	})
 }
 
-// writeLine emits one line to stderr, ignoring write errors: a failed notice
+// WriteLine emits one line to stderr, ignoring write errors: a failed notice
 // must never turn into a failed command.
-func writeLine(w io.Writer, msg string) {
+func WriteLine(w io.Writer, msg string) {
 	fmt.Fprintln(w, msg)
 }

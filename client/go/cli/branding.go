@@ -1,16 +1,28 @@
-// Command sbs is the Skillberry Store CLI.
+// Package cli implements the Skillberry Store CLI, `sbs`.
 //
-// It embeds restish (https://rest.sh) as a Go *library* rather than shelling
-// out to it, which is what lets every usage line, error and hint say "sbs".
-// See docs/design/new_cli.md — §3 for why the subprocess shim was replaced,
-// §4 for the branding layer this file is.
+// It embeds restish (https://rest.sh) as a Go *library* rather than shelling out
+// to it, which is what lets every usage line, error and hint say "sbs". See
+// docs/design/new_cli.md — §3 for why the subprocess shim was replaced, §4 for
+// the branding layer this file holds.
 //
-// The whole of the branding is the ~30 lines in run(): a command name, a
-// description, a default config, a command surface and an auth handler. There
-// is deliberately no output rewriting anywhere in this program; the superseded
+// The whole of the branding is the ~30 lines in Run(): a command name, a
+// description, a default config, a command surface and an auth handler. There is
+// deliberately no output rewriting anywhere in this package; the superseded
 // design's ~150-line scrubber is the thing this approach exists to not write
 // (§10).
-package main
+//
+// # Why this is a library and not a main package
+//
+// The binary is `cli/cmd/sbs`, which is ~20 lines calling Run. Everything else
+// lives here, as an importable package, because Go refuses to import a
+// `package main` ("a program, not an importable package") — so the test suite in
+// client/go/tests can only exist if the implementation is a library.
+//
+// That is also why the identifiers the tests exercise are exported. This package
+// has exactly one intended consumer (cmd/sbs) plus its tests; the exported
+// surface is a consequence of the repository layout, not an API promise to
+// outside callers.
+package cli
 
 import (
 	"errors"
@@ -21,13 +33,13 @@ import (
 	restish "github.com/rest-sh/restish/v2"
 )
 
-// apiName is the key our baked API config is registered under, and the value
+// APIName is the key our baked API config is registered under, and the value
 // of CommandSurface.PromotedAPI. Promoting it lifts generated operations to the
 // root, so the user types `sbs list-skills` and not `sbs store list-skills`
 // (§4.2) — the two-level shape was the shim's core ergonomic problem.
-const apiName = "store"
+const APIName = "store"
 
-// supportNamespace collects restish's own support commands under one branded
+// SupportNamespace collects restish's own support commands under one branded
 // parent: `sbs cli doctor`, `sbs cli config path`, `sbs cli auth inspect`.
 //
 // They stay reachable (support tickets, CI, recovery) but off the primary help
@@ -35,45 +47,31 @@ const apiName = "store"
 // off the first thing a user reads. Hiding them outright (HideSupportCommands)
 // was the alternative and is strictly worse: `doctor` is what a support request
 // starts with.
-const supportNamespace = "cli"
+const SupportNamespace = "cli"
 
-func main() {
-	err := run(os.Args, os.Stdout, os.Stderr)
-	var ec exitCode
-	if errors.As(err, &ec) {
-		os.Exit(int(ec))
-	}
-	if err != nil {
-		// A single-line error. restish already prints operation-level failures
-		// itself; this catches the wiring-level ones.
-		fmt.Fprintf(os.Stderr, "%s: %v\n", cliName, err)
-		os.Exit(1)
-	}
-}
-
-// exitCode carries a specific process exit status out of run() as an error.
+// ExitCode carries a specific process exit status out of run() as an error.
 //
 // The verbs need to distinguish "failed" from "failed with status 2" (bad
 // usage) and from "succeeded" — and run() has to stay a plain
 // `func(...) error` to be testable without the test process exiting. Calling
 // os.Exit inside run() would make every one of its tests unrunnable.
-type exitCode int
+type ExitCode int
 
-func (c exitCode) Error() string { return fmt.Sprintf("exit status %d", int(c)) }
+func (c ExitCode) Error() string { return fmt.Sprintf("exit status %d", int(c)) }
 
-// exitCode(0) is success, so it must not surface as a non-nil error.
-func newExitCode(code int) error {
+// ExitCode(0) is success, so it must not surface as a non-nil error.
+func NewExitCode(code int) error {
 	if code == 0 {
 		return nil
 	}
-	return exitCode(code)
+	return ExitCode(code)
 }
 
 // run is main() with its I/O and argv injected, so the whole startup path —
 // including the local verbs and the spec-discovery error wrapper — is testable
 // without building and exec'ing a binary.
-func run(argv []string, stdout, stderr *os.File) error {
-	env := osEnviron{}
+func Run(argv []string, stdout, stderr *os.File) error {
+	env := OSEnviron{}
 
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -82,25 +80,25 @@ func run(argv []string, stdout, stderr *os.File) error {
 
 	// Branding the paths must happen before anything reads config, because
 	// restish resolves RSH_CONFIG_DIR / RSH_CONFIG / RSH_CACHE_DIR eagerly.
-	paths, pathErr := brandPaths(env, home)
+	paths, pathErr := BrandPaths(env, home)
 	if pathErr == nil {
 		// One-time migration from ~/.config/restish (§4.4, G9). A failure here
 		// is reported but never fatal: the user can always `sbs connect`, and
 		// refusing to start because an *old* config could not be copied would
 		// be a self-inflicted outage.
-		if notice, err := migrateLegacyConfig(paths, legacyConfigPath(env, home)); err != nil {
-			writeLine(stderr, fmt.Sprintf("Warning: could not migrate the previous configuration: %v", err))
+		if notice, err := MigrateLegacyConfig(paths, LegacyConfigPath(env, home)); err != nil {
+			WriteLine(stderr, fmt.Sprintf("Warning: could not migrate the previous configuration: %v", err))
 		} else if notice != "" {
-			writeLine(stderr, notice)
+			WriteLine(stderr, notice)
 		}
 
 		// Must come after the migration (which writes the file itself when it
 		// has something to copy) and before any engine dispatch. See
-		// ensureConfigFile: without a file at RSH_CONFIG the config load fails
+		// EnsureConfigFile: without a file at RSH_CONFIG the config load fails
 		// and the whole branded command surface silently reverts to stock
 		// restish.
-		if err := ensureConfigFile(paths); err != nil {
-			writeLine(stderr, fmt.Sprintf("Warning: could not create %s: %v", paths.ConfigFile, err))
+		if err := EnsureConfigFile(paths); err != nil {
+			WriteLine(stderr, fmt.Sprintf("Warning: could not create %s: %v", paths.ConfigFile, err))
 		}
 	}
 
@@ -115,8 +113,8 @@ func run(argv []string, stdout, stderr *os.File) error {
 	// whose whole job is to recover from an unreachable or wrong store —
 	// `connect` and `download-cli` — must not be routed through Run(), or they
 	// would be unusable in exactly the situation they exist for.
-	if handled, code := localVerb(argv, stdout, stderr, env, paths); handled {
-		return newExitCode(code)
+	if handled, code := LocalVerb(argv, stdout, stderr, env, paths); handled {
+		return NewExitCode(code)
 	}
 
 	// The thin auth verbs (§4.3) are dispatched *through* the engine instead,
@@ -127,36 +125,36 @@ func run(argv []string, stdout, stderr *os.File) error {
 	if len(argv) >= 2 {
 		switch argv[1] {
 		case "login":
-			return newExitCode(doLogin(argv[2:], stdout, stderr, env))
+			return NewExitCode(DoLogin(argv[2:], stdout, stderr, env))
 		case "logout":
-			return newExitCode(doLogout(argv[2:], stdout, stderr, env))
+			return NewExitCode(DoLogout(argv[2:], stdout, stderr, env))
 		}
 	}
 
-	return wrapRunError(newCLI(env).Run(argv), baseURL(env))
+	return WrapRunError(NewCLI(env).Run(argv), BaseURL(env))
 }
 
-// newCLI builds a configured embedded CLI.
+// NewCLI builds a configured embedded CLI.
 //
 // A factory rather than a single long-lived instance because the thin verbs run
 // two engine dispatches in sequence, and a cobra command tree is not documented
 // as re-entrant — reusing one instance across two Run() calls would be relying
 // on an implementation detail upstream never promised.
-func newCLI(env environ) *restish.CLI {
+func NewCLI(env Environ) *restish.CLI {
 	c := restish.New()
-	c.SetCommandName(cliName)
-	c.SetCommandDescription(shortHelp, longHelp())
-	c.SetVersion(versionLine())
-	c.SetDefaultConfig(defaultConfig(env))
+	c.SetCommandName(CLIName)
+	c.SetCommandDescription(ShortHelp, LongHelp())
+	c.SetVersion(VersionLine())
+	c.SetDefaultConfig(DefaultConfig(env))
 	c.SetCommandSurface(restish.CommandSurface{
-		PromotedAPI:             apiName,
-		SupportCommandNamespace: supportNamespace,
+		PromotedAPI:             APIName,
+		SupportCommandNamespace: SupportNamespace,
 	})
-	c.AddAuthHandler(authSchemeName, &standaloneAuth{})
+	c.AddAuthHandler(AuthSchemeName, &StandaloneAuth{})
 	return c
 }
 
-// defaultConfig is the compiled-in API registration: base URL, spec URL and the
+// DefaultConfig is the compiled-in API registration: base URL, spec URL and the
 // two profiles.
 //
 // SetDefaultConfig merges *underneath* the user's config file, so this supplies
@@ -164,24 +162,24 @@ func newCLI(env environ) *restish.CLI {
 // precedence is a library property here rather than something this repo
 // implements and tests — which is most of why the shim's `_restish_connect`,
 // `_registered_base` and `_ensure_env_profile` could simply be deleted (§4.5).
-func defaultConfig(env environ) *restish.Config {
-	base := baseURL(env)
+func DefaultConfig(env Environ) *restish.Config {
+	base := BaseURL(env)
 	return &restish.Config{
 		APIs: map[string]*restish.APIConfig{
-			apiName: {
+			APIName: {
 				BaseURL: base,
 				SpecURL: base + "/openapi.json",
 				Profiles: map[string]*restish.ProfileConfig{
 					// The interactive default: prompt, POST /auth/login, cache
 					// the bearer in restish's own token store.
 					"default": {
-						Auth: &restish.AuthConfig{Type: authSchemeName},
+						Auth: &restish.AuthConfig{Type: AuthSchemeName},
 					},
 					// CI / scripting. `env:SBS_TOKEN` is how the shim's
 					// `env-token` profile worked, now a literal in the baked
 					// config instead of a subprocess call that wrote one.
 					"env-token": {
-						Headers: []string{"Authorization: Bearer ${" + tokenEnvVar + "}"},
+						Headers: []string{"Authorization: Bearer ${" + TokenEnvVar + "}"},
 					},
 				},
 			},
@@ -189,12 +187,12 @@ func defaultConfig(env environ) *restish.Config {
 	}
 }
 
-const shortHelp = "Skillberry Store CLI"
+const ShortHelp = "Skillberry Store CLI"
 
-// longHelp is the root description. Written as configuration rather than as
+// LongHelp is the root description. Written as configuration rather than as
 // text injected into someone else's help output (D2): restish prints whatever
 // we hand it here, so there is nothing to intercept or rewrite.
-func longHelp() string {
+func LongHelp() string {
 	return strings.TrimSpace(fmt.Sprintf(`
 %[1]s is the command-line interface to a Skillberry Store.
 
@@ -226,20 +224,20 @@ Configuration, diagnostics and cache management live under "%[1]s %[6]s":
   %[1]s %[6]s doctor                     Show resolved URLs, paths and spec freshness
   %[1]s %[6]s config path                Print the config file path
   %[1]s %[6]s cache clear                Drop the cached OpenAPI spec
-`, cliName, urlEnvVar, cliName+" login", cliName+" logout", tokenEnvVar, supportNamespace))
+`, CLIName, URLEnvVar, CLIName+" login", CLIName+" logout", TokenEnvVar, SupportNamespace))
 }
 
-// versionLine reports our version and the embedded engine, so a bug report
+// VersionLine reports our version and the embedded engine, so a bug report
 // carries both numbers without anyone having to ask for the second one.
 //
-// Deliberately NOT prefixed with cliName: restish renders this as
+// Deliberately NOT prefixed with CLIName: restish renders this as
 // "<command> version <what SetVersion was given>", so including the name here
 // produces "sbs version sbs 0.1.0".
-func versionLine() string {
-	return fmt.Sprintf("%s (engine: restish %s)", version, engineVersion)
+func VersionLine() string {
+	return fmt.Sprintf("%s (engine: restish %s)", Version, EngineVersion)
 }
 
-// wrapRunError turns restish's spec-discovery failure into one actionable line.
+// WrapRunError turns restish's spec-discovery failure into one actionable line.
 //
 // A promoted API fetches its spec when help or dispatch needs command metadata,
 // and with an unreachable SpecURL the root help fails *hard* rather than
@@ -249,7 +247,7 @@ func versionLine() string {
 // Without this wrapper the user sees an internal-sounding
 // `generated commands for promoted API "store" are unavailable: …` and has no
 // idea which URL was tried or how to change it.
-func wrapRunError(err error, base string) error {
+func WrapRunError(err error, base string) error {
 	if err == nil {
 		return nil
 	}
@@ -270,5 +268,5 @@ or it is not reachable from here:
   %[1]s connect <url>        point this CLI at a different store, permanently
   %[4]s=<url> %[1]s ...      override the URL for a single command
   %[1]s download-cli         re-download a build configured for another store`,
-		cliName, base, msg, urlEnvVar)))
+		CLIName, base, msg, URLEnvVar)))
 }

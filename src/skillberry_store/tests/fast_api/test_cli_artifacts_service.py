@@ -61,34 +61,34 @@ def test_slot_constants_match_the_go_source():
     """The single most dangerous drift in this feature.
 
     ``SLOT_WIDTH``/``SLOT_PATTERN`` here and ``slotWidth``/``urlSlot`` in
-    cli/go/version.go are a contract between a Python writer and a Go reader. If
+    client/go/cli/version.go are a contract between a Python writer and a Go reader. If
     they disagree, patching either finds nothing (caught — the platform reports
     ``no_slot_found``) or, far worse, writes a different number of bytes than the
     Go side trims, producing a binary that starts fine and points at a mangled
     URL. Nothing downstream would notice.
     """
-    go_source = (REPO_ROOT / "cli" / "go" / "version.go").read_text(encoding="utf-8")
+    go_source = (REPO_ROOT / "client" / "go" / "cli" / "version.go").read_text(encoding="utf-8")
 
-    width_match = re.search(r"const slotWidth = (\d+)", go_source)
-    assert width_match, "could not find `const slotWidth` in cli/go/version.go"
+    width_match = re.search(r"const SlotWidth = (\d+)", go_source)
+    assert width_match, "could not find `const SlotWidth` in client/go/cli/version.go"
     assert int(width_match.group(1)) == SLOT_WIDTH, (
-        f"Go slotWidth is {width_match.group(1)} but Python SLOT_WIDTH is "
+        f"Go SlotWidth is {width_match.group(1)} but Python SLOT_WIDTH is "
         f"{SLOT_WIDTH}. A patched binary would be misread."
     )
 
-    slot_match = re.search(r'var urlSlot = "([^"]*)"', go_source)
-    assert slot_match, "could not find `var urlSlot` in cli/go/version.go"
+    slot_match = re.search(r'var URLSlot = "([^"]*)"', go_source)
+    assert slot_match, "could not find `var URLSlot` in client/go/cli/version.go"
     go_slot = slot_match.group(1).encode()
     assert go_slot == SLOT_PATTERN, (
-        f"Go urlSlot is {go_slot!r} but Python SLOT_PATTERN is {SLOT_PATTERN!r}. "
+        f"Go URLSlot is {go_slot!r} but Python SLOT_PATTERN is {SLOT_PATTERN!r}. "
         f"Patching would not find the slot."
     )
     assert len(go_slot) == SLOT_WIDTH, (
-        f"Go urlSlot is {len(go_slot)} bytes, not slotWidth ({SLOT_WIDTH})"
+        f"Go URLSlot is {len(go_slot)} bytes, not SlotWidth ({SLOT_WIDTH})"
     )
 
-    pad_match = re.search(r"const slotPad = '(.)'", go_source)
-    assert pad_match, "could not find `const slotPad` in cli/go/version.go"
+    pad_match = re.search(r"const SlotPad = '(.)'", go_source)
+    assert pad_match, "could not find `const SlotPad` in client/go/cli/version.go"
     assert pad_match.group(1).encode() == SLOT_PAD
 
 
@@ -100,14 +100,14 @@ def test_go_url_slot_has_a_constant_initializer():
     as well as dynamically by the e2e dead-port control, because this is the shape
     that makes the whole `rebuild` mechanism a silent no-op.
     """
-    go_source = (REPO_ROOT / "cli" / "go" / "version.go").read_text(encoding="utf-8")
+    go_source = (REPO_ROOT / "client" / "go" / "cli" / "version.go").read_text(encoding="utf-8")
     line = next(
-        (ln for ln in go_source.splitlines() if ln.strip().startswith("var urlSlot")),
+        (ln for ln in go_source.splitlines() if ln.strip().startswith("var URLSlot")),
         None,
     )
-    assert line, "cli/go/version.go declares no `var urlSlot`"
-    assert re.fullmatch(r'var urlSlot = "[^"]*"', line.strip()), (
-        f"urlSlot must be a plain string literal for -ldflags -X to work, got:\n"
+    assert line, "client/go/cli/version.go declares no `var URLSlot`"
+    assert re.fullmatch(r'var URLSlot = "[^"]*"', line.strip()), (
+        f"URLSlot must be a plain string literal for -ldflags -X to work, got:\n"
         f"  {line.strip()}\n"
         f"An expression here makes -X a silent no-op (docs/design/new_cli.md §3.4 #1)."
     )
@@ -234,7 +234,7 @@ def test_patch_refuses_an_injection_url():
 
 @pytest.fixture
 def prebuilt_dir(tmp_path) -> Path:
-    """A directory shaped like cli/build.sh's output, with real slots."""
+    """A directory shaped like client/go/build.sh's output, with real slots."""
     source = tmp_path / "prebuilt"
     for platform in ALL_PLATFORMS:
         target_dir = source / platform
@@ -865,3 +865,98 @@ def test_tar_entries_carry_no_server_identity(tmp_path, prebuilt_dir):
             assert member.uid == 0 and member.gid == 0, member.name
             assert member.uname == "" and member.gname == "", member.name
             assert member.mtime == 0, member.name
+
+
+# --------------------------------------------------------------------------- #
+# The `-ldflags -X` package path
+# --------------------------------------------------------------------------- #
+#
+# `-X` addresses a variable by its package's full import path. When the CLI moved
+# from a single `package main` to an importable `cli` package plus a thin
+# `cli/cmd/sbs` entry point (so the tests could live in client/go/tests), every
+# `-X main.urlSlot=...` had to become
+# `-X github.com/.../client/go/cli.URLSlot=...`.
+#
+# A wrong package path there is the worst kind of wrong: the linker accepts it
+# **silently** and injects nothing, so the build succeeds and the artifact quietly
+# keeps its compile-time default URL. That is the same failure shape as the
+# constant-initializer gotcha of §3.4 #1 — and the reason the design demands a
+# dead-port control test. These assertions catch the drift statically, in all
+# four places that spell the path.
+
+
+def test_ldflags_target_matches_the_go_package():
+    """The Python `-X` target must name the package that declares the variables."""
+    from skillberry_store.services.cli_artifacts import GO_CMD_PKG, GO_LDFLAGS_PKG
+
+    go_mod = (REPO_ROOT / "client" / "go" / "go.mod").read_text(encoding="utf-8")
+    module = re.search(r"^module (\S+)", go_mod, re.MULTILINE)
+    assert module, "could not read the module path from client/go/go.mod"
+
+    expected = f"{module.group(1)}/cli"
+    assert GO_LDFLAGS_PKG == expected, (
+        f"GO_LDFLAGS_PKG is {GO_LDFLAGS_PKG!r} but the `cli` package's import "
+        f"path is {expected!r}. `-X` with a wrong package path is silently "
+        f"ignored, so `rebuild` would produce artifacts with no URL baked in."
+    )
+    assert GO_LDFLAGS_PKG != "main", "the variables no longer live in package main"
+
+    # And the variables really are declared there, under these exact names.
+    version_go = (
+        REPO_ROOT / "client" / "go" / "cli" / "version.go"
+    ).read_text(encoding="utf-8")
+    for name in ("URLSlot", "Version", "EngineVersion"):
+        assert re.search(rf"^var {name} = ", version_go, re.MULTILINE), (
+            f"`var {name}` is not declared in client/go/cli/version.go, so "
+            f"-X {GO_LDFLAGS_PKG}.{name} would inject nothing"
+        )
+
+    # The build target is the `main` package, not the library — `go build` on a
+    # library produces no binary at all.
+    cmd_dir = REPO_ROOT / "client" / "go" / GO_CMD_PKG.removeprefix("./")
+    main_go = cmd_dir / "main.go"
+    assert main_go.is_file(), f"{GO_CMD_PKG} has no main.go"
+    assert re.search(r"^package main$", main_go.read_text(encoding="utf-8"), re.MULTILINE), (
+        f"{GO_CMD_PKG} is not a main package, so `go build` would emit no binary"
+    )
+
+
+def test_every_ldflags_caller_uses_the_same_package_path():
+    """Four places spell the `-X` package path; all must agree.
+
+    The build script, the makefile, this service and the CI workflow each invoke
+    the linker independently. One left on `main.` would silently stop injecting,
+    and only an end-to-end run against a live store would notice.
+    """
+    from skillberry_store.services.cli_artifacts import GO_LDFLAGS_PKG
+
+    callers = {
+        "client/go/build.sh": REPO_ROOT / "client" / "go" / "build.sh",
+        ".mk/dev.mk": REPO_ROOT / ".mk" / "dev.mk",
+        ".github/workflows/cli-artifacts.yml": (
+            REPO_ROOT / ".github" / "workflows" / "cli-artifacts.yml"
+        ),
+    }
+    for label, path in callers.items():
+        if not path.is_file():
+            continue
+        # Comment lines are skipped deliberately: all three files *document* the
+        # `-X main.…` pitfall in prose, and matching that text would make this
+        # test fail on the very comments that exist to prevent the mistake.
+        code = [
+            line
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if not line.strip().lstrip("@").startswith("#")
+        ]
+        text = "\n".join(code)
+        if "ldflags" not in text:
+            continue
+        for stale in ("-X main.", "main.urlSlot", "main.version", "main.engineVersion"):
+            assert stale not in text, (
+                f"{label} still passes `{stale}…`, which the linker ignores "
+                f"silently now that the variables live in {GO_LDFLAGS_PKG}"
+            )
+        # And it must actually name the right package somewhere.
+        assert GO_LDFLAGS_PKG in text or "CLI_PKG" in text, (
+            f"{label} invokes the linker but never names {GO_LDFLAGS_PKG}"
+        )

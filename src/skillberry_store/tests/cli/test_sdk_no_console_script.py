@@ -3,7 +3,7 @@
 docs/design/new_cli.md §8.3 #21c — the regression test for the deletion in §4.6.
 
 There is now exactly one implementation of ``sbs``: the native Go binary in
-``cli/go`` that embeds restish as a library. The Python shim that used to be
+``client/go/cli`` that embeds restish as a library. The Python shim that used to be
 injected into the generated SDK is gone, and it is not coming back as a
 fallback — its subprocess model is precisely what made the CLI's output
 impossible to brand (§10).
@@ -57,7 +57,7 @@ def test_setup_py_declares_no_sbs_console_script():
     # renamed entry point is still caught.
     assert "console_scripts" not in text, (
         "setup.py declares console_scripts. The SDK is a library; `sbs` is the "
-        "native binary from cli/go, distributed as platform wheels."
+        "native binary from client/go/cli, distributed as platform wheels."
     )
 
 

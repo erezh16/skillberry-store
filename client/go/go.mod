@@ -1,4 +1,4 @@
-module github.com/skillberry-ai/skillberry-store/cli/go
+module github.com/skillberry-ai/skillberry-store/client/go
 
 go 1.27.1
 

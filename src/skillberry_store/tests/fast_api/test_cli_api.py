@@ -49,7 +49,7 @@ UA_MAC = (
 
 
 def _fake_prebuilt(root: Path) -> Path:
-    """Artifacts shaped like cli/build.sh's output, with patchable slots."""
+    """Artifacts shaped like client/go/build.sh's output, with patchable slots."""
     for platform in (
         "linux-amd64",
         "linux-arm64",

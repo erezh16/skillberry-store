@@ -4,7 +4,7 @@
 """Build one `skillberry-store-cli` wheel per platform.
 
 docs/design/new_cli.md §4.6 / G5. Reads the artifacts produced by
-``cli/build.sh`` and emits a platform-tagged wheel for each, so that
+``client/go/build.sh`` and emits a platform-tagged wheel for each, so that
 ``pip install skillberry-store-cli`` resolves to the right binary automatically.
 
 Usage::
@@ -51,7 +51,7 @@ def _read_manifest(artifacts: Path) -> dict:
     if not path.is_file():
         sys.exit(
             f"{path} not found. Build the artifacts first:\n"
-            f"  make cli-dist    (or ./cli/build.sh --out {artifacts})"
+            f"  make cli-dist    (or ./client/go/build.sh --out {artifacts})"
         )
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -153,7 +153,7 @@ def main() -> int:
         "--artifacts",
         default="cli-prebuilt",
         type=Path,
-        help="directory produced by cli/build.sh (default: cli-prebuilt)",
+        help="directory produced by client/go/build.sh (default: cli-prebuilt)",
     )
     parser.add_argument(
         "--out", default="dist", type=Path, help="where to write the wheels"

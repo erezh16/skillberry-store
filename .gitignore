@@ -199,7 +199,7 @@ docs/demo-videos/**/out/
 # measured at 44 MB / 2248 files, while go.mod + go.sum already pin every
 # module by hash. `make cli-vendor` materialises it when an offline build
 # needs it.
-cli/go/sbs
-cli/go/sbs.exe
-cli/go/vendor/
+client/go/sbs
+client/go/sbs.exe
+client/go/vendor/
 cli-prebuilt/
