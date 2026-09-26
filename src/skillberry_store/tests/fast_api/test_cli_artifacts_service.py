@@ -1,0 +1,832 @@
+# Copyright 2025 IBM Corp.
+# Licensed under the Apache License, Version 2.0
+"""Unit tests for the CLI artifact service — stamping, patching, manifests.
+
+docs/design/new_cli.md §8.2 #7–#9 and #16. These are the pieces that decide what
+bytes a user ends up executing, so the tests are about exactness rather than
+shape: a patched slot that changes the file size, a sha256 recorded before
+patching instead of after, or a stamp that ignores the public URL would each
+produce a binary that runs and talks to the wrong store.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import tarfile
+import zipfile
+from pathlib import Path
+
+import pytest
+
+from skillberry_store.services.cli_artifacts import (
+    MECHANISM_PATCH,
+    MECHANISM_PRISTINE,
+    MECHANISM_REBUILD,
+    MECHANISM_SIDECAR,
+    REASON_NOT_BUNDLED,
+    REASON_NO_SLOT,
+    SLOT_PAD,
+    SLOT_PATTERN,
+    SLOT_WIDTH,
+    STATE_PREPARING,
+    STATE_READY,
+    STATE_UNAVAILABLE,
+    CliArtifactService,
+    CliArtifactSettings,
+    UnacceptableURL,
+    artifact_checksums,
+    patch_url_slot,
+    validate_public_url,
+)
+
+REPO_ROOT = Path(__file__).resolve().parents[4]
+
+ALL_PLATFORMS = (
+    "linux-amd64",
+    "linux-arm64",
+    "darwin-amd64",
+    "darwin-arm64",
+    "windows-amd64",
+)
+
+
+# --------------------------------------------------------------------------- #
+# The Go/Python slot contract
+# --------------------------------------------------------------------------- #
+
+
+def test_slot_constants_match_the_go_source():
+    """The single most dangerous drift in this feature.
+
+    ``SLOT_WIDTH``/``SLOT_PATTERN`` here and ``slotWidth``/``urlSlot`` in
+    cli/go/version.go are a contract between a Python writer and a Go reader. If
+    they disagree, patching either finds nothing (caught — the platform reports
+    ``no_slot_found``) or, far worse, writes a different number of bytes than the
+    Go side trims, producing a binary that starts fine and points at a mangled
+    URL. Nothing downstream would notice.
+    """
+    go_source = (REPO_ROOT / "cli" / "go" / "version.go").read_text(encoding="utf-8")
+
+    width_match = re.search(r"const slotWidth = (\d+)", go_source)
+    assert width_match, "could not find `const slotWidth` in cli/go/version.go"
+    assert int(width_match.group(1)) == SLOT_WIDTH, (
+        f"Go slotWidth is {width_match.group(1)} but Python SLOT_WIDTH is "
+        f"{SLOT_WIDTH}. A patched binary would be misread."
+    )
+
+    slot_match = re.search(r'var urlSlot = "([^"]*)"', go_source)
+    assert slot_match, "could not find `var urlSlot` in cli/go/version.go"
+    go_slot = slot_match.group(1).encode()
+    assert go_slot == SLOT_PATTERN, (
+        f"Go urlSlot is {go_slot!r} but Python SLOT_PATTERN is {SLOT_PATTERN!r}. "
+        f"Patching would not find the slot."
+    )
+    assert len(go_slot) == SLOT_WIDTH, (
+        f"Go urlSlot is {len(go_slot)} bytes, not slotWidth ({SLOT_WIDTH})"
+    )
+
+    pad_match = re.search(r"const slotPad = '(.)'", go_source)
+    assert pad_match, "could not find `const slotPad` in cli/go/version.go"
+    assert pad_match.group(1).encode() == SLOT_PAD
+
+
+def test_go_url_slot_has_a_constant_initializer():
+    """§3.4 #1 / G8: `-ldflags -X` silently no-ops on a non-constant initializer.
+
+    A prototype used ``"…" + strings.Repeat("#", 0)`` and the flag was ignored —
+    the binary kept its source default and nothing failed. Guarded statically here
+    as well as dynamically by the e2e dead-port control, because this is the shape
+    that makes the whole `rebuild` mechanism a silent no-op.
+    """
+    go_source = (REPO_ROOT / "cli" / "go" / "version.go").read_text(encoding="utf-8")
+    line = next(
+        (ln for ln in go_source.splitlines() if ln.strip().startswith("var urlSlot")),
+        None,
+    )
+    assert line, "cli/go/version.go declares no `var urlSlot`"
+    assert re.fullmatch(r'var urlSlot = "[^"]*"', line.strip()), (
+        f"urlSlot must be a plain string literal for -ldflags -X to work, got:\n"
+        f"  {line.strip()}\n"
+        f"An expression here makes -X a silent no-op (docs/design/new_cli.md §3.4 #1)."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# URL validation (§5.7, §7.2, B14) — §8.2 #16
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        'http://evil.com/"$(id)"',
+        "http://evil.com/`id`",
+        "http://evil.com/;id",
+        "http://evil.com/$(id)",
+        "http://evil.com/|whoami",
+        "http://evil.com/ id",
+        "http://evil.com/\nid",
+        "http://evil.com/'",
+        "ftp://example.com",
+        "file:///etc/passwd",
+        "javascript:alert(1)",
+        "example.com",
+        "",
+        "   ",
+    ],
+)
+def test_validate_public_url_rejects_injection(bad):
+    """The same validator gates a shell script, an -ldflags value and a patch."""
+    with pytest.raises(UnacceptableURL):
+        validate_public_url(bad)
+
+
+@pytest.mark.parametrize(
+    "good,expected",
+    [
+        ("http://localhost:8000", "http://localhost:8000"),
+        ("https://store.example.com/", "https://store.example.com"),
+        ("https://store.example.com/prefix/", "https://store.example.com/prefix"),
+        ("  http://127.0.0.1:8099  ", "http://127.0.0.1:8099"),
+        ("https://my-store.internal:8443/a/b", "https://my-store.internal:8443/a/b"),
+    ],
+)
+def test_validate_public_url_normalises(good, expected):
+    assert validate_public_url(good) == expected
+
+
+def test_validate_public_url_enforces_slot_width_only_for_slots():
+    long_url = "https://" + "a" * 80 + ".example.com"
+    # Fine as a URL...
+    assert validate_public_url(long_url) == long_url
+    # ...but it cannot be written into a fixed-width slot.
+    with pytest.raises(UnacceptableURL, match="exceeds"):
+        validate_public_url(long_url, for_slot=True)
+
+
+# --------------------------------------------------------------------------- #
+# Patching — §8.2 #9
+# --------------------------------------------------------------------------- #
+
+
+def _fake_binary(slots: int = 3, filler: bytes = b"\x00ELF-ish padding\x00") -> bytearray:
+    """A byte blob with `slots` copies of the URL slot, like a linked binary."""
+    data = bytearray()
+    for _ in range(slots):
+        data += filler + SLOT_PATTERN + filler
+    return data
+
+
+def test_patch_rewrites_every_slot_without_changing_size():
+    data = _fake_binary(slots=3)
+    original_size = len(data)
+
+    count = patch_url_slot(data, "http://store.example.com:9443")
+
+    assert count == 3, f"patched {count} slots, want 3"
+    # The invariant that makes patching possible at all: a linked binary has
+    # offsets (and on some formats checksums) that a length change invalidates.
+    assert len(data) == original_size, "patching changed the file size"
+    assert b"http://store.example.com:9443" in bytes(data)
+    assert SLOT_PATTERN not in bytes(data), "an unpatched slot remains"
+
+
+def test_patch_pads_to_exactly_slot_width():
+    data = _fake_binary(slots=1)
+    patch_url_slot(data, "http://s.io")
+
+    offset = bytes(data).find(b"http://s.io")
+    written = bytes(data)[offset : offset + SLOT_WIDTH]
+    assert len(written) == SLOT_WIDTH
+    # The Go side trims the padding, so it must be padding all the way to the
+    # slot boundary — a short write would leave stale bytes of the old URL and
+    # produce something like "http://s.ioalhost:8000".
+    assert written == b"http://s.io" + SLOT_PAD * (SLOT_WIDTH - len(b"http://s.io"))
+
+
+def test_patch_returns_zero_when_no_slot_present():
+    """A CI artifact with no slot means a Go/Python version mismatch."""
+    data = bytearray(b"no slot in here at all")
+    assert patch_url_slot(data, "http://store.test") == 0
+
+
+def test_patch_refuses_an_over_long_url_before_writing():
+    """§8.2 #9: rejected *before* writing, so the buffer is untouched."""
+    data = _fake_binary(slots=1)
+    snapshot = bytes(data)
+    with pytest.raises(UnacceptableURL, match="exceeds"):
+        patch_url_slot(data, "http://" + "a" * 80 + ".com")
+    assert bytes(data) == snapshot, "a rejected URL still modified the buffer"
+
+
+def test_patch_refuses_an_injection_url():
+    data = _fake_binary(slots=1)
+    with pytest.raises(UnacceptableURL):
+        patch_url_slot(data, 'http://evil.com/"$(id)"')
+
+
+# --------------------------------------------------------------------------- #
+# Fixtures for the service
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def prebuilt_dir(tmp_path) -> Path:
+    """A directory shaped like cli/build.sh's output, with real slots."""
+    source = tmp_path / "prebuilt"
+    for platform in ALL_PLATFORMS:
+        target_dir = source / platform
+        target_dir.mkdir(parents=True)
+        filename = "sbs.exe" if platform.startswith("windows-") else "sbs"
+        # Distinct filler per platform so a test can prove it got the right one.
+        (target_dir / filename).write_bytes(
+            bytes(_fake_binary(slots=2, filler=platform.encode().ljust(24, b"\x00")))
+        )
+    (source / "LICENSE.restish").write_text("MIT License\n", encoding="utf-8")
+    (source / "prebuilt-manifest.json").write_text(
+        json.dumps(
+            {
+                "cli_name": "sbs",
+                "cli_version": "1.2.3+gabc123",
+                "engine": {"name": "restish", "version": "2.3.0", "license": "MIT"},
+                "slot_width": SLOT_WIDTH,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return source
+
+
+def _service(tmp_path, prebuilt_dir, *, public_url="http://store.test:8000", **kw):
+    settings = CliArtifactSettings(
+        dist_dir=tmp_path / "dist",
+        artifacts_dir=prebuilt_dir,
+        **kw,
+    )
+    return CliArtifactService(settings, public_url=public_url, cli_commit="gabc123")
+
+
+# --------------------------------------------------------------------------- #
+# Preparation and manifest shape — §8.2 #7
+# --------------------------------------------------------------------------- #
+
+
+def test_prepare_makes_every_platform_ready(tmp_path, prebuilt_dir):
+    svc = _service(tmp_path, prebuilt_dir)
+    svc.prepare_all()
+
+    manifest = svc.manifest()
+    assert manifest["cli_name"] == "sbs"
+    assert manifest["cli_version"] == "1.2.3+gabc123"
+    assert manifest["public_url"] == "http://store.test:8000"
+    assert manifest["engine"] == {
+        "name": "restish",
+        "version": "2.3.0",
+        "license": "MIT",
+        "license_url": "/cli/license",
+    }
+
+    for platform in ALL_PLATFORMS:
+        entry = manifest["platforms"][platform]
+        assert entry["state"] == STATE_READY, f"{platform}: {entry}"
+        assert entry["sha256"], f"{platform} has no sha256"
+        assert entry["size"] > 0
+        # Relative URLs keep the document correct behind any path prefix.
+        assert entry["download_url"].startswith("/cli/download?platform=")
+        assert not entry["download_url"].startswith("http"), (
+            "manifest URLs must be relative (§5.5.1)"
+        )
+        assert entry["archive_url"].startswith("/cli/download?platform=")
+
+
+def test_windows_artifact_keeps_its_exe_extension(tmp_path, prebuilt_dir):
+    svc = _service(tmp_path, prebuilt_dir)
+    svc.prepare_all()
+    assert svc.manifest()["platforms"]["windows-amd64"]["filename"] == "sbs.exe"
+    assert svc.manifest()["platforms"]["linux-amd64"]["filename"] == "sbs"
+
+
+def test_sha256_is_computed_after_patching(tmp_path, prebuilt_dir):
+    """§7.2: the manifest must describe the bytes served, not the CI bytes.
+
+    Hashing before patching would publish a digest that every download fails to
+    match — the install script and `sbs download-cli` both verify, so the feature
+    would be comprehensively broken in a way only an end-to-end run would show.
+    """
+    svc = _service(tmp_path, prebuilt_dir)
+    svc.prepare_all()
+
+    entry = svc.resolve("linux-amd64")
+    served = svc.artifact_path("linux-amd64", entry.filename)
+    on_disk = hashlib.sha256(served.read_bytes()).hexdigest()
+    assert entry.sha256 == on_disk
+
+    ci_bytes = (prebuilt_dir / "linux-amd64" / "sbs").read_bytes()
+    assert entry.sha256 != hashlib.sha256(ci_bytes).hexdigest(), (
+        "the recorded sha256 is the pre-patch one"
+    )
+
+
+def test_prepared_artifact_carries_the_public_url(tmp_path, prebuilt_dir):
+    svc = _service(tmp_path, prebuilt_dir, build_mode="patch")
+    svc.prepare_all()
+
+    body = svc.artifact_path("linux-amd64", "sbs").read_bytes()
+    assert b"http://store.test:8000" in body
+    assert SLOT_PATTERN not in body, "an unpatched slot survived"
+
+
+def test_darwin_arm64_uses_a_sidecar_without_a_toolchain(tmp_path, prebuilt_dir):
+    """B3: Go ad-hoc signs darwin-arm64, so its bytes must not be patched.
+
+    Patching inside the signed image invalidates the signature and macOS refuses
+    to exec it — a failure the user sees as "killed", with no explanation.
+    """
+    svc = _service(tmp_path, prebuilt_dir, build_mode="patch")
+    svc.prepare_all()
+
+    entry = svc.resolve("darwin-arm64")
+    assert entry.url_injection == MECHANISM_SIDECAR
+    body = svc.artifact_path("darwin-arm64", "sbs").read_bytes()
+    assert SLOT_PATTERN in body, "darwin-arm64 was patched; its signature is now void"
+
+    sidecar = svc.dist_dir / "darwin-arm64" / "sbs.url"
+    assert sidecar.is_file(), "the sidecar mechanism wrote no sbs.url"
+    assert sidecar.read_text(encoding="utf-8").strip() == "http://store.test:8000"
+
+    # Other platforms still get a real patch.
+    assert svc.resolve("linux-amd64").url_injection == MECHANISM_PATCH
+
+
+def test_no_public_url_serves_pristine_artifacts(tmp_path, prebuilt_dir):
+    """Truthful degradation: no URL to inject means the CI bytes, labelled."""
+    svc = _service(tmp_path, prebuilt_dir, public_url=None)
+    svc.prepare_all()
+
+    entry = svc.resolve("linux-amd64")
+    assert entry.state == STATE_READY
+    assert entry.url_injection == MECHANISM_PRISTINE
+    assert SLOT_PATTERN in svc.artifact_path("linux-amd64", "sbs").read_bytes()
+
+
+def test_missing_artifacts_dir_reports_not_bundled(tmp_path):
+    svc = _service(tmp_path, tmp_path / "does-not-exist")
+    svc.prepare_all()
+
+    for platform in ALL_PLATFORMS:
+        entry = svc.manifest()["platforms"][platform]
+        assert entry["state"] == STATE_UNAVAILABLE
+        # A reason the UI and the CLI can show verbatim.
+        assert entry["reason"] == REASON_NOT_BUNDLED
+
+
+def test_artifact_without_a_slot_is_refused_not_served(tmp_path):
+    """A slotless binary means a version mismatch; serving it misdirects users."""
+    source = tmp_path / "prebuilt"
+    (source / "linux-amd64").mkdir(parents=True)
+    (source / "linux-amd64" / "sbs").write_bytes(b"a binary with no slot whatsoever")
+
+    svc = _service(tmp_path, source, build_mode="patch")
+    svc.prepare_all()
+
+    entry = svc.manifest()["platforms"]["linux-amd64"]
+    assert entry["state"] == STATE_UNAVAILABLE
+    assert entry["reason"] == REASON_NO_SLOT
+
+
+def test_flat_artifact_layout_is_accepted(tmp_path):
+    """A release-asset download naturally yields `sbs-<platform>`, not a dir."""
+    source = tmp_path / "prebuilt"
+    source.mkdir()
+    (source / "sbs-linux-amd64").write_bytes(bytes(_fake_binary(slots=1)))
+
+    svc = _service(tmp_path, source)
+    svc.prepare_all()
+    assert svc.resolve("linux-amd64").state == STATE_READY
+
+
+# --------------------------------------------------------------------------- #
+# The stamp — §8.2 #8
+# --------------------------------------------------------------------------- #
+
+
+def test_unchanged_inputs_do_no_work(tmp_path, prebuilt_dir):
+    """The property that makes a restart free."""
+    svc = _service(tmp_path, prebuilt_dir)
+    svc.prepare_all()
+    first = {
+        platform: svc.artifact_path(platform, svc.resolve(platform).filename).stat()
+        for platform in ALL_PLATFORMS
+    }
+    first_shas = {p: svc.resolve(p).sha256 for p in ALL_PLATFORMS}
+
+    # A fresh service over the same dist dir, same URL, same commit.
+    svc2 = _service(tmp_path, prebuilt_dir)
+    svc2.load_manifest()
+    svc2.prepare_all()
+
+    for platform in ALL_PLATFORMS:
+        entry = svc2.resolve(platform)
+        assert entry.state == STATE_READY
+        assert entry.sha256 == first_shas[platform]
+        after = svc2.artifact_path(platform, entry.filename).stat()
+        # mtime unchanged is the observable proof nothing was rewritten.
+        assert after.st_mtime_ns == first[platform].st_mtime_ns, (
+            f"{platform} was re-prepared despite unchanged inputs"
+        )
+
+
+def test_changed_public_url_re_prepares(tmp_path, prebuilt_dir):
+    svc = _service(tmp_path, prebuilt_dir)
+    svc.prepare_all()
+    old_sha = svc.resolve("linux-amd64").sha256
+
+    svc2 = _service(tmp_path, prebuilt_dir, public_url="http://other.test:9000")
+    svc2.load_manifest()
+    svc2.prepare_all()
+
+    entry = svc2.resolve("linux-amd64")
+    assert entry.state == STATE_READY
+    assert entry.sha256 != old_sha, "a changed SBS_PUBLIC_URL did not re-prepare"
+    body = svc2.artifact_path("linux-amd64", entry.filename).read_bytes()
+    assert b"http://other.test:9000" in body
+    assert b"http://store.test:8000" not in body
+
+
+def test_changed_cli_commit_re_prepares(tmp_path, prebuilt_dir):
+    svc = _service(tmp_path, prebuilt_dir)
+    svc.prepare_all()
+    stamp_before = svc.resolve("linux-amd64").stamp
+
+    svc2 = CliArtifactService(
+        svc.settings, public_url=svc.public_url, cli_commit="gdeadbee"
+    )
+    svc2.load_manifest()
+    assert svc2.resolve("linux-amd64").stamp == stamp_before  # adopted from disk
+    svc2.prepare_all()
+    assert svc2.resolve("linux-amd64").stamp != stamp_before, (
+        "a new CLI commit must invalidate the stamp"
+    )
+
+
+def test_corrupt_artifact_re_prepares(tmp_path, prebuilt_dir):
+    """The sha256 re-check is what catches a torn write or a truncated file."""
+    svc = _service(tmp_path, prebuilt_dir)
+    svc.prepare_all()
+    good_sha = svc.resolve("linux-amd64").sha256
+
+    path = svc.artifact_path("linux-amd64", "sbs")
+    path.write_bytes(b"corrupted")
+
+    svc2 = _service(tmp_path, prebuilt_dir)
+    svc2.load_manifest()
+    svc2.prepare_all()
+
+    assert svc2.resolve("linux-amd64").sha256 == good_sha
+    assert svc2.artifact_path("linux-amd64", "sbs").read_bytes() != b"corrupted"
+
+
+def test_missing_artifact_re_prepares(tmp_path, prebuilt_dir):
+    svc = _service(tmp_path, prebuilt_dir)
+    svc.prepare_all()
+    svc.artifact_path("linux-amd64", "sbs").unlink()
+
+    svc2 = _service(tmp_path, prebuilt_dir)
+    svc2.load_manifest()
+    svc2.prepare_all()
+    assert svc2.artifact_path("linux-amd64", "sbs").is_file()
+
+
+def test_prepare_always_forces_work(tmp_path, prebuilt_dir):
+    svc = _service(tmp_path, prebuilt_dir)
+    svc.prepare_all()
+    before = svc.artifact_path("linux-amd64", "sbs").stat().st_mtime_ns
+
+    svc2 = _service(tmp_path, prebuilt_dir, prepare="always")
+    svc2.load_manifest()
+    svc2.prepare_all()
+    after = svc2.artifact_path("linux-amd64", "sbs").stat().st_mtime_ns
+    assert after != before, "SBS_CLI_PREPARE=always did not re-prepare"
+
+
+def test_prepare_never_does_nothing(tmp_path, prebuilt_dir):
+    svc = _service(tmp_path, prebuilt_dir, prepare="never")
+    svc.prepare_all()
+    assert not svc.artifact_path("linux-amd64", "sbs").exists()
+    assert svc.resolve("linux-amd64").state == STATE_UNAVAILABLE
+
+
+def test_download_disabled_does_nothing(tmp_path, prebuilt_dir):
+    svc = _service(tmp_path, prebuilt_dir, enabled=False)
+    svc.prepare_all()
+    assert not svc.dist_dir.exists() or not any(svc.dist_dir.rglob("sbs"))
+
+
+def test_stamp_depends_on_every_documented_input(tmp_path, prebuilt_dir):
+    """§5.3: the key is over (url, commit, engine, platform, mechanism)."""
+    svc = _service(tmp_path, prebuilt_dir)
+    svc._engine_version = "2.3.0"
+    base = svc.stamp_key("linux-amd64", MECHANISM_PATCH)
+
+    assert svc.stamp_key("linux-arm64", MECHANISM_PATCH) != base, "platform ignored"
+    assert svc.stamp_key("linux-amd64", MECHANISM_REBUILD) != base, "mechanism ignored"
+
+    other_url = _service(tmp_path, prebuilt_dir, public_url="http://z.test")
+    other_url._engine_version = "2.3.0"
+    assert other_url.stamp_key("linux-amd64", MECHANISM_PATCH) != base, "url ignored"
+
+    other_engine = _service(tmp_path, prebuilt_dir)
+    other_engine._engine_version = "2.4.0"
+    assert other_engine.stamp_key("linux-amd64", MECHANISM_PATCH) != base, (
+        "engine version ignored"
+    )
+
+
+def test_manifest_for_a_different_public_url_is_not_adopted(tmp_path, prebuilt_dir):
+    """Otherwise a changed URL would advertise stale artifacts as ready."""
+    svc = _service(tmp_path, prebuilt_dir)
+    svc.prepare_all()
+
+    svc2 = _service(tmp_path, prebuilt_dir, public_url="http://different.test")
+    svc2.load_manifest()
+    assert svc2.resolve("linux-amd64").state != STATE_READY, (
+        "a manifest prepared for another URL was adopted; its binaries point "
+        "somewhere else"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Archives (§5.5.2)
+# --------------------------------------------------------------------------- #
+
+
+def test_tar_archive_contains_binary_licence_and_preserves_mode(
+    tmp_path, prebuilt_dir
+):
+    svc = _service(tmp_path, prebuilt_dir)
+    svc.prepare_all()
+
+    archive = svc.archive_path("linux-amd64")
+    assert archive.is_file()
+    with tarfile.open(archive) as tf:
+        names = tf.getnames()
+        assert "sbs" in names
+        # We redistribute an MIT binary, so its licence travels with it.
+        assert "LICENSE.restish" in names
+        # The executable bit is the whole reason `archive` is the browser default.
+        assert tf.getmember("sbs").mode & 0o111, "the archived binary is not executable"
+
+    entry = svc.resolve("linux-amd64")
+    assert entry.archive_sha256 == hashlib.sha256(archive.read_bytes()).hexdigest()
+    assert entry.archive_size == archive.stat().st_size
+
+
+def test_windows_archive_is_a_zip(tmp_path, prebuilt_dir):
+    svc = _service(tmp_path, prebuilt_dir)
+    svc.prepare_all()
+
+    archive = svc.archive_path("windows-amd64")
+    assert archive.name.endswith(".zip")
+    with zipfile.ZipFile(archive) as zf:
+        assert "sbs.exe" in zf.namelist()
+        assert "LICENSE.restish" in zf.namelist()
+
+
+def test_sidecar_platform_archive_carries_the_url_file(tmp_path, prebuilt_dir):
+    """The sidecar mechanism's binary has no baked URL, so the file must ship."""
+    svc = _service(tmp_path, prebuilt_dir, build_mode="patch")
+    svc.prepare_all()
+
+    with tarfile.open(svc.archive_path("darwin-arm64")) as tf:
+        assert "sbs.url" in tf.getnames(), (
+            "the darwin-arm64 archive omits sbs.url, so a download would point "
+            "at the compile-time default"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Manifest persistence and helpers
+# --------------------------------------------------------------------------- #
+
+
+def test_manifest_is_written_and_reloadable(tmp_path, prebuilt_dir):
+    svc = _service(tmp_path, prebuilt_dir)
+    svc.prepare_all()
+
+    path = svc.manifest_path()
+    assert path.is_file()
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    # The stamp is persisted but must not be in the served document.
+    assert "stamp" in doc["platforms"]["linux-amd64"]
+    assert "stamp" not in svc.manifest()["platforms"]["linux-amd64"]
+
+    # No temp files left behind.
+    assert not list(svc.dist_dir.glob(".manifest-*"))
+
+
+def test_load_manifest_tolerates_garbage(tmp_path, prebuilt_dir):
+    """The dist dir is a cache; a broken manifest means "nothing prepared"."""
+    svc = _service(tmp_path, prebuilt_dir)
+    svc.dist_dir.mkdir(parents=True)
+    svc.manifest_path().write_text("{not json at all", encoding="utf-8")
+    svc.load_manifest()  # must not raise
+    assert svc.resolve("linux-amd64").state == STATE_UNAVAILABLE
+
+
+def test_mark_preparing_only_touches_unready_platforms(tmp_path, prebuilt_dir):
+    svc = _service(tmp_path, prebuilt_dir)
+    svc.prepare_all()
+    svc._platforms["linux-arm64"].state = STATE_UNAVAILABLE
+
+    svc.mark_preparing()
+    # A ready platform stays downloadable while others are being prepared.
+    assert svc.resolve("linux-amd64").state == STATE_READY
+    assert svc.resolve("linux-arm64").state == STATE_PREPARING
+
+
+def test_preparing_entry_advertises_retry_after(tmp_path, prebuilt_dir):
+    svc = _service(tmp_path, prebuilt_dir)
+    svc.mark_preparing()
+    entry = svc.manifest()["platforms"]["linux-amd64"]
+    assert entry["state"] == STATE_PREPARING
+    assert entry["retry_after"] == 10
+
+
+def test_artifact_checksums_lists_only_ready_platforms(tmp_path, prebuilt_dir):
+    svc = _service(tmp_path, prebuilt_dir)
+    svc.prepare_all()
+    svc._platforms["windows-amd64"].state = STATE_UNAVAILABLE
+
+    sums = artifact_checksums(svc)
+    assert set(sums) == set(ALL_PLATFORMS) - {"windows-amd64"}
+    assert all(re.fullmatch(r"[0-9a-f]{64}", v) for v in sums.values())
+
+
+# --------------------------------------------------------------------------- #
+# Path safety — §8.2 #14 / B13
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        "../../etc/passwd",
+        "..",
+        ".",
+        "linux-amd64/../../../etc",
+        "",
+        "/etc/passwd",
+        "linux-amd64;rm -rf /",
+    ],
+)
+def test_artifact_path_rejects_anything_outside_the_enum(tmp_path, prebuilt_dir, hostile):
+    """`platform` never reaches a path join without passing the closed enum."""
+    svc = _service(tmp_path, prebuilt_dir)
+    with pytest.raises(ValueError):
+        svc.artifact_path(hostile)
+
+
+def test_artifact_path_rejects_an_unsafe_filename(tmp_path, prebuilt_dir):
+    """Belt and braces: filename comes from the manifest, which could be edited."""
+    svc = _service(tmp_path, prebuilt_dir)
+    for bad in ("../sbs", "a/b", "..", ""):
+        if bad == "":
+            continue  # empty falls back to the default name, which is safe
+        with pytest.raises(ValueError):
+            svc.artifact_path("linux-amd64", bad)
+
+
+# --------------------------------------------------------------------------- #
+# Settings (§6)
+# --------------------------------------------------------------------------- #
+
+
+def test_settings_defaults(monkeypatch):
+    for var in (
+        "SBS_CLI_DOWNLOAD",
+        "SBS_CLI_PREPARE",
+        "SBS_CLI_BUILD_MODE",
+        "SBS_CLI_DIST_DIR",
+        "SBS_CLI_ARTIFACTS_DIR",
+        "SBS_CLI_ARTIFACTS_URL",
+        "SBS_CLI_MAX_CONCURRENT_DOWNLOADS",
+        "SBS_BASE_DIR",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    s = CliArtifactSettings.from_env()
+    assert s.enabled is True
+    assert s.prepare == "auto"
+    # `patch` by default: no compiler in production (§5.4 option A).
+    assert s.build_mode == "patch"
+    assert s.artifacts_dir == Path("/app/cli-prebuilt")
+    assert s.artifacts_url is None
+    assert s.max_concurrent_downloads == 8
+
+
+@pytest.mark.parametrize("value", ["off", "OFF", "false", "0", "no"])
+def test_download_can_be_switched_off(monkeypatch, value):
+    """The documented rollback for the whole feature (§9)."""
+    monkeypatch.setenv("SBS_CLI_DOWNLOAD", value)
+    assert CliArtifactSettings.from_env().enabled is False
+
+
+@pytest.mark.parametrize("value", ["on", "true", "1", "yes", "anything-else"])
+def test_download_stays_on_for_other_values(monkeypatch, value):
+    monkeypatch.setenv("SBS_CLI_DOWNLOAD", value)
+    assert CliArtifactSettings.from_env().enabled is True
+
+
+def test_dist_dir_defaults_under_base_dir(monkeypatch, tmp_path):
+    monkeypatch.delenv("SBS_CLI_DIST_DIR", raising=False)
+    monkeypatch.setenv("SBS_BASE_DIR", str(tmp_path))
+    assert CliArtifactSettings.from_env().dist_dir == tmp_path / "cli-dist"
+
+
+def test_invalid_choices_fall_back_with_a_warning(monkeypatch, caplog):
+    monkeypatch.setenv("SBS_CLI_PREPARE", "sometimes")
+    monkeypatch.setenv("SBS_CLI_BUILD_MODE", "magic")
+    monkeypatch.setenv("SBS_CLI_MAX_CONCURRENT_DOWNLOADS", "not-a-number")
+    with caplog.at_level("WARNING"):
+        s = CliArtifactSettings.from_env()
+    # A typo must not silently disable preparation or pick a surprising mode.
+    assert s.prepare == "auto"
+    assert s.build_mode == "patch"
+    assert s.max_concurrent_downloads == 8
+    assert "sometimes" in caplog.text
+    assert "magic" in caplog.text
+
+
+def test_zero_concurrency_is_rejected(monkeypatch):
+    """A cap of 0 would refuse every download; that is never what was meant."""
+    monkeypatch.setenv("SBS_CLI_MAX_CONCURRENT_DOWNLOADS", "0")
+    assert CliArtifactSettings.from_env().max_concurrent_downloads == 8
+
+
+# --------------------------------------------------------------------------- #
+# Archive determinism (§5.3's replica-agreement guarantee)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("platform", ["linux-amd64", "windows-amd64"])
+def test_archives_are_byte_identical_across_preparations(tmp_path, prebuilt_dir, platform):
+    """Two replicas preparing the same inputs must produce the same archive.
+
+    §5.3 promises the content-hash ETag makes independent copies agree. That holds
+    for the raw binary because patching is deterministic, but an archive is not
+    deterministic by default: gzip embeds an mtime and tar embeds each entry's
+    mtime, uid/gid and uname/gname.
+
+    The consequence is sharper than "hashes differ". A client can read the
+    manifest from replica A and fetch the archive from replica B, and both the
+    install script and `sbs download-cli` are written to REFUSE on a checksum
+    mismatch — so the user sees an intermittent "checksum mismatch, refusing to
+    install" that is indistinguishable from tampering. This was observed for real:
+    restarting the store changed every archive_sha256.
+    """
+    first = _service(tmp_path / "a", prebuilt_dir)
+    first.prepare_all()
+    first_bytes = first.archive_path(platform).read_bytes()
+
+    second = _service(tmp_path / "b", prebuilt_dir)
+    second.prepare_all()
+    second_bytes = second.archive_path(platform).read_bytes()
+
+    assert first_bytes == second_bytes, (
+        f"the {platform} archive is not reproducible, so two replicas would "
+        f"publish different archive_sha256 values for identical inputs"
+    )
+    assert (
+        first.resolve(platform).archive_sha256
+        == second.resolve(platform).archive_sha256
+    )
+
+
+def test_zip_archive_preserves_the_executable_bit(tmp_path, prebuilt_dir):
+    """Pinning ZipInfo by hand must not lose the POSIX mode.
+
+    `ZipInfo(...)` starts with external_attr = 0, so unzipping on a POSIX host
+    would produce a non-executable binary — the very problem `format=archive`
+    exists to avoid.
+    """
+    svc = _service(tmp_path, prebuilt_dir)
+    svc.prepare_all()
+
+    with zipfile.ZipFile(svc.archive_path("windows-amd64")) as zf:
+        info = zf.getinfo("sbs.exe")
+        mode = (info.external_attr >> 16) & 0o777
+        assert mode & 0o111, f"the archived sbs.exe has mode {mode:o}, not executable"
+
+
+def test_tar_entries_carry_no_server_identity(tmp_path, prebuilt_dir):
+    """The server's uid/gid/username are irrelevant to whoever extracts this."""
+    svc = _service(tmp_path, prebuilt_dir)
+    svc.prepare_all()
+
+    with tarfile.open(svc.archive_path("linux-amd64")) as tf:
+        for member in tf.getmembers():
+            assert member.uid == 0 and member.gid == 0, member.name
+            assert member.uname == "" and member.gname == "", member.name
+            assert member.mtime == 0, member.name

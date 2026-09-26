@@ -135,8 +135,8 @@ def test_changelog_names_the_breaking_identifier(changelog):
     """§9.1: a deployer must be able to search for the thing that broke.
 
     ``test_changelog.py`` guards the file's structure; this guards *this*
-    migration's searchable identifier, the way that file does for `:latest-full`
-    and `ENABLE_UI`.
+    migration's searchable identifier, the way that file does for the
+    ``:latest-full`` image tag and the removed UI switch.
     """
     assert "sbs console script" in changelog, (
         "the CHANGELOG does not contain the identifier 'sbs console script'. "
@@ -150,3 +150,64 @@ def test_changelog_names_the_breaking_identifier(changelog):
         "name the flag, so a sibling asset in the shared subtree can tell whether "
         "this affects them"
     )
+
+
+# --------------------------------------------------------------------------- #
+# The configuration surface (§6) is documented where operators look
+# --------------------------------------------------------------------------- #
+
+CONFIG_DOC = REPO_ROOT / "docs" / "config-env-vars.md"
+CONTAINER_ENV = REPO_ROOT / "container.env"
+
+# Every variable §6 introduces. A knob that exists in code but nowhere in the
+# docs is a knob nobody can find, and the deployment defaults file is where an
+# operator looks first.
+CLI_ENV_VARS = (
+    "SBS_CLI_DOWNLOAD",
+    "SBS_CLI_PREPARE",
+    "SBS_CLI_BUILD_MODE",
+    "SBS_CLI_DIST_DIR",
+    "SBS_CLI_ARTIFACTS_DIR",
+    "SBS_CLI_ARTIFACTS_URL",
+    "SBS_CLI_MAX_CONCURRENT_DOWNLOADS",
+    # Client-side.
+    "SBS_URL",
+    "SBS_TOKEN",
+)
+
+
+@pytest.mark.parametrize("var", CLI_ENV_VARS)
+def test_config_doc_documents_every_cli_env_var(var):
+    text = CONFIG_DOC.read_text(encoding="utf-8")
+    assert var in text, (
+        f"{var} is read by the code but absent from docs/config-env-vars.md"
+    )
+
+
+def test_config_doc_explains_the_unauthenticated_floor():
+    """An operator must be able to discover that they cannot close /cli/*."""
+    text = CONFIG_DOC.read_text(encoding="utf-8")
+    assert "unauthenticated in every" in text.lower(), (
+        "docs/config-env-vars.md does not say that /cli/* is unauthenticated in "
+        "every mode — a permanently public surface has to be documented as such"
+    )
+    assert "SBS_CLI_DOWNLOAD=off" in text, (
+        "give the operator the way to remove the surface entirely"
+    )
+
+
+def test_config_doc_says_public_url_is_what_gets_baked():
+    text = CONFIG_DOC.read_text(encoding="utf-8")
+    assert "SBS_PUBLIC_URL" in text
+    # Without this connection spelled out, an operator has no reason to set it
+    # and their users get binaries needing `sbs connect`.
+    assert "baked" in text.lower()
+
+
+@pytest.mark.parametrize(
+    "var", ("SBS_PUBLIC_URL", "SBS_CLI_DOWNLOAD", "SBS_CLI_BUILD_MODE")
+)
+def test_container_env_carries_the_deployment_defaults(var):
+    """container.env is baked to /app/.env, so it is the deployment's own doc."""
+    text = CONTAINER_ENV.read_text(encoding="utf-8")
+    assert var in text, f"{var} is not mentioned in container.env"

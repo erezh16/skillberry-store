@@ -83,6 +83,34 @@ RESTISH_SUPPORT_COMMANDS = frozenset(
     {"auth", "cache", "completion", "config", "doctor", "version"}
 )
 
+# Operations the CLI deliberately shadows with a local verb, and why. Every entry
+# is a case where the generated operation technically exists but is the *wrong*
+# thing to run, so shadowing is the feature rather than the bug.
+#
+# Each of these is a decision, not an oversight — which is why they are listed
+# here with reasons rather than simply excluded from the check.
+INTENTIONAL_SHADOWS = frozenset(
+    {
+        # POST /auth/login. The generated operation would take the credentials as
+        # a JSON request body, which means a password on the command line and in
+        # the shell history. The local verb prompts instead — the same reason the
+        # Python shim intercepted it (§4.3).
+        "login",
+        # POST /auth/logout. The generated operation revokes server-side but
+        # leaves the token cached locally, so the next command silently signs the
+        # user back in. The local verb does both, in that order.
+        "logout",
+        # GET /cli/download. The generated operation would stream ~32 MB of
+        # octet-stream to stdout. The local verb resolves the running platform
+        # exactly (runtime.GOOS/GOARCH), verifies the sha256 against the manifest
+        # before writing, sets the executable bit, and renames atomically — and it
+        # works when the store's spec is unreachable, which is when you need it
+        # (§5.8). The endpoint keeps the name because it describes the endpoint,
+        # and other clients (the generated SDK, plain restish) still use it.
+        "download-cli",
+    }
+)
+
 
 def test_no_cli_name_collides_with_support_namespace():
     """An operation named like the support namespace makes the binary refuse to start."""
@@ -102,32 +130,49 @@ def test_no_cli_name_is_silently_shadowed_by_a_local_verb():
     assert verbs, "expected localVerb to claim at least one verb"
 
     cli_names = _cli_names_from_source()
-    # `login` and `logout` are deliberately shadowed: they exist as generated
-    # operations (POST /auth/login, POST /auth/logout) but are dispatched as the
-    # thin verbs of §4.3, because typing a JSON body to log in — with the
-    # password on argv — is exactly what the shim intercepted them to avoid.
-    intentional = {"login", "logout"}
-    shadowed = sorted((cli_names & verbs) - intentional)
+    shadowed = sorted((cli_names & verbs) - INTENTIONAL_SHADOWS)
     assert not shadowed, (
         f"x-cli-name {shadowed} is shadowed by a local verb in cli/go/verbs.go, "
         f"so typing it would never reach the store and nothing would report it. "
-        f"Rename the endpoint, or remove the verb."
+        f"Rename the endpoint, remove the verb, or — if the shadow is deliberate "
+        f"— add it to INTENTIONAL_SHADOWS with the reason."
     )
 
 
-def test_login_and_logout_are_still_the_intentionally_shadowed_pair():
-    """Pin the exception above, so it cannot quietly grow.
+def test_every_intentional_shadow_still_shadows_something():
+    """Keep the waiver list honest in both directions.
 
-    If a future endpoint is added whose ``x-cli-name`` happens to match a verb,
-    the previous test must fail rather than be waived by an exception list that
-    someone extended without thinking about it.
+    The list above waives a real check, so a stale entry is a hole: it would go
+    on silencing the guard for a name that no longer needs it, and the next
+    genuine collision on that name would pass unnoticed.
     """
     cli_names = _cli_names_from_source()
-    for name in ("login", "logout"):
-        assert name in cli_names, (
-            f"{name!r} is no longer a generated operation, so the CLI no longer "
-            f"needs to shadow it; drop it from the `intentional` set and from "
-            f"cli/go/login.go."
+    stale = sorted(INTENTIONAL_SHADOWS - cli_names)
+    assert not stale, (
+        f"{stale} are listed as intentional shadows but are no longer generated "
+        f"operations. Drop them from INTENTIONAL_SHADOWS — and check whether the "
+        f"corresponding local verb in cli/go/ is still wanted."
+    )
+
+
+def test_every_intentional_shadow_is_actually_implemented_locally():
+    """A waived name with no local verb means the operation is simply gone.
+
+    If `download-cli` were waived here but never implemented in Go, `sbs
+    download-cli` would be an unknown command — the waiver would be hiding a
+    missing feature rather than documenting a deliberate override.
+    """
+    verbs = _local_verbs()
+    go_sources = "\n".join(
+        path.read_text(encoding="utf-8") for path in CLI_GO_DIR.glob("*.go")
+    )
+    for name in sorted(INTENTIONAL_SHADOWS):
+        # Either claimed by localVerb (connect/download-cli/self-update) or
+        # dispatched through the engine in main.go's switch (login/logout).
+        assert name in verbs or f'case "{name}":' in go_sources, (
+            f"{name!r} is waived as an intentional shadow but no local verb "
+            f"handles it, so typing it would reach neither the store nor a local "
+            f"implementation."
         )
 
 

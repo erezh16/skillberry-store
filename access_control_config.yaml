@@ -53,6 +53,17 @@ unauthenticated_paths:
   # /pub/*/.well-known/* is inexpressible, so /pub/ MUST remain a dedicated
   # prefix with nothing else ever mounted under it (§5.10 #1).
   - GET /pub/*
+  # CLI download surface (docs/design/new_cli.md §5.5). Unauthenticated by
+  # construction and in every mode: a browser, `curl`, CI or a freshly
+  # downloaded binary has no token to offer, and a user who cannot sign in yet
+  # is exactly the user who needs the CLI. It serves no tenant data, no config
+  # and no login message, and accepts no request body (§7.1).
+  # These are also enforced by a mandatory floor in the loader
+  # (`_ALWAYS_UNAUTH_PATHS`), so removing them here does not close them — they
+  # are listed so this file stays a complete description of the public surface.
+  # HEAD is listed alongside GET because /cli/download serves both.
+  - GET /cli*
+  - HEAD /cli*
 
 # --- Mode-specific: standalone only -------------------------------------
 standalone:

@@ -302,7 +302,80 @@ _DEFAULT_UNAUTH_PATHS = [
     # like /pub/*/.well-known/* is inexpressible, so /pub/ MUST remain a
     # dedicated prefix with nothing else ever mounted under it (§5.10 #1).
     "GET /pub/*",
+    # CLI distribution (docs/design/new_cli.md §5.5). Also in the mandatory
+    # floor below, so removing it here does not close it — it is listed so the
+    # default list stays a complete description of the public surface, and so a
+    # default-config deployment logs no floor widening on every boot.
+    "GET /cli*",
+    "HEAD /cli*",
 ]
+
+# --------------------------------------------------------------------------- #
+# The mandatory unauthenticated floor
+# --------------------------------------------------------------------------- #
+# Paths that stay reachable without a session in EVERY mode, merged in
+# regardless of what the operator's config file says
+# (docs/design/new_cli.md §5.5.3, D11, B8).
+#
+# This exists because `unauthenticated_paths` in the config file *replaces*
+# these defaults rather than extending them (see the loader below). That is a
+# footgun with two separate consequences:
+#
+#  1. The CLI download endpoints have to be unauthenticated "independently of
+#     ACL mode" — a user who cannot sign in yet is exactly the user who needs
+#     the CLI, and a browser, `curl` or a fresh binary has no token to offer.
+#     Adding them to _DEFAULT_UNAUTH_PATHS alone would not achieve that: any
+#     operator with their own list (as access_control_config.yaml.standalone
+#     has) would still authenticate /cli/*.
+#
+#  2. It is already broken for existing deployments. An operator who wrote
+#     their own list silently lost /health, /health/ready, /openapi.json and
+#     /docs unless they happened to re-list all of them — so liveness probes
+#     and the API docs started demanding a bearer token, with nothing in the
+#     boot log to say why.
+#
+# Keep this list minimal and justifiable: every entry is a permanent hole that
+# an operator cannot close. Each one here is either a probe that must answer
+# before anyone can authenticate, the authentication endpoints themselves, or
+# the CLI download surface, which serves no tenant data (§7.1).
+#
+# HEAD is listed alongside GET for /cli* because the download route serves both
+# and the RBAC audit requires every method on a route to be allow-listed — the
+# same reason /ui lists HEAD.
+_ALWAYS_UNAUTH_PATHS = [
+    # Liveness and readiness: an orchestrator has no credentials, and a probe
+    # that 401s takes the deployment down.
+    "GET /health",
+    "GET /health/ready",
+    # You cannot authenticate if the authentication endpoints need a session.
+    # logout and whoami self-resolve the bearer from the request (§7.2/§10.4);
+    # whoami is also how a client discovers that auth is disabled at all.
+    "POST /auth/login",
+    "POST /auth/logout",
+    "GET /auth/whoami",
+    # The CLI download surface (docs/design/new_cli.md §5.5). No tenant data, no
+    # config, no login message, no request body accepted.
+    "GET /cli*",
+    "HEAD /cli*",
+]
+
+
+def _merge_unauth_paths(
+    floor: List[str], configured: List[str]
+) -> tuple[List[str], List[str]]:
+    """Merge the mandatory floor into the effective allow-list.
+
+    Returns ``(merged, added)`` where ``added`` is the subset of the floor that
+    the configured list did not already cover. The caller logs ``added`` so a
+    widening of the public surface is never silent — an operator reading their
+    own config file must be able to find out that it is not the whole story.
+
+    Order is preserved and the configured entries come first, so the file still
+    reads as the primary description of the public surface.
+    """
+    seen = set(configured)
+    added = [entry for entry in floor if entry not in seen]
+    return configured + added, added
 
 
 def _resolve_config_path(path: Optional[str]) -> str:
@@ -368,9 +441,16 @@ def load_config(path: Optional[str] = None) -> AccessControlConfig:
             "(mode=disabled)",
             cfg_path,
         )
+        # The floor is merged here too. It is redundant today — the defaults
+        # already cover it — but a future edit to _DEFAULT_UNAUTH_PATHS must not
+        # be able to drop the floor on the no-config path while leaving it
+        # intact on the with-config one.
+        merged, _ = _merge_unauth_paths(
+            _ALWAYS_UNAUTH_PATHS, list(_DEFAULT_UNAUTH_PATHS)
+        )
         return AccessControlConfig(
             mode="disabled",
-            unauthenticated_paths=list(_DEFAULT_UNAUTH_PATHS),
+            unauthenticated_paths=merged,
         )
 
     try:
@@ -399,7 +479,25 @@ def load_config(path: Optional[str] = None) -> AccessControlConfig:
             f"Unknown access-control mode '{mode}' (valid: {sorted(VALID_MODES)})"
         )
 
-    unauth_paths = list(raw.get("unauthenticated_paths") or _DEFAULT_UNAUTH_PATHS)
+    # An operator's list REPLACES the defaults (it does not extend them), which
+    # is long-standing behaviour and stays as it is — an operator who writes an
+    # explicit list means it. But the mandatory floor is merged in on top
+    # regardless, and anything it had to add is named in the log so the widening
+    # is never silent. See _ALWAYS_UNAUTH_PATHS for why.
+    configured = raw.get("unauthenticated_paths")
+    unauth_paths, floor_added = _merge_unauth_paths(
+        _ALWAYS_UNAUTH_PATHS, list(configured or _DEFAULT_UNAUTH_PATHS)
+    )
+    if floor_added:
+        logger.info(
+            "Access-control: %d path pattern(s) added from the mandatory "
+            "unauthenticated floor because %s does not list them: %s. These stay "
+            "reachable without a session in every mode (liveness probes, the "
+            "auth endpoints, and the CLI download surface).",
+            len(floor_added),
+            cfg_path if configured else "the built-in default list",
+            ", ".join(floor_added),
+        )
     npx_publish = _coerce_npx_publish(raw.get("npx_publish"), cfg_path)
 
     standalone = raw.get("standalone") or {}
