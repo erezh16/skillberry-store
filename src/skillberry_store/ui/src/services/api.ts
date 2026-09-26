@@ -13,6 +13,7 @@ import type {
   Plugin,
   PluginActionResult,
 } from '@/types';
+import type { CliManifest } from '@/types/cli';
 
 const API_BASE = '';
 
@@ -689,6 +690,33 @@ export const pluginsApi = {
     });
     return handleResponse<PluginActionResult>(response);
   },
+};
+
+/**
+ * The CLI download surface (docs/design/new_cli.md §5.5).
+ *
+ * No credentials are sent, deliberately: these endpoints are unauthenticated in
+ * every access-control mode, and the download link is offered on the sign-in
+ * screen — where no session exists yet. `fetch` here must therefore work exactly
+ * the same before and after login.
+ */
+export const cliApi = {
+  getManifest: async (): Promise<CliManifest> => {
+    const response = await fetch(`${API_BASE}/cli/manifest`);
+    return handleResponse<CliManifest>(response);
+  },
+
+  /**
+   * Absolute URL for a download link.
+   *
+   * The manifest carries *relative* URLs so it stays correct behind any path
+   * prefix; this resolves one against the page's own origin. Returned as a
+   * string for a plain `<a href download>` rather than fetched into a blob: the
+   * browser handles a 32 MB transfer (progress, resume, disk streaming) far
+   * better than JavaScript can, and a blob would buffer it all in memory.
+   */
+  downloadUrl: (relativeUrl: string): string =>
+    new URL(relativeUrl, window.location.origin).toString(),
 };
 
 export { ApiError };

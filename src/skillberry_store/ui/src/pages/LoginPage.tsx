@@ -8,6 +8,7 @@ import {
   Button,
   Card,
   CardBody,
+  CardFooter,
   CardTitle,
   Form,
   FormGroup,
@@ -16,7 +17,9 @@ import {
   Stack,
   StackItem,
 } from '@patternfly/react-core';
+import { DownloadIcon } from '@patternfly/react-icons';
 import { useAuth } from '@/contexts/AuthContext';
+import { CliDownloadModal } from '@/components/CliDownloadModal';
 import { LoginBanner } from '@/components/LoginBanner';
 import { readBannerFromDocument } from '@/types/loginBanner';
 
@@ -28,6 +31,7 @@ export function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [isCliModalOpen, setIsCliModalOpen] = useState(false);
   // Operator-configured login message, injected into index.html by the server
   // (see §6 of docs/design/login-info.md). Read once in a state initializer:
   // the DOM value is fixed for the page's lifetime because the config is only
@@ -152,7 +156,29 @@ export function LoginPage() {
             </Stack>
           </Form>
         </CardBody>
+        {/* Below CardBody, so it sits beneath the sign-in form AND beneath any
+            LoginBanner — an operator's message stays the first thing read.
+
+            Offered here deliberately (docs/design/new_cli.md §5.9): a user who
+            cannot sign in yet is exactly the user who wants the CLI, and the
+            /cli/* endpoints are unauthenticated by construction, so the modal
+            works pre-session with no special case. In `mode: disabled` there is
+            no login screen at all and nothing here renders. */}
+        <CardFooter>
+          <Button
+            variant="link"
+            isInline
+            icon={<DownloadIcon />}
+            onClick={() => setIsCliModalOpen(true)}
+          >
+            Download the sbs CLI
+          </Button>
+        </CardFooter>
       </Card>
+      <CliDownloadModal
+        isOpen={isCliModalOpen}
+        onClose={() => setIsCliModalOpen(false)}
+      />
     </Bullseye>
   );
 }
