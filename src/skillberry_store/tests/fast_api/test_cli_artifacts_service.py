@@ -769,6 +769,16 @@ def test_dist_dir_never_defaults_into_the_working_directory(monkeypatch):
         "dist_dir should use the store's own base-directory resolution"
     )
 
+    # The dataclass default is a separate code path from from_env, and it was the
+    # one that actually leaked: a `cli-dist/` with a 0600 manifest.json appeared
+    # in the working tree during a full test run even after from_env was fixed.
+    bare = CliArtifactSettings().dist_dir
+    assert bare.is_absolute(), f"the dataclass default {bare} is relative"
+    assert bare == dist, (
+        "the dataclass default and from_env must resolve identically, or which "
+        "one a caller used decides where the cache lands"
+    )
+
 
 def test_invalid_choices_fall_back_with_a_warning(monkeypatch, caplog):
     monkeypatch.setenv("SBS_CLI_PREPARE", "sometimes")

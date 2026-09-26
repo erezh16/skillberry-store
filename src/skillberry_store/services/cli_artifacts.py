@@ -230,6 +230,22 @@ class PlatformArtifact:
         return entry
 
 
+def _default_dist_dir() -> str:
+    """Where prepared artifacts go when nothing overrides it.
+
+    Delegates to the store's own base-directory resolution
+    (``SBS_BASE_DIR`` → the system temp dir), so this cache lands beside the rest
+    of the store's state rather than in the process's working directory.
+
+    Imported lazily because ``tools.configure`` runs ``load_dotenv()`` at import
+    time; doing that from a module-level import here would pull dotenv into every
+    importer of this module, including tests that only want the pure functions.
+    """
+    from skillberry_store.tools.configure import _default_sbs_dir
+
+    return _default_sbs_dir("cli-dist")
+
+
 @dataclass
 class CliArtifactSettings:
     """The §6 configuration surface for this service."""
@@ -237,7 +253,13 @@ class CliArtifactSettings:
     enabled: bool = True
     prepare: str = "auto"  # auto | always | never
     build_mode: str = "patch"  # patch | rebuild | auto
-    dist_dir: Path = field(default_factory=lambda: Path("cli-dist"))
+    # Absolute, via the store's own base-directory helper. A relative default
+    # here (`Path("cli-dist")`) writes the prepared-artifact cache into whatever
+    # the current working directory happens to be — which, for anything started
+    # from a checkout, is the repository root. That was observed: a `cli-dist/`
+    # directory with a 0600 manifest.json appeared in the working tree during a
+    # test run. `from_env` resolves the same way, so the two cannot disagree.
+    dist_dir: Path = field(default_factory=lambda: Path(_default_dist_dir()))
     artifacts_dir: Path = field(default_factory=lambda: Path("/app/cli-prebuilt"))
     artifacts_url: Optional[str] = None
     max_concurrent_downloads: int = 8
@@ -252,17 +274,11 @@ class CliArtifactSettings:
         derivation that reads more clearly as a line of code than as a pydantic
         validator.
         """
-        if base_dir:
-            dist_default = Path(base_dir) / "cli-dist"
-        else:
-            # Delegated to the store's own base-directory helper rather than
-            # defaulting to ".". An earlier version did the latter and dropped a
-            # `cli-dist/` cache into the repository root on every test run and
-            # every dev server start — in a checkout, not a container. This is a
-            # cache, and it belongs wherever the rest of the store's state does.
-            from skillberry_store.tools.configure import _default_sbs_dir
-
-            dist_default = Path(_default_sbs_dir("cli-dist"))
+        # One resolution shared with the dataclass default, so the two cannot
+        # disagree. See _default_dist_dir for why it is not relative.
+        dist_default = (
+            Path(base_dir) / "cli-dist" if base_dir else Path(_default_dist_dir())
+        )
         return cls(
             enabled=_env_flag("SBS_CLI_DOWNLOAD", default=True),
             prepare=_env_choice("SBS_CLI_PREPARE", ("auto", "always", "never"), "auto"),
