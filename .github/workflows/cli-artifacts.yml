@@ -125,9 +125,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # darwin-amd64 needs a genuine x86_64 macOS host, which since the
+          # macos-13 retirement (2025-12-04) means macos-15-intel -- the arm64
+          # images would exercise Rosetta instead of the real target. That label is
+          # itself scheduled for retirement in August 2027; a job that queues
+          # forever rather than failing is the symptom of it going away.
           - { platform: linux-amd64, runner: ubuntu-latest, exe: sbs }
           - { platform: linux-arm64, runner: ubuntu-24.04-arm, exe: sbs }
-          - { platform: darwin-amd64, runner: macos-13, exe: sbs }
+          - { platform: darwin-amd64, runner: macos-15-intel, exe: sbs }
           - { platform: darwin-arm64, runner: macos-14, exe: sbs }
           - { platform: windows-amd64, runner: windows-latest, exe: sbs.exe }
     steps:
@@ -259,7 +264,7 @@ jobs:
         include:
           - { platform: linux-amd64, runner: ubuntu-latest, exe: sbs, expect: patch }
           - { platform: linux-arm64, runner: ubuntu-24.04-arm, exe: sbs, expect: patch }
-          - { platform: darwin-amd64, runner: macos-13, exe: sbs, expect: unknown }
+          - { platform: darwin-amd64, runner: macos-15-intel, exe: sbs, expect: unknown }
           - { platform: darwin-arm64, runner: macos-14, exe: sbs, expect: sidecar }
           - { platform: windows-amd64, runner: windows-latest, exe: sbs.exe, expect: patch }
     steps:
