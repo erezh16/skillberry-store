@@ -19,10 +19,11 @@ package cli
 // client/go/build.sh, .mk/dev.mk, services/cli_artifacts.py and the
 // cli-artifacts workflow; they must agree.
 //
-// GOTCHA (§3.4 #1, G8): `-ldflags -X` silently no-ops unless the target
-// variable is a package-level string with a *constant* initializer. The first
-// prototype used `"…" + strings.Repeat("#", 0)` and the flag was ignored —
-// the binary kept its source default and nothing failed loudly. So:
+// GOTCHA (§3.4 #1, G8): `-ldflags -X` silently no-ops unless the target variable
+// is a package-level string with a *constant* initializer. An expression such as
+// `"…" + strings.Repeat("#", 0)` is enough to make the linker ignore the flag
+// without complaining: the binary keeps its source default and nothing fails
+// loudly. So:
 //
 //   - every value here MUST be a plain string literal, never an expression;
 //   - `TestURLSlotIsPatchable` asserts the slot keeps its padded shape, and

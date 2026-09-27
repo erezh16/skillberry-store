@@ -21,6 +21,8 @@ from pathlib import Path
 import pytest
 
 from skillberry_store.services.cli_artifacts import (
+    DIST_DIR,
+    ARTIFACTS_DIR,
     MECHANISM_PATCH,
     MECHANISM_PRISTINE,
     MECHANISM_REBUILD,
@@ -36,7 +38,6 @@ from skillberry_store.services.cli_artifacts import (
     CliArtifactService,
     CliArtifactSettings,
     UnacceptableURL,
-    artifact_checksums,
     patch_url_slot,
     validate_public_url,
 )
@@ -259,13 +260,34 @@ def prebuilt_dir(tmp_path) -> Path:
     return source
 
 
-def _service(tmp_path, prebuilt_dir, *, public_url="http://store.test:8000", **kw):
-    settings = CliArtifactSettings(
+def _service(
+    tmp_path,
+    prebuilt_dir,
+    *,
+    public_url="http://store.test:8000",
+    enabled=True,
+    toolchain=False,
+    cli_commit="gabc123",
+):
+    """A service pointed at a temporary tree.
+
+    ``toolchain=False`` by default, which is both the production default (no
+    compiler in the runtime image) and what keeps these tests fast: with a
+    toolchain present, ``darwin-arm64`` is prepared by a real cross-compile, and
+    tens of seconds per fixture would make the suite unusable. The rebuild path
+    itself is covered by the mechanism-choice tests, which assert on the decision
+    rather than running a compiler.
+    """
+    service = CliArtifactService(
+        CliArtifactSettings(enabled=enabled),
+        public_url=public_url,
+        cli_commit=cli_commit,
         dist_dir=tmp_path / "dist",
         artifacts_dir=prebuilt_dir,
-        **kw,
     )
-    return CliArtifactService(settings, public_url=public_url, cli_commit="gabc123")
+    if not toolchain:
+        service._go_binary = lambda: None  # type: ignore[method-assign]
+    return service
 
 
 # --------------------------------------------------------------------------- #
@@ -285,7 +307,6 @@ def test_prepare_makes_every_platform_ready(tmp_path, prebuilt_dir):
         "name": "restish",
         "version": "2.3.0",
         "license": "MIT",
-        "license_url": "/cli/license",
     }
 
     for platform in ALL_PLATFORMS:
@@ -293,12 +314,10 @@ def test_prepare_makes_every_platform_ready(tmp_path, prebuilt_dir):
         assert entry["state"] == STATE_READY, f"{platform}: {entry}"
         assert entry["sha256"], f"{platform} has no sha256"
         assert entry["size"] > 0
-        # Relative URLs keep the document correct behind any path prefix.
-        assert entry["download_url"].startswith("/cli/download?platform=")
-        assert not entry["download_url"].startswith("http"), (
-            "manifest URLs must be relative (§5.5.1)"
-        )
-        assert entry["archive_url"].startswith("/cli/download?platform=")
+        # The record describes the artifact, not how to reach it: clients learn
+        # an artifact's identity from the download response's headers.
+        assert "download_url" not in entry
+        assert "archive_url" not in entry
 
 
 def test_windows_artifact_keeps_its_exe_extension(tmp_path, prebuilt_dir):
@@ -330,7 +349,7 @@ def test_sha256_is_computed_after_patching(tmp_path, prebuilt_dir):
 
 
 def test_prepared_artifact_carries_the_public_url(tmp_path, prebuilt_dir):
-    svc = _service(tmp_path, prebuilt_dir, build_mode="patch")
+    svc = _service(tmp_path, prebuilt_dir)
     svc.prepare_all()
 
     body = svc.artifact_path("linux-amd64", "sbs").read_bytes()
@@ -344,7 +363,7 @@ def test_darwin_arm64_uses_a_sidecar_without_a_toolchain(tmp_path, prebuilt_dir)
     Patching inside the signed image invalidates the signature and macOS refuses
     to exec it — a failure the user sees as "killed", with no explanation.
     """
-    svc = _service(tmp_path, prebuilt_dir, build_mode="patch")
+    svc = _service(tmp_path, prebuilt_dir)
     svc.prepare_all()
 
     entry = svc.resolve("darwin-arm64")
@@ -388,7 +407,7 @@ def test_artifact_without_a_slot_is_refused_not_served(tmp_path):
     (source / "linux-amd64").mkdir(parents=True)
     (source / "linux-amd64" / "sbs").write_bytes(b"a binary with no slot whatsoever")
 
-    svc = _service(tmp_path, source, build_mode="patch")
+    svc = _service(tmp_path, source)
     svc.prepare_all()
 
     entry = svc.manifest()["platforms"]["linux-amd64"]
@@ -460,9 +479,9 @@ def test_changed_cli_commit_re_prepares(tmp_path, prebuilt_dir):
     svc.prepare_all()
     stamp_before = svc.resolve("linux-amd64").stamp
 
-    svc2 = CliArtifactService(
-        svc.settings, public_url=svc.public_url, cli_commit="gdeadbee"
-    )
+    # Same dist directory, different commit: the stamp is adopted from disk and
+    # must then be invalidated by the commit change.
+    svc2 = _service(tmp_path, prebuilt_dir, cli_commit="gdeadbee")
     svc2.load_manifest()
     assert svc2.resolve("linux-amd64").stamp == stamp_before  # adopted from disk
     svc2.prepare_all()
@@ -499,23 +518,6 @@ def test_missing_artifact_re_prepares(tmp_path, prebuilt_dir):
     assert svc2.artifact_path("linux-amd64", "sbs").is_file()
 
 
-def test_prepare_always_forces_work(tmp_path, prebuilt_dir):
-    svc = _service(tmp_path, prebuilt_dir)
-    svc.prepare_all()
-    before = svc.artifact_path("linux-amd64", "sbs").stat().st_mtime_ns
-
-    svc2 = _service(tmp_path, prebuilt_dir, prepare="always")
-    svc2.load_manifest()
-    svc2.prepare_all()
-    after = svc2.artifact_path("linux-amd64", "sbs").stat().st_mtime_ns
-    assert after != before, "SBS_CLI_PREPARE=always did not re-prepare"
-
-
-def test_prepare_never_does_nothing(tmp_path, prebuilt_dir):
-    svc = _service(tmp_path, prebuilt_dir, prepare="never")
-    svc.prepare_all()
-    assert not svc.artifact_path("linux-amd64", "sbs").exists()
-    assert svc.resolve("linux-amd64").state == STATE_UNAVAILABLE
 
 
 def test_download_disabled_does_nothing(tmp_path, prebuilt_dir):
@@ -596,7 +598,7 @@ def test_windows_archive_is_a_zip(tmp_path, prebuilt_dir):
 
 def test_sidecar_platform_archive_carries_the_url_file(tmp_path, prebuilt_dir):
     """The sidecar mechanism's binary has no baked URL, so the file must ship."""
-    svc = _service(tmp_path, prebuilt_dir, build_mode="patch")
+    svc = _service(tmp_path, prebuilt_dir)
     svc.prepare_all()
 
     with tarfile.open(svc.archive_path("darwin-arm64")) as tf:
@@ -654,14 +656,6 @@ def test_preparing_entry_advertises_retry_after(tmp_path, prebuilt_dir):
     assert entry["retry_after"] == 10
 
 
-def test_artifact_checksums_lists_only_ready_platforms(tmp_path, prebuilt_dir):
-    svc = _service(tmp_path, prebuilt_dir)
-    svc.prepare_all()
-    svc._platforms["windows-amd64"].state = STATE_UNAVAILABLE
-
-    sums = artifact_checksums(svc)
-    assert set(sums) == set(ALL_PLATFORMS) - {"windows-amd64"}
-    assert all(re.fullmatch(r"[0-9a-f]{64}", v) for v in sums.values())
 
 
 # --------------------------------------------------------------------------- #
@@ -699,34 +693,20 @@ def test_artifact_path_rejects_an_unsafe_filename(tmp_path, prebuilt_dir):
 
 
 # --------------------------------------------------------------------------- #
-# Settings (§6)
+# Configuration (§6)
 # --------------------------------------------------------------------------- #
+# One switch. Everything preparing and serving an artifact needs is derived: the
+# directories are fixed beside the CLI source, the injection mechanism follows
+# from the platform and from whether a toolchain is present, and preparation runs
+# exactly when the feature is on.
 
 
-def test_settings_defaults(monkeypatch):
-    for var in (
-        "SBS_CLI_DOWNLOAD",
-        "SBS_CLI_PREPARE",
-        "SBS_CLI_BUILD_MODE",
-        "SBS_CLI_DIST_DIR",
-        "SBS_CLI_ARTIFACTS_DIR",
-        "SBS_CLI_ARTIFACTS_URL",
-        "SBS_CLI_MAX_CONCURRENT_DOWNLOADS",
-        "SBS_BASE_DIR",
-    ):
-        monkeypatch.delenv(var, raising=False)
-
-    s = CliArtifactSettings.from_env()
-    assert s.enabled is True
-    assert s.prepare == "auto"
-    # `patch` by default: no compiler in production (§5.4 option A).
-    assert s.build_mode == "patch"
-    assert s.artifacts_dir == Path("/app/cli-prebuilt")
-    assert s.artifacts_url is None
-    assert s.max_concurrent_downloads == 8
+def test_download_is_on_by_default(monkeypatch):
+    monkeypatch.delenv("SBS_CLI_DOWNLOAD", raising=False)
+    assert CliArtifactSettings.from_env().enabled is True
 
 
-@pytest.mark.parametrize("value", ["off", "OFF", "false", "0", "no"])
+@pytest.mark.parametrize("value", ["off", "OFF", "false", "0", "no", ""])
 def test_download_can_be_switched_off(monkeypatch, value):
     """The documented rollback for the whole feature (§9)."""
     monkeypatch.setenv("SBS_CLI_DOWNLOAD", value)
@@ -739,65 +719,45 @@ def test_download_stays_on_for_other_values(monkeypatch, value):
     assert CliArtifactSettings.from_env().enabled is True
 
 
-def test_dist_dir_defaults_under_base_dir(monkeypatch, tmp_path):
-    monkeypatch.delenv("SBS_CLI_DIST_DIR", raising=False)
-    monkeypatch.setenv("SBS_BASE_DIR", str(tmp_path))
-    assert CliArtifactSettings.from_env().dist_dir == tmp_path / "cli-dist"
+def test_sbs_cli_download_is_the_only_environment_variable():
+    """No other SBS_CLI_* variable is read anywhere.
 
-
-def test_dist_dir_never_defaults_into_the_working_directory(monkeypatch):
-    """The prepared-artifact cache must not land in a checkout.
-
-    An earlier version defaulted to "." when SBS_BASE_DIR was unset, which dropped
-    a `cli-dist/` directory into the repository root on every test run and every
-    dev server start. It is a cache, so it belongs wherever the rest of the
-    store's state goes — which is what the store's own base-dir helper decides.
+    Directories, the injection mechanism, the concurrency cap and whether to
+    prepare are all derived, so a deployment has exactly one knob. This asserts it
+    against the source rather than by behaviour, because an unread variable is
+    invisible from the outside — it would just sit in the code inviting someone to
+    set it and wonder why nothing changed.
     """
-    monkeypatch.delenv("SBS_CLI_DIST_DIR", raising=False)
-    monkeypatch.delenv("SBS_BASE_DIR", raising=False)
+    source = (
+        REPO_ROOT / "src" / "skillberry_store" / "services" / "cli_artifacts.py"
+    ).read_text(encoding="utf-8")
+    api = (
+        REPO_ROOT / "src" / "skillberry_store" / "fast_api" / "cli_api.py"
+    ).read_text(encoding="utf-8")
 
-    dist = CliArtifactSettings.from_env().dist_dir
-    assert dist.is_absolute(), f"dist_dir {dist} is relative to the cwd"
-    assert dist != Path("cli-dist")
-    assert Path.cwd() not in dist.parents, (
-        f"dist_dir {dist} is inside the working directory"
-    )
-
-    from skillberry_store.tools.configure import _default_sbs_dir
-
-    assert dist == Path(_default_sbs_dir("cli-dist")), (
-        "dist_dir should use the store's own base-directory resolution"
-    )
-
-    # The dataclass default is a separate code path from from_env, and it was the
-    # one that actually leaked: a `cli-dist/` with a 0600 manifest.json appeared
-    # in the working tree during a full test run even after from_env was fixed.
-    bare = CliArtifactSettings().dist_dir
-    assert bare.is_absolute(), f"the dataclass default {bare} is relative"
-    assert bare == dist, (
-        "the dataclass default and from_env must resolve identically, or which "
-        "one a caller used decides where the cache lands"
+    found = set(re.findall(r'"(SBS_CLI_[A-Z_]+)"', source + api))
+    assert found == {"SBS_CLI_DOWNLOAD"}, (
+        f"unexpected SBS_CLI_* variables in the code: {sorted(found - {'SBS_CLI_DOWNLOAD'})}"
     )
 
 
-def test_invalid_choices_fall_back_with_a_warning(monkeypatch, caplog):
-    monkeypatch.setenv("SBS_CLI_PREPARE", "sometimes")
-    monkeypatch.setenv("SBS_CLI_BUILD_MODE", "magic")
-    monkeypatch.setenv("SBS_CLI_MAX_CONCURRENT_DOWNLOADS", "not-a-number")
-    with caplog.at_level("WARNING"):
-        s = CliArtifactSettings.from_env()
-    # A typo must not silently disable preparation or pick a surprising mode.
-    assert s.prepare == "auto"
-    assert s.build_mode == "patch"
-    assert s.max_concurrent_downloads == 8
-    assert "sometimes" in caplog.text
-    assert "magic" in caplog.text
+def test_directories_are_fixed_beside_the_cli_source():
+    """Not configurable: the artifacts are a function of the source tree."""
+    go_cli = REPO_ROOT / "client" / "go" / "cli"
+    assert ARTIFACTS_DIR == go_cli / "prebuilt"
+    assert DIST_DIR == go_cli / "dist"
+    # Absolute, so nothing depends on the process's working directory.
+    assert ARTIFACTS_DIR.is_absolute() and DIST_DIR.is_absolute()
 
 
-def test_zero_concurrency_is_rejected(monkeypatch):
-    """A cap of 0 would refuse every download; that is never what was meant."""
-    monkeypatch.setenv("SBS_CLI_MAX_CONCURRENT_DOWNLOADS", "0")
-    assert CliArtifactSettings.from_env().max_concurrent_downloads == 8
+def test_a_service_uses_the_fixed_directories_by_default():
+    svc = CliArtifactService(CliArtifactSettings())
+    assert svc.artifacts_dir == ARTIFACTS_DIR
+    assert svc.dist_dir == DIST_DIR
+
+
+def test_concurrency_cap_is_fixed():
+    assert CliArtifactSettings().max_concurrent_downloads == 8
 
 
 # --------------------------------------------------------------------------- #
@@ -818,8 +778,8 @@ def test_archives_are_byte_identical_across_preparations(tmp_path, prebuilt_dir,
     manifest from replica A and fetch the archive from replica B, and both the
     install script and `sbs download-cli` are written to REFUSE on a checksum
     mismatch — so the user sees an intermittent "checksum mismatch, refusing to
-    install" that is indistinguishable from tampering. This was observed for real:
-    restarting the store changed every archive_sha256.
+    install" that is indistinguishable from tampering — so every field that would
+    otherwise vary run to run has to be pinned.
     """
     first = _service(tmp_path / "a", prebuilt_dir)
     first.prepare_all()
@@ -960,3 +920,38 @@ def test_every_ldflags_caller_uses_the_same_package_path():
         assert GO_LDFLAGS_PKG in text or "CLI_PKG" in text, (
             f"{label} invokes the linker but never names {GO_LDFLAGS_PKG}"
         )
+
+
+# --------------------------------------------------------------------------- #
+# Mechanism choice — the cheapest thing that works, per platform
+# --------------------------------------------------------------------------- #
+
+
+def test_patch_covers_every_platform_it_can(tmp_path, prebuilt_dir):
+    """Four of five platforms never need a compiler, toolchain present or not.
+
+    `patch` is milliseconds and produces a binary indistinguishable from a
+    rebuilt one, so spending tens of seconds cross-compiling those four would buy
+    nothing. Asserted with a toolchain available, because that is the case where
+    a "rebuild if you can" rule would quietly make startup minutes long.
+    """
+    svc = _service(tmp_path, prebuilt_dir, toolchain=True)
+    for platform in ("linux-amd64", "linux-arm64", "darwin-amd64", "windows-amd64"):
+        assert svc._choose_mechanism(platform) == MECHANISM_PATCH, platform
+
+
+def test_darwin_arm64_rebuilds_when_a_toolchain_exists(tmp_path, prebuilt_dir):
+    """The one cell where a toolchain earns its keep (B3)."""
+    svc = _service(tmp_path, prebuilt_dir, toolchain=True)
+    assert svc._choose_mechanism("darwin-arm64") == MECHANISM_REBUILD
+
+
+def test_darwin_arm64_falls_back_to_a_sidecar_without_one(tmp_path, prebuilt_dir):
+    svc = _service(tmp_path, prebuilt_dir, toolchain=False)
+    assert svc._choose_mechanism("darwin-arm64") == MECHANISM_SIDECAR
+
+
+def test_no_public_url_means_pristine(tmp_path, prebuilt_dir):
+    svc = _service(tmp_path, prebuilt_dir, public_url=None, toolchain=True)
+    for platform in ALL_PLATFORMS:
+        assert svc._choose_mechanism(platform) == MECHANISM_PRISTINE, platform

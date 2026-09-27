@@ -3,47 +3,40 @@ package cli
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
 
 // The CLI downloading the CLI (§5.8).
 //
-// Deliberately implemented with net/http against /cli/manifest rather than as a
-// generated operation, for the reason documented at the LocalVerb call site: a
-// promoted API cannot build any command until it has fetched the store's spec,
-// and these two verbs are what a user reaches for when that fetch is exactly
-// what is failing. Routing them through the engine would make them unavailable
-// in the situation they exist to fix.
+// Implemented with net/http against /cli/download rather than as a generated
+// operation, because a promoted API cannot build any command until it has
+// fetched the store's spec — and these two verbs are what a user reaches for
+// when that fetch is exactly what is failing. Routing them through the engine
+// would make them unavailable in the situation they exist to fix.
 
-// ManifestDoc mirrors the /cli/manifest document of §5.5.1. Only the fields
-// this side acts on are declared; unknown fields are ignored, so the server can
-// add to the document without breaking already-downloaded binaries.
-type ManifestDoc struct {
-	CLIName    string                      `json:"cli_name"`
-	CLIVersion string                      `json:"cli_version"`
-	PublicURL  string                      `json:"public_url"`
-	Platforms  map[string]ManifestPlatform `json:"platforms"`
-}
-
-type ManifestPlatform struct {
-	State         string `json:"state"` // ready | preparing | unavailable
-	Filename      string `json:"filename"`
-	Size          int64  `json:"size"`
-	SHA256        string `json:"sha256"`
-	URLInjection  string `json:"url_injection"`
-	DownloadURL   string `json:"download_url"`
-	ArchiveURL    string `json:"archive_url"`
-	ArchiveSHA256 string `json:"archive_sha256"`
-	Reason        string `json:"reason"`
-	RetryAfter    int    `json:"retry_after"`
+// artifactInfo is what a HEAD on /cli/download reports about an artifact.
+//
+// The store publishes an artifact's identity in response headers, so one request
+// answers "does this exist, how big is it, and what should it hash to" without
+// transferring ~32 MB. A GET carries the same headers alongside the bytes, which
+// is what lets DownloadVerified check the digest on the response it is already
+// reading rather than trusting a separately-fetched value.
+type artifactInfo struct {
+	Platform     string
+	SHA256       string
+	Size         int64
+	Version      string
+	URLInjection string
+	Filename     string
 }
 
 // CurrentPlatform is this binary's own platform id.
@@ -53,6 +46,14 @@ type ManifestPlatform struct {
 // explicit ?platform=, and never relies on detection.
 func CurrentPlatform() string {
 	return runtime.GOOS + "-" + runtime.GOARCH
+}
+
+// downloadURL builds the single endpoint's URL for one variant.
+func downloadURL(base, platform, format string) string {
+	q := url.Values{}
+	q.Set("platform", platform)
+	q.Set("format", format)
+	return strings.TrimRight(base, "/") + "/cli/download?" + q.Encode()
 }
 
 // DoDownloadCLI implements `sbs download-cli`.
@@ -69,7 +70,7 @@ func DoDownloadCLI(args []string, stdout, stderr *os.File, env Environ) int {
 		plat = CurrentPlatform()
 	}
 
-	entry, doc, err := FetchPlatform(base, plat)
+	info, err := Inspect(base, plat, opts.Format)
 	if err != nil {
 		WriteLine(stderr, fmt.Sprintf("%s: %v", CLIName, err))
 		return 1
@@ -77,7 +78,7 @@ func DoDownloadCLI(args []string, stdout, stderr *os.File, env Environ) int {
 
 	target := opts.Output
 	if target == "" {
-		target = entry.Filename
+		target = info.Filename
 		if target == "" {
 			target = CLIName
 		}
@@ -86,22 +87,22 @@ func DoDownloadCLI(args []string, stdout, stderr *os.File, env Environ) int {
 		}
 	}
 
-	written, sum, err := DownloadVerified(base, entry, opts.Format, target)
+	written, sum, err := DownloadVerified(base, info, opts.Format, target)
 	if err != nil {
 		WriteLine(stderr, fmt.Sprintf("%s: %v", CLIName, err))
 		return 1
 	}
 
 	fmt.Fprintf(stdout, "Downloaded %s %s for %s to %s (%d bytes, sha256 %s)\n",
-		doc.CLIName, doc.CLIVersion, plat, target, written, sum)
-	if opts.Format != "archive" && entry.URLInjection == "sidecar" {
+		CLIName, info.Version, plat, target, written, sum)
+	if opts.Format != "archive" && info.URLInjection == "sidecar" {
 		// The one platform/mechanism combination that needs a second file
 		// (§5.2): the binary itself carries no baked URL, so a raw download
-		// would come up pointing at its compile-time default.
+		// comes up pointing at its compile-time default.
 		fmt.Fprintf(stdout,
-			"\nNote: builds for %s carry their store URL in a sidecar file rather than in the\n"+
-				"binary. Download --format archive instead, or run:\n  %s connect %s\n",
-			plat, target, doc.PublicURL)
+			"\nNote: builds for %s carry their store URL in a sidecar file rather than in\n"+
+				"the binary. Download --format archive instead, or run:\n  %s connect %s\n",
+			plat, target, base)
 	}
 	return 0
 }
@@ -134,13 +135,13 @@ func DoSelfUpdate(args []string, stdout, stderr *os.File, env Environ) int {
 		self = resolved
 	}
 
-	entry, doc, err := FetchPlatform(base, plat)
+	info, err := Inspect(base, plat, "raw")
 	if err != nil {
 		WriteLine(stderr, fmt.Sprintf("%s: %v", CLIName, err))
 		return 1
 	}
 
-	if doc.CLIVersion != "" && doc.CLIVersion == Version {
+	if info.Version != "" && info.Version == Version {
 		fmt.Fprintf(stdout, "Already running %s %s; nothing to do.\n", CLIName, Version)
 		return 0
 	}
@@ -148,7 +149,7 @@ func DoSelfUpdate(args []string, stdout, stderr *os.File, env Environ) int {
 	// Staged in the target's own directory: os.Rename cannot cross filesystems,
 	// and /tmp is very often a different one (tmpfs, or a separate volume).
 	staged := self + ".new"
-	if _, _, err := DownloadVerified(base, entry, "raw", staged); err != nil {
+	if _, _, err := DownloadVerified(base, info, "raw", staged); err != nil {
 		WriteLine(stderr, fmt.Sprintf("%s: %v", CLIName, err))
 		return 1
 	}
@@ -160,7 +161,7 @@ func DoSelfUpdate(args []string, stdout, stderr *os.File, env Environ) int {
 		// mover would be worse than telling the user one line to run.
 		fmt.Fprintf(stdout,
 			"Downloaded %s %s to %s.\nWindows cannot replace a running executable, so finish with:\n  move /Y \"%s\" \"%s\"\n",
-			CLIName, doc.CLIVersion, staged, staged, self)
+			CLIName, info.Version, staged, staged, self)
 		return 0
 	}
 
@@ -169,7 +170,7 @@ func DoSelfUpdate(args []string, stdout, stderr *os.File, env Environ) int {
 		WriteLine(stderr, fmt.Sprintf("%s: could not replace %s: %v", CLIName, self, err))
 		return 1
 	}
-	fmt.Fprintf(stdout, "Updated %s to %s at %s\n", CLIName, doc.CLIVersion, self)
+	fmt.Fprintf(stdout, "Updated %s to %s at %s\n", CLIName, info.Version, self)
 	return 0
 }
 
@@ -227,91 +228,92 @@ func ParseDistFlags(args []string, verb string) (DistOptions, error) {
 	return opts, nil
 }
 
-// FetchPlatform gets the manifest and resolves one platform's entry, turning the
-// non-ready states into the actionable messages §5.8 #2 asks for.
-func FetchPlatform(base, platform string) (ManifestPlatform, ManifestDoc, error) {
-	var doc ManifestDoc
-
+// Inspect asks the store what it would serve for a platform, without
+// transferring it.
+//
+// One HEAD against the download endpoint. The non-ready states come back as HTTP
+// statuses rather than as a field in a document, so they turn into the actionable
+// messages §5.8 #2 asks for.
+func Inspect(base, platform, format string) (artifactInfo, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(base + "/cli/manifest")
+	req, err := http.NewRequest(http.MethodHead, downloadURL(base, platform, format), nil)
 	if err != nil {
-		return ManifestPlatform{}, doc, fmt.Errorf("could not reach %s: %w", base, err)
+		return artifactInfo{}, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return artifactInfo{}, fmt.Errorf("could not reach %s: %w", base, err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		return ManifestPlatform{}, doc, fmt.Errorf(
-			"%s does not offer CLI downloads (the operator may have set SBS_CLI_DOWNLOAD=off)", base)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return ManifestPlatform{}, doc, fmt.Errorf("%s/cli/manifest returned HTTP %d", base, resp.StatusCode)
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&doc); err != nil {
-		return ManifestPlatform{}, doc, fmt.Errorf("could not parse %s/cli/manifest: %w", base, err)
-	}
 
-	entry, ok := doc.Platforms[platform]
-	if !ok {
-		return ManifestPlatform{}, doc, fmt.Errorf("%s does not offer a build for %s (available: %s)",
-			base, platform, strings.Join(ReadyPlatforms(doc), ", "))
-	}
-
-	switch entry.State {
-	case "ready":
-		return entry, doc, nil
-	case "preparing":
-		wait := entry.RetryAfter
-		if wait <= 0 {
-			wait = 10
+	switch resp.StatusCode {
+	case http.StatusOK:
+		// fall through
+	case http.StatusNotFound:
+		// Either the whole surface is off (SBS_CLI_DOWNLOAD=off unregisters the
+		// route) or this one platform has no artifact. The response body is
+		// empty on a HEAD, so the two are distinguished by the header the
+		// handler sets only when it recognised the platform.
+		if resp.Header.Get("X-SBS-CLI-Platform") == "" && resp.Header.Get("Vary") == "" {
+			return artifactInfo{}, fmt.Errorf(
+				"%s does not offer CLI downloads (the operator may have set SBS_CLI_DOWNLOAD=off)", base)
 		}
-		return entry, doc, fmt.Errorf("the %s build is still being prepared; try again in %d seconds", platform, wait)
+		return artifactInfo{}, fmt.Errorf(
+			"%s has no %s build available", base, platform)
+	case http.StatusServiceUnavailable:
+		wait := resp.Header.Get("Retry-After")
+		if wait == "" {
+			wait = "10"
+		}
+		return artifactInfo{}, fmt.Errorf(
+			"the %s build is still being prepared; try again in %s seconds", platform, wait)
+	case http.StatusBadRequest:
+		return artifactInfo{}, fmt.Errorf(
+			"%s does not recognise the platform %q", base, platform)
+	case http.StatusTooManyRequests:
+		return artifactInfo{}, fmt.Errorf("%s is rate-limiting downloads; try again shortly", base)
 	default:
-		reason := entry.Reason
-		if reason == "" {
-			reason = "unavailable"
-		}
-		return entry, doc, fmt.Errorf("the %s build is not available from %s (%s)", platform, base, reason)
+		return artifactInfo{}, fmt.Errorf("%s returned HTTP %d", downloadURL(base, platform, format), resp.StatusCode)
 	}
+
+	info := artifactInfo{
+		Platform:     platform,
+		SHA256:       resp.Header.Get("X-SBS-SHA256"),
+		Version:      resp.Header.Get("X-SBS-CLI-Version"),
+		URLInjection: resp.Header.Get("X-SBS-CLI-URL-Injection"),
+		Filename:     filenameFor(platform, format),
+	}
+	if raw := resp.Header.Get("Content-Length"); raw != "" {
+		if n, err := strconv.ParseInt(raw, 10, 64); err == nil {
+			info.Size = n
+		}
+	}
+	return info, nil
 }
 
-// ReadyPlatforms lists the platform ids in the ready state, for error messages.
-func ReadyPlatforms(doc ManifestDoc) []string {
-	var out []string
-	for id, p := range doc.Platforms {
-		if p.State == "ready" {
-			out = append(out, id)
-		}
+// filenameFor is the artifact's natural name on disk for a platform and format.
+func filenameFor(platform, format string) string {
+	if format == "archive" {
+		return fmt.Sprintf("%s-%s%s", CLIName, platform, ArchiveSuffix(platform))
 	}
-	if len(out) == 0 {
-		return []string{"none"}
+	if strings.HasPrefix(platform, "windows-") {
+		return CLIName + ".exe"
 	}
-	return out
+	return CLIName
 }
 
 // DownloadVerified streams the artifact to a temp file beside the target,
-// verifies its sha256 against the manifest, then renames it into place.
+// verifies its sha256 against what the store published, then renames it into
+// place.
 //
-// Verifying *before* the rename is the whole point (§5.8 #3, B18): the store is
+// Verifying before the rename is the whole point (§5.8 #3, B18): the store is
 // handing the user an executable, so a truncated or tampered download must never
-// end up at the target path, let alone with the executable bit set. Returns the
-// byte count and the hex digest actually computed.
-func DownloadVerified(base string, entry ManifestPlatform, format, target string) (int64, string, error) {
-	url, want := entry.DownloadURL, entry.SHA256
-	if format == "archive" {
-		url, want = entry.ArchiveURL, entry.ArchiveSHA256
-	}
-	if url == "" {
-		return 0, "", fmt.Errorf("the manifest has no %s download URL for this platform", format)
-	}
-	// The manifest carries relative URLs so the document stays correct behind
-	// any path prefix (§5.5.1); resolve against the base we already trust
-	// rather than accepting an absolute URL from the document, which would let
-	// a manifest redirect the download to another host.
-	if strings.HasPrefix(url, "/") {
-		url = base + url
-	} else if !strings.HasPrefix(url, base) {
-		return 0, "", fmt.Errorf("refusing a download URL outside %s: %q", base, url)
-	}
-
+// end up at the target path, let alone with the executable bit set.
+//
+// The expected digest is read from the GET's own response headers, not from the
+// earlier HEAD, so there is no window in which the two could describe different
+// bytes. Returns the byte count and the hex digest actually computed.
+func DownloadVerified(base string, info artifactInfo, format, target string) (int64, string, error) {
 	dir := filepath.Dir(target)
 	if dir == "" {
 		dir = "."
@@ -321,7 +323,7 @@ func DownloadVerified(base string, entry ManifestPlatform, format, target string
 	}
 
 	client := &http.Client{Timeout: 10 * time.Minute}
-	resp, err := client.Get(url)
+	resp, err := client.Get(downloadURL(base, info.Platform, format))
 	if err != nil {
 		return 0, "", fmt.Errorf("download failed: %w", err)
 	}
@@ -330,7 +332,12 @@ func DownloadVerified(base string, entry ManifestPlatform, format, target string
 		return 0, "", fmt.Errorf("the build is still being prepared; try again shortly")
 	}
 	if resp.StatusCode != http.StatusOK {
-		return 0, "", fmt.Errorf("download failed: %s returned HTTP %d", url, resp.StatusCode)
+		return 0, "", fmt.Errorf("download failed: the store returned HTTP %d", resp.StatusCode)
+	}
+
+	want := resp.Header.Get("X-SBS-SHA256")
+	if want == "" {
+		want = info.SHA256
 	}
 
 	tmp, err := os.CreateTemp(dir, ".sbs-download-*")
@@ -352,11 +359,14 @@ func DownloadVerified(base string, entry ManifestPlatform, format, target string
 	}
 
 	sum := hex.EncodeToString(hasher.Sum(nil))
-	if want != "" && !strings.EqualFold(sum, want) {
-		return 0, "", fmt.Errorf("checksum mismatch: the manifest says %s but the download hashed to %s; not installing it", want, sum)
+	if want == "" {
+		return 0, "", fmt.Errorf(
+			"%s published no sha256 for this artifact; refusing to install unverified bytes", base)
 	}
-	if entry.Size > 0 && format == "raw" && written != entry.Size {
-		return 0, "", fmt.Errorf("size mismatch: the manifest says %d bytes but %d arrived", entry.Size, written)
+	if !strings.EqualFold(sum, want) {
+		return 0, "", fmt.Errorf(
+			"checksum mismatch: the store published %s but the download hashed to %s; not installing it",
+			want, sum)
 	}
 
 	// 0755 for a raw binary — the browser-download problem this exists to avoid

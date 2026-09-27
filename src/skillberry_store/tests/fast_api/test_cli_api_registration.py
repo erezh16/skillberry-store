@@ -1,6 +1,6 @@
 # Copyright 2025 IBM Corp.
 # Licensed under the Apache License, Version 2.0
-"""The /cli/* surface on the real ``SBS`` app.
+"""The /cli/download route on the real ``SBS`` app.
 
 docs/design/new_cli.md §8.2 #15, #17 and §5.5.4. ``test_cli_api.py`` covers the
 routes' own behaviour on a minimal app; these assertions need the whole thing,
@@ -40,13 +40,8 @@ def sbs_app():
 
 def test_cli_routes_are_registered(sbs_app):
     paths = {r.path for r in sbs_app.routes if getattr(r, "path", "").startswith("/cli")}
-    assert paths == {
-        "/cli/manifest",
-        "/cli/download",
-        "/cli/install.sh",
-        "/cli/install.ps1",
-        "/cli/license",
-    }
+    # The whole CLI surface is one path; variants are query arguments.
+    assert paths == {"/cli/download"}
 
 
 def test_rbac_audit_accepts_the_cli_routes_without_requires(sbs_app):
@@ -66,11 +61,8 @@ def test_rbac_audit_accepts_the_cli_routes_without_requires(sbs_app):
 def test_acl_config_treats_cli_as_unauthenticated(sbs_app):
     cfg = sbs_app.state.acl_cfg
     for method, path in (
-        ("GET", "/cli/manifest"),
         ("GET", "/cli/download"),
         ("HEAD", "/cli/download"),
-        ("GET", "/cli/install.sh"),
-        ("GET", "/cli/license"),
     ):
         assert cfg.is_unauthenticated(method, path), f"{method} {path}"
 
@@ -84,24 +76,16 @@ def test_download_is_not_an_mcp_tool(sbs_app):
     """
     operations = sbs_app._mcp_included_operations()
     assert "download_cli" not in operations
-    assert "cli_manifest" not in operations
 
 
-def test_manifest_is_in_the_openapi_spec_with_a_cli_name(sbs_app):
-    """The endpoints belong in the generated SDK and the CLI surface."""
+def test_download_is_in_the_openapi_spec_with_a_cli_name(sbs_app):
+    """The endpoint belongs in the generated SDK and the CLI surface."""
     spec = sbs_app.openapi()
-    assert "/cli/manifest" in spec["paths"]
     assert "/cli/download" in spec["paths"]
-
-    assert spec["paths"]["/cli/manifest"]["get"]["x-cli-name"] == "cli-manifest"
     assert spec["paths"]["/cli/download"]["get"]["x-cli-name"] == "download-cli"
+    # HEAD is excluded from the schema so it cannot collide on operation_id.
+    assert "head" not in spec["paths"]["/cli/download"]
 
-
-def test_install_scripts_and_license_are_not_in_the_spec(sbs_app):
-    """They are not API operations; putting them in the SDK would be noise."""
-    spec = sbs_app.openapi()
-    for path in ("/cli/install.sh", "/cli/install.ps1", "/cli/license"):
-        assert path not in spec["paths"]
 
 
 def test_no_duplicate_operation_ids(sbs_app):
@@ -167,25 +151,23 @@ def test_readiness_has_no_cli_check(sbs_app):
             f"balancer (docs/design/new_cli.md §5.3)."
         )
 
-        # And the manifest still answers 200 whatever state the artifacts are in,
-        # so a client can poll it without readiness having to be green first.
-        #
-        # Deliberately not asserting that a platform reads `preparing` here: the
-        # lifespan's own background preparation task races this test and resolves
-        # every platform to `unavailable` (there are no artifacts in a test
-        # checkout). That the `preparing` state is reported correctly is pinned
-        # deterministically, without a live app, by
-        # test_cli_artifacts_service.py::test_preparing_entry_advertises_retry_after.
-        manifest = client.get("/cli/manifest")
-        assert manifest.status_code == 200
-        assert manifest.json()["platforms"], "the manifest lists no platforms at all"
+        # And the download route still answers, so a client can poll it without
+        # readiness having to be green first. Which status it gives depends on the
+        # lifespan's background preparation, which races this test; what matters
+        # is that the route is live and not gated on readiness.
+        resp = client.head("/cli/download?platform=linux-amd64")
+        assert resp.status_code in (200, 404, 503), resp.status_code
 
 
-def test_manifest_is_reachable_without_credentials(sbs_app):
-    """The whole point: a user who cannot sign in yet can still get the CLI."""
+def test_download_is_reachable_without_credentials(sbs_app):
+    """The whole point: a user who cannot sign in yet can still get the CLI.
+
+    A test checkout has no prepared artifacts, so the answer is a 404 or 503 —
+    what matters is that it is not a 401, and that nothing asks for credentials.
+    """
     with TestClient(sbs_app) as client:
-        resp = client.get("/cli/manifest")
-        assert resp.status_code == 200
+        resp = client.head("/cli/download?platform=linux-amd64")
+        assert resp.status_code != 401
         assert "www-authenticate" not in resp.headers
 
 

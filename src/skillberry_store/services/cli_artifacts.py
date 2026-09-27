@@ -4,22 +4,22 @@
 
 docs/design/new_cli.md §5.2–§5.4. The job: take the CI-built artifacts that ship
 with (or are mounted into) the image, stamp this deployment's own public URL into
-them, and publish a manifest describing what is available.
+them, and record what was prepared so the next start can skip the work.
 
-Two mechanisms, both measured:
+Two mechanisms, chosen per platform by ``_choose_mechanism``:
 
 ``patch``
     Rewrite a fixed-width, ``#``-padded URL slot inside an already-linked binary,
-    in place. Costs milliseconds, changes no bytes of length, and needs no
-    compiler in the runtime image — which is why it is the default (§5.4 option
-    A). Verified on Linux with a 0-byte size delta and a working binary (M9).
+    in place. Milliseconds, zero size delta, and no compiler involved — so it
+    covers four of the five platforms whether or not a toolchain is available
+    (§5.4 option A, verified as M9).
 
 ``rebuild``
-    ``GOOS/GOARCH go build -ldflags -X <cli-pkg>.URLSlot=<url>``. ~2.3 s per
-    platform,
-    needs a Go toolchain and the module cache, and is the only mechanism that
-    covers ``darwin-arm64`` — Go's linker ad-hoc signs that target, so patching
-    its bytes is expected to break execution (B3).
+    ``GOOS/GOARCH go build -ldflags -X <cli-pkg>.URLSlot=<url>``. Needs a Go
+    toolchain and the CLI sources, costs tens of seconds, and is used only for
+    ``darwin-arm64`` — Go's linker ad-hoc signs that target, so rewriting its
+    bytes breaks execution (B3). Without a toolchain that platform falls back to
+    a sidecar file carrying the URL beside the binary.
 
 Everything here runs **off the request path**, in a background task started from
 the lifespan hook. Failures downgrade one platform's ``state`` and are logged;
@@ -205,13 +205,7 @@ class PlatformArtifact:
     archive_sha256: str = ""
 
     def to_manifest(self) -> dict:
-        """Render for /cli/manifest.
-
-        URLs are **relative** so the document stays correct behind any path
-        prefix or ingress rewrite, and so one document can feed the UI, the CLI
-        and the install scripts without the server having to know its own
-        external address (§5.5.1).
-        """
+        """Render this platform's record for the on-disk preparation manifest."""
         entry: dict = {"state": self.state}
         if self.state == STATE_READY:
             entry.update(
@@ -220,12 +214,6 @@ class PlatformArtifact:
                     "size": self.size,
                     "sha256": self.sha256,
                     "url_injection": self.url_injection,
-                    "download_url": (
-                        f"/cli/download?platform={self.platform}&format=raw"
-                    ),
-                    "archive_url": (
-                        f"/cli/download?platform={self.platform}&format=archive"
-                    ),
                 }
             )
             if self.archive_sha256:
@@ -240,104 +228,59 @@ class PlatformArtifact:
         return entry
 
 
-def _default_dist_dir() -> str:
-    """Where prepared artifacts go when nothing overrides it.
+# --------------------------------------------------------------------------- #
+# Fixed locations
+# --------------------------------------------------------------------------- #
+# Both directories live beside the CLI's own source, and neither is
+# configurable: the prepared artifacts are a function of the source tree and the
+# deployment's public URL, so there is nothing for an operator to choose.
+#
+#   prebuilt/  the cross-compiled binaries `client/go/build.sh` emits, baked into
+#              the image or mounted in
+#   dist/      the same binaries with this deployment's URL stamped into them,
+#              plus the manifest that records what was prepared
+#
+# Both are build/cache products and are gitignored.
+_GO_CLI_ROOT = Path(__file__).resolve().parents[3] / "client" / "go" / "cli"
+ARTIFACTS_DIR = _GO_CLI_ROOT / "prebuilt"
+DIST_DIR = _GO_CLI_ROOT / "dist"
 
-    Delegates to the store's own base-directory resolution
-    (``SBS_BASE_DIR`` → the system temp dir), so this cache lands beside the rest
-    of the store's state rather than in the process's working directory.
-
-    Imported lazily because ``tools.configure`` runs ``load_dotenv()`` at import
-    time; doing that from a module-level import here would pull dotenv into every
-    importer of this module, including tests that only want the pure functions.
-    """
-    from skillberry_store.tools.configure import _default_sbs_dir
-
-    return _default_sbs_dir("cli-dist")
+# Concurrent downloads allowed to start at once (§7.3). An unauthenticated
+# ~32 MB GET is an amplification opportunity; this is in-process and therefore
+# per-replica, so an ingress or CDN in front of /cli/download is what actually
+# bounds it.
+MAX_CONCURRENT_DOWNLOADS = 8
 
 
 @dataclass
 class CliArtifactSettings:
-    """The §6 configuration surface for this service."""
+    """Whether this store serves its CLI.
+
+    One switch, ``SBS_CLI_DOWNLOAD``. Everything else that preparing and serving
+    an artifact needs is derived: the directories are fixed beside the CLI source
+    (``ARTIFACTS_DIR`` / ``DIST_DIR``), the injection mechanism is chosen per
+    platform from what the runtime can actually do (``_choose_mechanism``), and
+    preparation runs exactly when the feature is on.
+    """
 
     enabled: bool = True
-    prepare: str = "auto"  # auto | always | never
-    build_mode: str = "patch"  # patch | rebuild | auto
-    # Absolute, via the store's own base-directory helper. A relative default
-    # here (`Path("cli-dist")`) writes the prepared-artifact cache into whatever
-    # the current working directory happens to be — which, for anything started
-    # from a checkout, is the repository root. That was observed: a `cli-dist/`
-    # directory with a 0600 manifest.json appeared in the working tree during a
-    # test run. `from_env` resolves the same way, so the two cannot disagree.
-    dist_dir: Path = field(default_factory=lambda: Path(_default_dist_dir()))
-    artifacts_dir: Path = field(default_factory=lambda: Path("/app/cli-prebuilt"))
-    artifacts_url: Optional[str] = None
-    max_concurrent_downloads: int = 8
 
     @classmethod
-    def from_env(cls, base_dir: Optional[str] = None) -> "CliArtifactSettings":
-        """Read the SBS_CLI_* variables.
+    def from_env(cls) -> "CliArtifactSettings":
+        return cls(enabled=_env_flag("SBS_CLI_DOWNLOAD", default=True))
 
-        Read from the environment here rather than added to ``SBSettings``
-        because these are a self-contained group that only this service consumes,
-        and because ``dist_dir``'s default depends on ``SBS_BASE_DIR`` — a
-        derivation that reads more clearly as a line of code than as a pydantic
-        validator.
-        """
-        # One resolution shared with the dataclass default, so the two cannot
-        # disagree. See _default_dist_dir for why it is not relative.
-        dist_default = (
-            Path(base_dir) / "cli-dist" if base_dir else Path(_default_dist_dir())
-        )
-        return cls(
-            enabled=_env_flag("SBS_CLI_DOWNLOAD", default=True),
-            prepare=_env_choice("SBS_CLI_PREPARE", ("auto", "always", "never"), "auto"),
-            build_mode=_env_choice(
-                "SBS_CLI_BUILD_MODE", ("patch", "rebuild", "auto"), "patch"
-            ),
-            dist_dir=Path(os.environ.get("SBS_CLI_DIST_DIR") or dist_default),
-            artifacts_dir=Path(
-                os.environ.get("SBS_CLI_ARTIFACTS_DIR") or "/app/cli-prebuilt"
-            ),
-            artifacts_url=(os.environ.get("SBS_CLI_ARTIFACTS_URL") or None),
-            max_concurrent_downloads=_env_int("SBS_CLI_MAX_CONCURRENT_DOWNLOADS", 8),
-        )
+    @property
+    def max_concurrent_downloads(self) -> int:
+        return MAX_CONCURRENT_DOWNLOADS
 
 
 def _env_flag(name: str, *, default: bool) -> bool:
     raw = os.environ.get(name)
     if raw is None:
         return default
-    # `off` is the value §6 documents for SBS_CLI_DOWNLOAD; the rest are accepted
-    # because an operator who writes `false` or `0` obviously means the same.
+    # `off` is the documented value; `false`/`0`/`no` are accepted because an
+    # operator who writes one of those plainly means the same thing.
     return raw.strip().lower() not in ("off", "false", "0", "no", "")
-
-
-def _env_choice(name: str, allowed: Iterable[str], default: str) -> str:
-    raw = (os.environ.get(name) or "").strip().lower()
-    allowed = tuple(allowed)
-    if raw in allowed:
-        return raw
-    if raw:
-        logger.warning(
-            "%s=%r is not one of %s; using %r", name, raw, list(allowed), default
-        )
-    return default
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name)
-    if not raw:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        logger.warning("%s=%r is not an integer; using %d", name, raw, default)
-        return default
-    if value < 1:
-        logger.warning("%s=%d must be >= 1; using %d", name, value, default)
-        return default
-    return value
 
 
 # --------------------------------------------------------------------------- #
@@ -367,8 +310,16 @@ class CliArtifactService:
         *,
         public_url: Optional[str] = None,
         cli_commit: str = "unknown",
+        dist_dir: Optional[Path] = None,
+        artifacts_dir: Optional[Path] = None,
     ):
+        # `dist_dir` and `artifacts_dir` default to the fixed locations beside the
+        # CLI source and exist as parameters only so tests can point a service at
+        # a temporary tree. They are not a configuration surface: nothing reads
+        # them from the environment, and the server never passes them.
         self.settings = settings
+        self._dist_dir = Path(dist_dir) if dist_dir else DIST_DIR
+        self._artifacts_dir = Path(artifacts_dir) if artifacts_dir else ARTIFACTS_DIR
         self.public_url = public_url
         self.cli_commit = cli_commit
         self._platforms: dict[str, PlatformArtifact] = {
@@ -384,7 +335,11 @@ class CliArtifactService:
 
     @property
     def dist_dir(self) -> Path:
-        return self.settings.dist_dir
+        return self._dist_dir
+
+    @property
+    def artifacts_dir(self) -> Path:
+        return self._artifacts_dir
 
     @property
     def cli_version(self) -> str:
@@ -532,7 +487,14 @@ class CliArtifactService:
             )
 
     def manifest(self) -> dict:
-        """The served /cli/manifest document (§5.5.1)."""
+        """The preparation manifest, as persisted in the dist directory.
+
+        Internal state, not a served document: ``_is_current`` reads it back on
+        the next start to decide whether any platform needs re-preparing, and it
+        is what lets two replicas sharing a volume agree on what is already done.
+        Clients learn an artifact's identity from the response headers on
+        ``/cli/download`` instead.
+        """
         return {
             "cli_name": "sbs",
             "cli_version": self._cli_version,
@@ -542,7 +504,6 @@ class CliArtifactService:
                 "name": "restish",
                 "version": self._engine_version,
                 "license": "MIT",
-                "license_url": "/cli/license",
             },
             "platforms": {
                 platform: entry.to_manifest()
@@ -620,9 +581,6 @@ class CliArtifactService:
         if not self.settings.enabled:
             logger.info("SBS_CLI_DOWNLOAD is off; not preparing CLI artifacts")
             return
-        if self.settings.prepare == "never":
-            logger.info("SBS_CLI_PREPARE=never; serving whatever is already prepared")
-            return
 
         if not self.public_url:
             # Without a public URL there is nothing to inject. Serving the
@@ -636,7 +594,7 @@ class CliArtifactService:
             )
 
         started = time.monotonic()
-        source_dir = self.settings.artifacts_dir
+        source_dir = self.artifacts_dir
         self._read_prebuilt_metadata(source_dir)
 
         if not source_dir.is_dir():
@@ -770,34 +728,88 @@ class CliArtifactService:
 
         The table this implements:
 
-        ==================  ================  ==================
-        Platform            Toolchain         No toolchain
-        ==================  ================  ==================
-        linux-*             rebuild           patch (verified)
-        windows-amd64       rebuild           patch
-        darwin-amd64        rebuild           patch
-        darwin-arm64        rebuild           **sidecar**
-        ==================  ================  ==================
+        ==================  =================  =================
+        Platform            Toolchain          No toolchain
+        ==================  =================  =================
+        linux-amd64         patch              patch
+        linux-arm64         patch              patch
+        darwin-amd64        patch              patch
+        windows-amd64       patch              patch
+        darwin-arm64        **rebuild**        **sidecar**
+        ==================  =================  =================
 
-        ``darwin-arm64`` is the one cell that cannot be patched: Go's linker
-        ad-hoc signs that target, so rewriting bytes inside the signed image
-        invalidates the signature and macOS refuses to exec it (B3). A sidecar
-        file carrying the URL is the honest fallback, and a real ``rebuild``
-        removes the caveat entirely.
+        The cheapest mechanism that works, per platform. ``patch`` rewrites a
+        fixed-width slot in an already-linked binary: milliseconds, zero size
+        delta, and no compiler involved. It covers four of the five platforms, so
+        those four never need a toolchain even when one is available — a
+        cross-compile would cost tens of seconds per platform to produce a binary
+        indistinguishable from the patched one.
+
+        ``darwin-arm64`` is the exception, and the only reason a toolchain earns
+        its keep here: Go's linker ad-hoc signs that target, so rewriting bytes
+        inside the signed image invalidates the signature and macOS refuses to
+        exec it (B3). With a toolchain that cell is a real ``rebuild``; without
+        one it falls back to a sidecar file carrying the URL beside the binary.
+
+        No configuration: the choice follows from the platform and from whether a
+        toolchain is present.
         """
         if not self.public_url:
             return MECHANISM_PRISTINE
-
-        mode = self.settings.build_mode
-        if mode == MECHANISM_REBUILD or (mode == "auto" and self._have_toolchain()):
-            return MECHANISM_REBUILD
         if platform == "darwin-arm64":
-            return MECHANISM_SIDECAR
+            return MECHANISM_REBUILD if self._can_rebuild() else MECHANISM_SIDECAR
         return MECHANISM_PATCH
 
-    @staticmethod
-    def _have_toolchain() -> bool:
-        return shutil.which("go") is not None
+    def _go_binary(self) -> Optional[str]:
+        """Locate a Go toolchain, or None.
+
+        Nothing here assumes an install layout: Go arrives differently on a
+        developer laptop, a CI runner and a container image. ``PATH`` first, then
+        ``GOROOT/bin/go`` for the common case of GOROOT set without its bin
+        directory exported, then the conventional install locations.
+
+        Discovery, not configuration — there is no knob to set. A deployment that
+        has a toolchain gets real per-platform rebuilds; one that does not gets
+        in-place slot patching, which is the default and needs no compiler.
+        """
+        found = shutil.which("go")
+        if found:
+            return found
+
+        goroot = os.environ.get("GOROOT")
+        if goroot:
+            candidate = Path(goroot) / "bin" / "go"
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+
+        home = Path.home()
+        for candidate in (
+            Path("/usr/local/go/bin/go"),
+            Path("/opt/go/bin/go"),
+            Path("/opt/homebrew/bin/go"),
+            home / ".local" / "go" / "bin" / "go",
+            home / "go" / "bin" / "go",
+        ):
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+        return None
+
+    def _have_toolchain(self) -> bool:
+        return self._go_binary() is not None
+
+    def _go_module_root(self) -> Path:
+        """The Go module root, which is where a build must run from."""
+        return Path(__file__).resolve().parents[3] / "client" / "go"
+
+    def _can_rebuild(self) -> bool:
+        """Whether a real per-URL build is possible here.
+
+        Needs both a toolchain and the CLI sources. An image can carry the
+        prebuilt artifacts without the Go module — there is no reason to ship
+        source to a runtime that is only serving binaries — and in that case the
+        platform falls back to a sidecar rather than reporting itself unavailable.
+        """
+        return self._have_toolchain() and (self._go_module_root() / "go.mod").is_file()
 
     def _prepare_platform(self, platform: str, source_dir: Path) -> None:
         """Prepare one platform's artifact, or record why it could not be."""
@@ -806,7 +818,7 @@ class CliArtifactService:
 
         # The stamp check (§5.3): unchanged inputs means literally zero work,
         # which is what makes a restart with an unchanged SBS_PUBLIC_URL free.
-        if self.settings.prepare != "always" and self._is_current(entry, mechanism):
+        if self._is_current(entry, mechanism):
             logger.debug("CLI artifact for %s is already current; skipping", platform)
             return
 
@@ -853,9 +865,11 @@ class CliArtifactService:
             entry.state = STATE_UNAVAILABLE
             entry.reason = REASON_NO_TOOLCHAIN
             logger.error(
-                "SBS_CLI_BUILD_MODE=rebuild needs a Go toolchain, which this image "
-                "does not have. Use the default `patch` mode, or the "
-                "-cli-builder image variant."
+                "Preparing the %s artifact needs a Go toolchain, which this "
+                "image does not have. Without one the platform falls back to a "
+                "sidecar file carrying the store URL; add a toolchain to get a "
+                "real per-URL build.",
+                platform,
             )
             return
 
@@ -922,13 +936,13 @@ class CliArtifactService:
 
     def _rebuild(self, platform: str, target: Path) -> None:
         """Cross-compile with the URL baked in via -ldflags (§5.2 `rebuild`)."""
-        if not self._have_toolchain():
+        go_bin = self._go_binary()
+        if go_bin is None:
             raise _NoToolchain(platform)
 
-        # The Go module root, which is where `go build` must run from. The
-        # binary's entry point is the `cli/cmd/sbs` package inside it; the
-        # implementation is the importable `cli` package next to it.
-        go_root = Path(__file__).resolve().parents[3] / "client" / "go"
+        # `go build` runs from the module root; the binary's entry point is the
+        # `cli/cmd/sbs` package inside it.
+        go_root = self._go_module_root()
         if not (go_root / "go.mod").is_file():
             raise _NoToolchain(platform)
 
@@ -971,7 +985,7 @@ class CliArtifactService:
             # defence rather than the only one.
             proc = subprocess.run(
                 [
-                    "go",
+                    go_bin,
                     "build",
                     "-trimpath",
                     "-ldflags",
@@ -1023,19 +1037,17 @@ class CliArtifactService:
         each entry's mtime, uid/gid and uname/gname — is pinned. Without that the
         archive bytes differ on every preparation, and §5.3's guarantee that "two
         replicas that each prepared their own copy still agree" holds for the raw
-        binary (patching is deterministic) but **not** for the archive.
+        binary (patching is deterministic) but would not for the archive.
 
-        That is not cosmetic. A client behind a load balancer can read the
-        manifest from replica A and fetch the archive from replica B; the
-        `archive_sha256` then mismatches, and both the install script and
-        `sbs download-cli` are built to *refuse* on a checksum mismatch. The
-        result would be an intermittent, unreproducible "checksum mismatch —
-        refusing to install" that looks exactly like an attack. Observed while
-        testing: restarting the store changed every `archive_sha256`.
+        That is not cosmetic. A client behind a load balancer can read the digest
+        from replica A and fetch the archive from replica B, and both the CLI and
+        any careful script *refuse* on a checksum mismatch — so non-reproducible
+        archives surface as an intermittent, unreproducible "checksum mismatch"
+        that looks exactly like an attack.
         """
         binary = self.artifact_path(platform, entry.filename)
         archive = self.archive_path(platform)
-        license_path = self.settings.artifacts_dir / "LICENSE.restish"
+        license_path = self.artifacts_dir / "LICENSE.restish"
         sidecar = self.dist_dir / platform / "sbs.url"
 
         members = [(binary, entry.filename, 0o755)]
@@ -1105,17 +1117,3 @@ class _NoSlotFound(RuntimeError):
 
 class _NoToolchain(RuntimeError):
     """`rebuild` was requested but no Go toolchain is present."""
-
-
-def artifact_checksums(service: "CliArtifactService") -> dict[str, str]:
-    """Per-platform sha256 of the *raw* artifact, for inlining into a script.
-
-    Only ready platforms appear. A platform that is missing from the mapping makes
-    the generated script warn rather than refuse — at that point the download it
-    is verifying would already have failed.
-    """
-    return {
-        platform: entry.sha256
-        for platform, entry in service._platforms.items()
-        if entry.state == STATE_READY and entry.sha256
-    }

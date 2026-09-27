@@ -6,10 +6,9 @@
 // the branding layer this file holds.
 //
 // The whole of the branding is the ~30 lines in Run(): a command name, a
-// description, a default config, a command surface and an auth handler. There is
-// deliberately no output rewriting anywhere in this package; the superseded
-// design's ~150-line scrubber is the thing this approach exists to not write
-// (§10).
+// description, a default config, a command surface and an auth handler. Nothing
+// in this package rewrites the engine's output — branding is configuration, which
+// is what makes an output scrubber unnecessary (§10).
 //
 // # Why this is a library and not a main package
 //
@@ -227,6 +226,14 @@ Configuration, diagnostics and cache management live under "%[1]s %[6]s":
 `, CLIName, URLEnvVar, CLIName+" login", CLIName+" logout", TokenEnvVar, SupportNamespace))
 }
 
+// EngineLicenceNotice points at where the embedded engine's licence is recorded.
+//
+// The binary links restish in, so its MIT licence has to travel with the product.
+// It is reproduced in the repository's own LICENSE under THIRD-PARTY SOFTWARE
+// NOTICES, and this line is how someone holding only the binary finds it.
+const EngineLicenceNotice = "Embeds restish (MIT). Full notice: " +
+	"https://github.com/skillberry-ai/skillberry-store/blob/main/LICENSE"
+
 // VersionLine reports our version and the embedded engine, so a bug report
 // carries both numbers without anyone having to ask for the second one.
 //
@@ -234,7 +241,8 @@ Configuration, diagnostics and cache management live under "%[1]s %[6]s":
 // "<command> version <what SetVersion was given>", so including the name here
 // produces "sbs version sbs 0.1.0".
 func VersionLine() string {
-	return fmt.Sprintf("%s (engine: restish %s)", Version, EngineVersion)
+	return fmt.Sprintf("%s (engine: restish %s)\n%s",
+		Version, EngineVersion, EngineLicenceNotice)
 }
 
 // WrapRunError turns restish's spec-discovery failure into one actionable line.

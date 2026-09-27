@@ -3,49 +3,64 @@ package tests
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/skillberry-ai/skillberry-store/client/go/cli"
 )
 
-// manifestServer serves a /cli/manifest + /cli/download pair for one platform.
-func manifestServer(t *testing.T, payload []byte, state string) (*httptest.Server, string) {
+// downloadServer stands in for a store's /cli/download endpoint.
+//
+// The store publishes an artifact's identity in response headers, so the fake
+// does the same: one route, answering both HEAD (identity only) and GET (identity
+// plus bytes). `status` lets a test drive the non-ready cases, which the real
+// server signals with an HTTP status rather than a field in a document.
+func downloadServer(t *testing.T, payload []byte, status int) (*httptest.Server, string) {
 	t.Helper()
 	sum := sha256.Sum256(payload)
 	hexSum := hex.EncodeToString(sum[:])
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/cli/manifest", func(w http.ResponseWriter, r *http.Request) {
-		doc := map[string]any{
-			"cli_name":    cli.CLIName,
-			"cli_version": "9.9.9",
-			"public_url":  "http://store.test",
-			"platforms": map[string]any{
-				cli.CurrentPlatform(): map[string]any{
-					"state":          state,
-					"filename":       cli.CLIName,
-					"size":           len(payload),
-					"sha256":         hexSum,
-					"url_injection":  "patch",
-					"download_url":   "/cli/download?platform=" + cli.CurrentPlatform() + "&format=raw",
-					"archive_url":    "/cli/download?platform=" + cli.CurrentPlatform() + "&format=archive",
-					"archive_sha256": hexSum,
-					"retry_after":    10,
-				},
-			},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(doc)
-	})
 	mux.HandleFunc("/cli/download", func(w http.ResponseWriter, r *http.Request) {
+		platform := r.URL.Query().Get("platform")
+		format := r.URL.Query().Get("format")
+
+		if status != http.StatusOK {
+			w.Header().Set("Vary", "User-Agent")
+			w.Header().Set("X-SBS-CLI-Platform", platform)
+			if status == http.StatusServiceUnavailable {
+				w.Header().Set("Retry-After", "10")
+			}
+			w.WriteHeader(status)
+			return
+		}
+
+		name := cli.CLIName
+		if strings.HasPrefix(platform, "windows-") {
+			name = cli.CLIName + ".exe"
+		}
+		if format == "archive" {
+			name = fmt.Sprintf("%s-%s%s", cli.CLIName, platform, cli.ArchiveSuffix(platform))
+		}
+
+		w.Header().Set("X-SBS-SHA256", hexSum)
+		w.Header().Set("X-SBS-CLI-Version", "9.9.9")
+		w.Header().Set("X-SBS-CLI-Platform", platform)
+		w.Header().Set("X-SBS-CLI-URL-Injection", "patch")
+		w.Header().Set("ETag", `"`+hexSum+`"`)
+		w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+		w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		_, _ = w.Write(payload)
 	})
 
@@ -56,7 +71,7 @@ func manifestServer(t *testing.T, payload []byte, state string) (*httptest.Serve
 
 func TestDownloadCLIWritesVerifiedExecutable(t *testing.T) {
 	payload := []byte("#!/bin/sh\necho fake-sbs\n")
-	srv, wantSum := manifestServer(t, payload, "ready")
+	srv, wantSum := downloadServer(t, payload, http.StatusOK)
 
 	target := filepath.Join(t.TempDir(), "sbs")
 	out, _ := captureFile(t)
@@ -76,7 +91,7 @@ func TestDownloadCLIWritesVerifiedExecutable(t *testing.T) {
 	}
 	sum := sha256.Sum256(got)
 	if hex.EncodeToString(sum[:]) != wantSum {
-		t.Error("written artifact does not match the manifest sha256")
+		t.Error("written artifact does not match the published sha256")
 	}
 
 	if runtime.GOOS != "windows" {
@@ -93,30 +108,25 @@ func TestDownloadCLIWritesVerifiedExecutable(t *testing.T) {
 }
 
 // The supply-chain assertion (§5.8 #3, B18): a payload whose hash does not match
-// the manifest must never reach the target path, let alone with +x set.
+// the published digest must never reach the target path, let alone with +x set.
 func TestDownloadCLIRefusesChecksumMismatch(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/cli/manifest", func(w http.ResponseWriter, r *http.Request) {
-		doc := map[string]any{
-			"cli_name": cli.CLIName, "cli_version": "9.9.9",
-			"platforms": map[string]any{
-				cli.CurrentPlatform(): map[string]any{
-					"state": "ready", "filename": cli.CLIName,
-					"sha256":       strings.Repeat("0", 64), // deliberately wrong
-					"download_url": "/cli/download",
-				},
-			},
-		}
-		_ = json.NewEncoder(w).Encode(doc)
-	})
 	mux.HandleFunc("/cli/download", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-SBS-SHA256", strings.Repeat("0", 64)) // deliberately wrong
+		w.Header().Set("X-SBS-CLI-Version", "9.9.9")
+		w.Header().Set("X-SBS-CLI-Platform", r.URL.Query().Get("platform"))
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		_, _ = w.Write([]byte("tampered payload"))
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
 	target := filepath.Join(t.TempDir(), "sbs")
-	code := cli.DoDownloadCLI([]string{"--output", target}, devNull(t), devNull(t), cli.MapEnviron{cli.URLEnvVar: srv.URL})
+	code := cli.DoDownloadCLI([]string{"--output", target}, devNull(t), devNull(t),
+		cli.MapEnviron{cli.URLEnvVar: srv.URL})
 	if code == 0 {
 		t.Fatal("a checksum mismatch must fail")
 	}
@@ -125,11 +135,43 @@ func TestDownloadCLIRefusesChecksumMismatch(t *testing.T) {
 	}
 }
 
+// An artifact served with no digest cannot be verified, so installing it would be
+// an unannounced trust jump.
+func TestDownloadCLIRefusesAnUnverifiableArtifact(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/cli/download", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-SBS-CLI-Version", "9.9.9")
+		w.Header().Set("X-SBS-CLI-Platform", r.URL.Query().Get("platform"))
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		_, _ = w.Write([]byte("unverifiable"))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	target := filepath.Join(t.TempDir(), "sbs")
+	errOut, readErr := captureFile(t)
+	code := cli.DoDownloadCLI([]string{"--output", target}, devNull(t), errOut,
+		cli.MapEnviron{cli.URLEnvVar: srv.URL})
+	if code == 0 {
+		t.Fatal("an artifact with no published sha256 must not be installed")
+	}
+	if !strings.Contains(readErr(), "sha256") {
+		t.Errorf("stderr = %q, want it to say why it refused", readErr())
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Error("an unverifiable artifact was written")
+	}
+}
+
 func TestDownloadCLIReportsPreparingWithRetryHint(t *testing.T) {
-	srv, _ := manifestServer(t, []byte("x"), "preparing")
+	srv, _ := downloadServer(t, []byte("x"), http.StatusServiceUnavailable)
 	errOut, readErr := captureFile(t)
 
-	code := cli.DoDownloadCLI([]string{"--output", filepath.Join(t.TempDir(), "sbs")}, devNull(t), errOut, cli.MapEnviron{cli.URLEnvVar: srv.URL})
+	code := cli.DoDownloadCLI([]string{"--output", filepath.Join(t.TempDir(), "sbs")},
+		devNull(t), errOut, cli.MapEnviron{cli.URLEnvVar: srv.URL})
 	if code == 0 {
 		t.Fatal("a preparing platform must not report success")
 	}
@@ -143,90 +185,107 @@ func TestDownloadCLIReportsPreparingWithRetryHint(t *testing.T) {
 	}
 }
 
-func TestDownloadCLIReportsUnavailableReason(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/cli/manifest", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"platforms": map[string]any{
-				cli.CurrentPlatform(): map[string]any{"state": "unavailable", "reason": "not_bundled"},
-			},
-		})
-	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
+func TestDownloadCLIReportsAnUnavailablePlatform(t *testing.T) {
+	srv, _ := downloadServer(t, []byte("x"), http.StatusNotFound)
 
 	errOut, readErr := captureFile(t)
 	code := cli.DoDownloadCLI(nil, devNull(t), errOut, cli.MapEnviron{cli.URLEnvVar: srv.URL})
 	if code == 0 {
 		t.Fatal("an unavailable platform must not report success")
 	}
-	if !strings.Contains(readErr(), "not_bundled") {
-		t.Errorf("stderr = %q, want the server's reason verbatim", readErr())
-	}
-}
-
-func TestDownloadCLIUnknownPlatformListsWhatIsAvailable(t *testing.T) {
-	srv, _ := manifestServer(t, []byte("x"), "ready")
-	errOut, readErr := captureFile(t)
-
-	code := cli.DoDownloadCLI([]string{"--platform", "plan9-mips"}, devNull(t), errOut, cli.MapEnviron{cli.URLEnvVar: srv.URL})
-	if code == 0 {
-		t.Fatal("an unknown platform must fail")
-	}
-	// Naming what *is* available turns a dead end into a next step.
 	if !strings.Contains(readErr(), cli.CurrentPlatform()) {
-		t.Errorf("stderr = %q, want it to list the available platforms", readErr())
+		t.Errorf("stderr = %q, want it to name the platform", readErr())
 	}
 }
 
-// A manifest must not be able to redirect the download to another host: that
-// would turn one compromised or misconfigured store into arbitrary code
-// delivery on the user's machine.
-func TestDownloadRefusesOffHostDownloadURL(t *testing.T) {
-	evil := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("malicious"))
-	}))
-	t.Cleanup(evil.Close)
-
-	entry := cli.ManifestPlatform{DownloadURL: evil.URL + "/payload", SHA256: ""}
-	target := filepath.Join(t.TempDir(), "sbs")
-	_, _, err := cli.DownloadVerified("http://store.test", entry, "raw", target)
-	if err == nil {
-		t.Fatal("an off-host download URL must be refused")
-	}
-	if !strings.Contains(err.Error(), "refusing") {
-		t.Errorf("error = %v, want an explicit refusal", err)
-	}
-	if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
-		t.Error("an off-host payload was written")
-	}
-}
-
-func TestDownloadVerifiedRejectsSizeMismatch(t *testing.T) {
-	payload := []byte("twelve bytes")
+// SBS_CLI_DOWNLOAD=off unregisters the route entirely, so the CLI sees a bare 404
+// with none of the handler's headers. Saying so beats "no build available".
+func TestDownloadCLISurfacesDownloadsDisabled(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write(payload)
+		w.WriteHeader(http.StatusNotFound)
 	}))
 	t.Cleanup(srv.Close)
 
-	sum := sha256.Sum256(payload)
-	entry := cli.ManifestPlatform{
-		DownloadURL: "/x",
-		SHA256:      hex.EncodeToString(sum[:]),
-		Size:        999, // disagrees with what arrives
+	_, err := cli.Inspect(srv.URL, cli.CurrentPlatform(), "raw")
+	if err == nil {
+		t.Fatal("a bare 404 must be an error")
 	}
-	target := filepath.Join(t.TempDir(), "sbs")
-	if _, _, err := cli.DownloadVerified(srv.URL, entry, "raw", target); err == nil {
-		t.Fatal("a size mismatch must fail even when the hash matches")
+	if !strings.Contains(err.Error(), "SBS_CLI_DOWNLOAD") {
+		t.Errorf("error = %v, want it to name the operator switch", err)
 	}
 }
 
-func TestDownloadCLIArchiveUsesArchiveURLAndMode(t *testing.T) {
+func TestInspectUnreachableStore(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := srv.URL
+	srv.Close() // now refusing connections
+
+	_, err := cli.Inspect(url, cli.CurrentPlatform(), "raw")
+	if err == nil {
+		t.Fatal("an unreachable store must be an error")
+	}
+	if !strings.Contains(err.Error(), "could not reach") {
+		t.Errorf("error = %v, want a connection-level message naming the host", err)
+	}
+}
+
+func TestInspectRejectsAnUnknownPlatform(t *testing.T) {
+	srv, _ := downloadServer(t, []byte("x"), http.StatusBadRequest)
+	_, err := cli.Inspect(srv.URL, "plan9-mips", "raw")
+	if err == nil {
+		t.Fatal("an unknown platform must be an error")
+	}
+	if !strings.Contains(err.Error(), "plan9-mips") {
+		t.Errorf("error = %v, want it to name the platform asked for", err)
+	}
+}
+
+// Inspect must read the digest and size without transferring the artifact: that
+// is what makes it cheap enough to call before a 32 MB download.
+func TestInspectUsesHeadAndReportsIdentity(t *testing.T) {
+	payload := []byte("0123456789")
+	var methods []string
+	sum := sha256.Sum256(payload)
+	hexSum := hex.EncodeToString(sum[:])
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method)
+		w.Header().Set("X-SBS-SHA256", hexSum)
+		w.Header().Set("X-SBS-CLI-Version", "1.2.3")
+		w.Header().Set("X-SBS-CLI-URL-Injection", "sidecar")
+		w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	info, err := cli.Inspect(srv.URL, "darwin-arm64", "raw")
+	if err != nil {
+		t.Fatalf("cli.Inspect: %v", err)
+	}
+	if len(methods) != 1 || methods[0] != http.MethodHead {
+		t.Errorf("requests = %v, want exactly one HEAD", methods)
+	}
+	if info.SHA256 != hexSum {
+		t.Errorf("SHA256 = %q, want %q", info.SHA256, hexSum)
+	}
+	if info.Size != int64(len(payload)) {
+		t.Errorf("Size = %d, want %d", info.Size, len(payload))
+	}
+	if info.Version != "1.2.3" {
+		t.Errorf("Version = %q, want 1.2.3", info.Version)
+	}
+	if info.URLInjection != "sidecar" {
+		t.Errorf("URLInjection = %q, want sidecar", info.URLInjection)
+	}
+}
+
+func TestDownloadCLIArchiveFormatUsesArchiveModeAndName(t *testing.T) {
 	payload := []byte("fake tarball")
-	srv, _ := manifestServer(t, payload, "ready")
+	srv, _ := downloadServer(t, payload, http.StatusOK)
 
 	target := filepath.Join(t.TempDir(), "sbs.tar.gz")
-	code := cli.DoDownloadCLI([]string{"--format", "archive", "--output", target}, devNull(t), devNull(t), cli.MapEnviron{cli.URLEnvVar: srv.URL})
+	code := cli.DoDownloadCLI([]string{"--format", "archive", "--output", target},
+		devNull(t), devNull(t), cli.MapEnviron{cli.URLEnvVar: srv.URL})
 	if code != 0 {
 		t.Fatalf("cli.DoDownloadCLI --format archive = %d", code)
 	}
@@ -242,11 +301,43 @@ func TestDownloadCLIArchiveUsesArchiveURLAndMode(t *testing.T) {
 	}
 }
 
+func TestDownloadCLIRequestsTheSelectedVariant(t *testing.T) {
+	// Which artifact you get is a query argument on the one endpoint, so the
+	// request must carry both.
+	var gotQuery string
+	payload := []byte("x")
+	sum := sha256.Sum256(payload)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		w.Header().Set("X-SBS-SHA256", hex.EncodeToString(sum[:]))
+		w.Header().Set("X-SBS-CLI-Version", "1.0.0")
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		_, _ = w.Write(payload)
+	}))
+	t.Cleanup(srv.Close)
+
+	target := filepath.Join(t.TempDir(), "out")
+	code := cli.DoDownloadCLI(
+		[]string{"--platform", "linux-arm64", "--format", "archive", "--output", target},
+		devNull(t), devNull(t), cli.MapEnviron{cli.URLEnvVar: srv.URL})
+	if code != 0 {
+		t.Fatalf("cli.DoDownloadCLI = %d", code)
+	}
+	for _, want := range []string{"platform=linux-arm64", "format=archive"} {
+		if !strings.Contains(gotQuery, want) {
+			t.Errorf("query = %q, want it to contain %q", gotQuery, want)
+		}
+	}
+}
+
 func TestDownloadCLIDefaultFilenames(t *testing.T) {
 	payload := []byte("x")
-	srv, _ := manifestServer(t, payload, "ready")
+	srv, _ := downloadServer(t, payload, http.StatusOK)
 
-	// cli.Run in a temp cwd so the default output path lands somewhere disposable.
+	// Run in a temp cwd so the default output path lands somewhere disposable.
 	dir := t.TempDir()
 	orig, err := os.Getwd()
 	if err != nil {
@@ -257,42 +348,16 @@ func TestDownloadCLIDefaultFilenames(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chdir(orig) })
 
-	if code := cli.DoDownloadCLI(nil, devNull(t), devNull(t), cli.MapEnviron{cli.URLEnvVar: srv.URL}); code != 0 {
+	if code := cli.DoDownloadCLI(nil, devNull(t), devNull(t),
+		cli.MapEnviron{cli.URLEnvVar: srv.URL}); code != 0 {
 		t.Fatalf("cli.DoDownloadCLI = %d", code)
 	}
-	if _, err := os.Stat(filepath.Join(dir, cli.CLIName)); err != nil {
-		t.Errorf("default raw download should be named %q: %v", cli.CLIName, err)
+	want := cli.CLIName
+	if runtime.GOOS == "windows" {
+		want = cli.CLIName + ".exe"
 	}
-}
-
-func TestFetchPlatformSurfacesDownloadsDisabled(t *testing.T) {
-	// SBS_CLI_DOWNLOAD=off unregisters the endpoints entirely, so the CLI sees a
-	// 404. Saying so beats "unexpected status 404".
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	t.Cleanup(srv.Close)
-
-	_, _, err := cli.FetchPlatform(srv.URL, cli.CurrentPlatform())
-	if err == nil {
-		t.Fatal("a 404 manifest must be an error")
-	}
-	if !strings.Contains(err.Error(), "SBS_CLI_DOWNLOAD") {
-		t.Errorf("error = %v, want it to name the operator switch", err)
-	}
-}
-
-func TestFetchPlatformUnreachableStore(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	url := srv.URL
-	srv.Close() // now refusing connections
-
-	_, _, err := cli.FetchPlatform(url, cli.CurrentPlatform())
-	if err == nil {
-		t.Fatal("an unreachable store must be an error")
-	}
-	if !strings.Contains(err.Error(), "could not reach") {
-		t.Errorf("error = %v, want a connection-level message naming the host", err)
+	if _, err := os.Stat(filepath.Join(dir, want)); err != nil {
+		t.Errorf("default raw download should be named %q: %v", want, err)
 	}
 }
 
@@ -306,23 +371,14 @@ func TestSelfUpdateRejectsArchiveFormat(t *testing.T) {
 }
 
 func TestSelfUpdateSkipsWhenVersionsMatch(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/cli/manifest", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"cli_name":    cli.CLIName,
-			"cli_version": cli.Version, // identical to this build
-			"platforms": map[string]any{
-				cli.CurrentPlatform(): map[string]any{
-					"state": "ready", "filename": cli.CLIName,
-					"download_url": "/cli/download",
-				},
-			},
-		})
-	})
-	mux.HandleFunc("/cli/download", func(w http.ResponseWriter, r *http.Request) {
-		t.Error("self-update must not download when the versions already match")
-	})
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodHead {
+			t.Error("self-update must not download when the versions already match")
+		}
+		w.Header().Set("X-SBS-SHA256", strings.Repeat("a", 64))
+		w.Header().Set("X-SBS-CLI-Version", cli.Version) // identical to this build
+		w.WriteHeader(http.StatusOK)
+	}))
 	t.Cleanup(srv.Close)
 
 	out, read := captureFile(t)
@@ -331,64 +387,6 @@ func TestSelfUpdateSkipsWhenVersionsMatch(t *testing.T) {
 	}
 	if !strings.Contains(read(), "Already running") {
 		t.Errorf("stdout = %q, want it to say no update was needed", read())
-	}
-}
-
-func TestReadyPlatformsReportsNoneWhenEmpty(t *testing.T) {
-	got := cli.ReadyPlatforms(cli.ManifestDoc{Platforms: map[string]cli.ManifestPlatform{
-		"linux-amd64": {State: "unavailable"},
-	}})
-	if len(got) != 1 || got[0] != "none" {
-		t.Errorf("cli.ReadyPlatforms = %v, want [none]", got)
-	}
-}
-
-func TestManifestDocIgnoresUnknownFields(t *testing.T) {
-	// Forward compatibility: the server must be able to add fields to the
-	// manifest without breaking binaries users already downloaded.
-	body := `{"cli_name":"sbs","brand_new_field":{"nested":true},
-	          "platforms":{"linux-amd64":{"state":"ready","future":"ok"}}}`
-	var doc cli.ManifestDoc
-	if err := json.Unmarshal([]byte(body), &doc); err != nil {
-		t.Fatalf("unknown manifest fields must be ignored, got %v", err)
-	}
-	if doc.Platforms["linux-amd64"].State != "ready" {
-		t.Error("known fields must still parse alongside unknown ones")
-	}
-}
-
-func TestDownloadVerifiedResolvesRelativeURL(t *testing.T) {
-	payload := []byte("relative-ok")
-	var gotPath string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path + "?" + r.URL.RawQuery
-		_, _ = w.Write(payload)
-	}))
-	t.Cleanup(srv.Close)
-
-	sum := sha256.Sum256(payload)
-	entry := cli.ManifestPlatform{
-		DownloadURL: "/cli/download?platform=linux-amd64&format=raw",
-		SHA256:      hex.EncodeToString(sum[:]),
-	}
-	target := filepath.Join(t.TempDir(), "sbs")
-	if _, _, err := cli.DownloadVerified(srv.URL, entry, "raw", target); err != nil {
-		t.Fatalf("cli.DownloadVerified: %v", err)
-	}
-	// Relative URLs are what keep the manifest correct behind any path prefix.
-	if want := "/cli/download?platform=linux-amd64&format=raw"; gotPath != want {
-		t.Errorf("requested %q, want %q", gotPath, want)
-	}
-}
-
-func TestDownloadVerifiedMissingURLForFormat(t *testing.T) {
-	entry := cli.ManifestPlatform{DownloadURL: "/cli/download"} // no archive_url
-	_, _, err := cli.DownloadVerified("http://store.test", entry, "archive", filepath.Join(t.TempDir(), "a.tgz"))
-	if err == nil {
-		t.Fatal("a missing archive URL must be an error")
-	}
-	if !strings.Contains(err.Error(), "archive") {
-		t.Errorf("error = %v, want it to name the missing format", err)
 	}
 }
 

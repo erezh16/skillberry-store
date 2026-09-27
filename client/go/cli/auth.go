@@ -43,25 +43,25 @@ const AuthSchemeName = "sbs-standalone"
 //
 // # Why this never prompts proactively
 //
-// Authenticate is called before *every* request, including the spec fetch that
-// a promoted API performs to build its command tree. An earlier version probed
-// /auth/whoami and prompted whenever no token was cached, which produced two
-// bad outcomes measured against a real store:
+// Authenticate runs before *every* request, including the spec fetch a promoted
+// API performs to build its command tree. So it attaches a cached token when it
+// has one and otherwise attaches *nothing*, letting the request go out
+// unauthenticated. Restish then calls it again with ac.Force set if the response
+// was a 401 — which is what SupportsForce below opts into — and only that Force
+// pass prompts.
 //
-//   - `sbs --help` on a fresh install asked for a password before printing
-//     help, purely to fetch /openapi.json — an endpoint that is in the store's
-//     unauthenticated allow-list and needs no credentials at all.
-//   - With the store unreachable, the probe failed, the code could not tell
-//     "needs auth" from "cannot connect", and the user was prompted for
-//     credentials that were then thrown away by a connection error.
+// Prompting whenever no token was cached would instead mean:
 //
-// So the handler attaches a cached token when it has one and otherwise attaches
-// *nothing*, letting the request proceed. Restish then retries once with
-// ac.Force set if the response is a 401 — which is what SupportsForce below
-// opts into — and only that Force pass prompts. The result is that public
-// endpoints never prompt, protected ones prompt exactly once at the moment
-// authentication is genuinely required, and an unreachable host reports a
-// connection error instead of asking for a password.
+//   - `sbs --help` on a fresh install asks for a password purely to fetch
+//     /openapi.json, an endpoint that is in the store's unauthenticated
+//     allow-list and needs no credentials at all;
+//   - against an unreachable store, a probe cannot tell "needs auth" from
+//     "cannot connect", so the user is asked for credentials that a connection
+//     error then throws away.
+//
+// As written: public endpoints never prompt, protected ones prompt exactly once
+// at the moment authentication is genuinely required, and an unreachable host
+// reports a connection error rather than asking for a password.
 type StandaloneAuth struct {
 	// Now is injected so token-expiry logic is testable without sleeping.
 	// Exported because the test suite lives in a separate package (client/go/tests).
