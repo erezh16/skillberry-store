@@ -24,21 +24,24 @@ prepares and serves the `sbs` binary (see [the CLI guide](cli.md) and
 
 | Configuration | Default value | Environment Variables Override | Notes |
 |---------------|---------------|--------------------------------|-------|
-| CLI downloads | `on` | `SBS_CLI_DOWNLOAD` | `off` **unregisters the `/cli/*` endpoints entirely** — they become plain 404s and appear in no route table or OpenAPI schema, rather than existing and refusing. This is the rollback switch for the whole feature |
-| Artifact preparation | `auto` | `SBS_CLI_PREPARE` | `auto` prepares at startup, skipping any platform whose stamp still matches; `always` forces re-preparation; `never` serves only what is already in the dist directory. Preparation is a background task — `/health/ready` never waits for it |
-| URL injection mechanism | `patch` | `SBS_CLI_BUILD_MODE` | `patch` rewrites a fixed-width URL slot inside a CI-built binary in place (milliseconds, **no Go toolchain needed** — the default for that reason). `rebuild` cross-compiles with the URL baked via `-ldflags`, which needs a toolchain and is the only mechanism that covers `darwin-arm64`. `auto` uses `rebuild` where a toolchain exists |
-| Prepared artifact directory | `{SBS_BASE_DIR}/cli-dist` | `SBS_CLI_DIST_DIR` | Prepared artifacts plus `manifest.json`. **A cache, not state** — an ephemeral directory costs one background re-preparation on cold start. Point it at a volume to avoid that |
-| CI artifact directory | `/app/cli-prebuilt` | `SBS_CLI_ARTIFACTS_DIR` | Where the cross-compiled binaries live, baked into the image or mounted. Accepts either `<dir>/<platform>/sbs` (what `make cli-dist` emits) or a flat `<dir>/sbs-<platform>`. Absent ⇒ every platform reports `not_bundled`, truthfully |
-| Lazy artifact fetch | *(unset)* | `SBS_CLI_ARTIFACTS_URL` | Base URL for sha256-pinned fetching of platforms missing from the image, so a release image need not carry ~160 MB of binaries |
-| Download concurrency cap | `8` | `SBS_CLI_MAX_CONCURRENT_DOWNLOADS` | Crude in-process backpressure on an unauthenticated ~32 MB GET. Honestly per-replica; let an ingress or CDN cache `/cli/*` for real protection |
+| CLI downloads | `on` | `SBS_CLI_DOWNLOAD` | `off` **unregisters `GET`/`HEAD` `/cli/download` entirely** — it becomes a plain 404 and appears in no route table or OpenAPI schema, rather than existing and refusing. This is the rollback switch for the whole feature |
 
-`SBS_PUBLIC_URL` (above) is what gets **baked into the downloaded binaries**, so
-a user who downloads the CLI from your store gets one that talks to your store
-with no configuration. Without it, artifacts are served pristine — they carry
-their compile-time default and a user needs `sbs connect <url>` — and the boot log
-says so. The install scripts fall back to the request's own `Host`, which is safe
-only because a generated script is consumed immediately by the client that asked
-for it; a shared artifact never uses a client-supplied value.
+That is the only setting. Everything else preparing and serving an artifact needs
+is derived rather than configured:
+
+| Behaviour | How it is decided |
+|-----------|-------------------|
+| Where the cross-compiled binaries are read from | fixed: `client/go/cli/prebuilt` |
+| Where prepared artifacts are written | fixed: `client/go/cli/dist` — a cache, not state |
+| When preparation runs | at startup, whenever downloads are on; skipped per platform when the stamp already matches |
+| How the store's URL gets into a binary | per platform, cheapest mechanism that works: an in-place slot rewrite for four of five platforms, and a real build for `darwin-arm64` when a Go toolchain is present (a sidecar file when it is not) |
+| Concurrent download starts | fixed at 8 |
+
+`SBS_PUBLIC_URL` (above) is what gets **baked into the downloaded binaries**, so a
+user who downloads the CLI from your store gets one that talks to your store with
+no configuration. Without it, artifacts are served as built — they carry their
+compile-time default and a user needs `sbs connect <url>` — and the boot log says
+so.
 
 These two are read by the **CLI on the user's machine**, not by the store:
 
@@ -47,14 +50,14 @@ These two are read by the **CLI on the user's machine**, not by the store:
 | Store URL override | *(the baked-in URL)* | `SBS_URL` | Points `sbs` at a different store for one invocation. Precedence: `sbs connect` (user config) → `SBS_URL` → the baked-in URL |
 | Bearer token | *(unset)* | `SBS_TOKEN` | A token for CI/scripting instead of an interactive prompt. Select it with `sbs -p env-token <command>`. The token stays in the environment and never appears on the command line |
 
-> **The `/cli/*` endpoints are unauthenticated in every access-control mode.** That
-> is enforced by a mandatory floor in the config loader, not by the
-> `unauthenticated_paths` list, so an operator's own list cannot close them — a
-> browser, `curl`, CI or a freshly downloaded binary has no token to offer, and a
-> user who cannot sign in yet is exactly the user who needs the CLI. The surface
-> serves no tenant data, no configuration and no login message, and accepts no
-> request body. Anything the floor has to add that your config file omits is named
-> in the boot log. To remove the surface entirely, use `SBS_CLI_DOWNLOAD=off`.
+> **`/cli/download` is unauthenticated in every access-control mode.** It is listed
+> in the built-in `unauthenticated_paths` defaults alongside `/health` and the auth
+> endpoints, and a config file's own list **adds to** those defaults rather than
+> replacing them — so an operator cannot accidentally close it. A browser, `curl`,
+> CI or a freshly downloaded binary has no token to offer, and a user who cannot
+> sign in yet is exactly the user who needs the CLI. The endpoint serves no tenant
+> data, no configuration and no login message, and accepts no request body. To
+> remove it entirely, use `SBS_CLI_DOWNLOAD=off`.
 
 
 This table lists the `npx skills add` publishing configuration (see

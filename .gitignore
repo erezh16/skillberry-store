@@ -202,4 +202,12 @@ docs/demo-videos/**/out/
 client/go/sbs
 client/go/sbs.exe
 client/go/vendor/
+# The store reads cross-compiled binaries from client/go/cli/prebuilt and writes
+# URL-stamped copies to client/go/cli/dist. Both are build/cache products.
+client/go/cli/prebuilt/
+client/go/cli/dist/
 cli-prebuilt/
+
+# Local GitHub token helper. Holds a live credential: never commit it.
+# Sourced by hand when a PR needs creating; not referenced by any build step.
+gh_token.sh

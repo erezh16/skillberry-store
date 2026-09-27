@@ -5,8 +5,8 @@
 #
 # This is the CI step of docs/design/new_cli.md §5.10 #1 and the `rebuild`
 # mechanism of §5.2. Because Go cross-compiles with CGO_ENABLED=0, ONE Linux
-# runner produces all five artifacts (M4) — the superseded PyInstaller design
-# needed five native runners for the same matrix (§10).
+# runner produces all five artifacts (M4); no per-OS runner is needed to build
+# them, only to execute them.
 #
 # Usage:
 #   client/go/build.sh [--out DIR] [--url URL] [--version V] [--platforms "a b c"]
@@ -106,6 +106,9 @@ if [[ -n "$BAKE_URL" ]]; then
 fi
 
 mkdir -p "$OUT_DIR"
+# Resolved to an absolute path: the per-platform builds below `cd` into the Go
+# module root, where a relative --out would no longer point anywhere.
+OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 
 echo "==> Building sbs $VERSION (engine restish $ENGINE_VERSION)"
 echo "    platforms: $PLATFORMS"
@@ -178,7 +181,8 @@ manifest="$OUT_DIR/prebuilt-manifest.json"
 mv "$manifest.tmp" "$manifest"
 
 # restish is MIT and we redistribute it, so its licence ships beside the
-# artifacts, goes into every archive, and is served at /cli/license (§7.4).
+# artifacts and goes into every archive; the repository's own LICENSE carries it
+# too, under Third-party software notices (§7.4).
 #
 # Both spellings are tried: upstream ships LICENSE.md at v2.3.0, but a plain
 # LICENSE is the more common convention and a future release could switch.
