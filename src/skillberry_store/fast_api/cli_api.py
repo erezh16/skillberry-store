@@ -74,7 +74,18 @@ _CACHE_CONTROL = "public, max-age=300"
 # per-replica: it stops one careless script saturating a small deployment, and an
 # ingress or CDN in front of /cli/download is what bounds it properly.
 _RATE_WINDOW_SECONDS = 60
-_RATE_MAX_PER_WINDOW = 30
+
+# Budgets per IP per window, by what the request actually costs to serve.
+#
+# The concern §7.3 names is amplification: an unauthenticated GET ships ~32 MB, so
+# 30 of them per minute already allows ~1 GB. A HEAD ships a few hundred bytes of
+# headers, so charging it the same is all cost and no protection — and it
+# penalises exactly the usage the design encourages, since reading the digest
+# before committing to a download means HEAD-then-GET, and polling for readiness
+# means repeated HEADs. Bounded generously rather than exempted, because an
+# unbounded HEAD flood is still a (much cheaper) nuisance.
+_RATE_MAX_BODY_PER_WINDOW = 30
+_RATE_MAX_HEAD_PER_WINDOW = 300
 
 
 class _DownloadLimiter:
@@ -82,25 +93,28 @@ class _DownloadLimiter:
 
     def __init__(self, max_concurrent: int):
         self._lock = threading.Lock()
-        self._hits: dict[str, list[float]] = {}
+        self._hits: dict[tuple[str, bool], list[float]] = {}
         self._semaphore = threading.BoundedSemaphore(max_concurrent)
 
-    def allow(self, client_ip: str) -> bool:
+    def allow(self, client_ip: str, *, sends_body: bool) -> bool:
+        """Charge one request against this IP's budget for its kind."""
+        limit = _RATE_MAX_BODY_PER_WINDOW if sends_body else _RATE_MAX_HEAD_PER_WINDOW
+        key = (client_ip, sends_body)
         now = time.monotonic()
         cutoff = now - _RATE_WINDOW_SECONDS
         with self._lock:
-            hits = [t for t in self._hits.get(client_ip, ()) if t > cutoff]
-            if len(hits) >= _RATE_MAX_PER_WINDOW:
-                self._hits[client_ip] = hits
+            hits = [t for t in self._hits.get(key, ()) if t > cutoff]
+            if len(hits) >= limit:
+                self._hits[key] = hits
                 return False
             hits.append(now)
-            self._hits[client_ip] = hits
+            self._hits[key] = hits
             # Opportunistic sweep: this dict otherwise grows once per distinct
             # client IP and never shrinks, which is a slow leak on a public host.
             if len(self._hits) > 4096:
                 self._hits = {
-                    ip: times
-                    for ip, times in self._hits.items()
+                    k: times
+                    for k, times in self._hits.items()
                     if any(t > cutoff for t in times)
                 }
             return True
@@ -137,6 +151,9 @@ def register_cli_api(
         return
 
     limiter = _DownloadLimiter(service.settings.max_concurrent_downloads)
+    # Exposed so tests can assert slot bookkeeping without reaching into the
+    # closure; nothing in the request path reads it back.
+    app.state.cli_download_limiter = limiter
 
     logger.info(
         "CLI downloads are ON — serving GET /cli/download "
@@ -146,7 +163,9 @@ def register_cli_api(
         service.public_url or "(unset — artifacts stay pristine)",
     )
 
-    def _resolve(request: Request, platform: Optional[str], format: str):
+    def _resolve(
+        request: Request, platform: Optional[str], format: str, *, sends_body: bool
+    ):
         """Shared by GET and HEAD: returns a Response, or (path, headers, ...)."""
         detection = detect_platform(request.headers, platform)
 
@@ -166,7 +185,7 @@ def register_cli_api(
             )
 
         client_ip = request.client.host if request.client else "unknown"
-        if not limiter.allow(client_ip):
+        if not limiter.allow(client_ip, sends_body=sends_body):
             return Response(
                 status_code=429,
                 content='{"detail":"rate_limited"}',
@@ -274,13 +293,18 @@ def register_cli_api(
         if digest and digest in if_none_match:
             return Response(status_code=304, headers=headers)
 
-        if not limiter.acquire_slot():
-            return Response(
-                status_code=503,
-                content='{"detail":"too_many_downloads"}',
-                media_type="application/json",
-                headers={"Retry-After": "5", **headers},
-            )
+        # A HEAD occupies no download capacity, so it neither takes a slot nor
+        # can be turned away for want of one.
+        holds_slot = False
+        if sends_body:
+            if not limiter.acquire_slot():
+                return Response(
+                    status_code=503,
+                    content='{"detail":"too_many_downloads"}',
+                    media_type="application/json",
+                    headers={"Retry-After": "5", **headers},
+                )
+            holds_slot = True
         try:
             # FileResponse handles Range, If-Range and Last-Modified itself, and
             # sets content-length — which is what makes a HEAD answer identical
@@ -297,7 +321,14 @@ def register_cli_api(
             # would require wrapping the response. The cap therefore limits
             # download *starts* per instant, which is what the amplification
             # concern is about.
-            limiter.release_slot()
+            #
+            # Guarded so acquisition and release stay symmetric. Releasing a slot
+            # that was never taken is absorbed — the semaphore is bounded, so it
+            # refuses to count past its maximum, and release_slot swallows the
+            # resulting ValueError — but then every HEAD would trip that path and
+            # its debug log would be routine noise instead of a real signal.
+            if holds_slot:
+                limiter.release_slot()
 
     @app.api_route(
         "/cli/download",
@@ -334,7 +365,7 @@ def register_cli_api(
             ),
         ),
     ):
-        return _resolve(request, platform, format)
+        return _resolve(request, platform, format, sends_body=True)
 
     # HEAD on the same path, as a separate registration.
     #
@@ -353,4 +384,4 @@ def register_cli_api(
         platform: Optional[str] = Query(None),
         format: str = Query("raw", pattern="^(raw|archive)$"),
     ):
-        return _resolve(request, platform, format)
+        return _resolve(request, platform, format, sends_body=False)

@@ -261,17 +261,15 @@ func Inspect(base, platform, format string) (artifactInfo, error) {
 		return artifactInfo{}, fmt.Errorf(
 			"%s has no %s build available", base, platform)
 	case http.StatusServiceUnavailable:
-		wait := resp.Header.Get("Retry-After")
-		if wait == "" {
-			wait = "10"
-		}
 		return artifactInfo{}, fmt.Errorf(
-			"the %s build is still being prepared; try again in %s seconds", platform, wait)
+			"the %s build is still being prepared; try again in %s seconds",
+			platform, retryAfter(resp, "10"))
 	case http.StatusBadRequest:
 		return artifactInfo{}, fmt.Errorf(
 			"%s does not recognise the platform %q", base, platform)
 	case http.StatusTooManyRequests:
-		return artifactInfo{}, fmt.Errorf("%s is rate-limiting downloads; try again shortly", base)
+		return artifactInfo{}, fmt.Errorf(
+			"%s is rate-limiting downloads; try again in %s seconds", base, retryAfter(resp, "60"))
 	default:
 		return artifactInfo{}, fmt.Errorf("%s returned HTTP %d", downloadURL(base, platform, format), resp.StatusCode)
 	}
@@ -313,6 +311,15 @@ func filenameFor(platform, format string) string {
 // The expected digest is read from the GET's own response headers, not from the
 // earlier HEAD, so there is no window in which the two could describe different
 // bytes. Returns the byte count and the hex digest actually computed.
+// retryAfter reads the server's own Retry-After, falling back to a sane default
+// so the advice is never "try again in  seconds".
+func retryAfter(resp *http.Response, fallback string) string {
+	if wait := resp.Header.Get("Retry-After"); wait != "" {
+		return wait
+	}
+	return fallback
+}
+
 func DownloadVerified(base string, info artifactInfo, format, target string) (int64, string, error) {
 	dir := filepath.Dir(target)
 	if dir == "" {
@@ -328,10 +335,18 @@ func DownloadVerified(base string, info artifactInfo, format, target string) (in
 		return 0, "", fmt.Errorf("download failed: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusServiceUnavailable {
-		return 0, "", fmt.Errorf("the build is still being prepared; try again shortly")
-	}
-	if resp.StatusCode != http.StatusOK {
+	// The transfer is the rate-limited half of the endpoint -- reading availability
+	// with a HEAD is budgeted far more generously -- so this is where a busy store
+	// answers 429, and the message has to say what to do about it.
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusServiceUnavailable:
+		return 0, "", fmt.Errorf("the build is still being prepared; try again in %s seconds",
+			retryAfter(resp, "10"))
+	case http.StatusTooManyRequests:
+		return 0, "", fmt.Errorf(
+			"%s is rate-limiting downloads; try again in %s seconds", base, retryAfter(resp, "60"))
+	default:
 		return 0, "", fmt.Errorf("download failed: the store returned HTTP %d", resp.StatusCode)
 	}
 

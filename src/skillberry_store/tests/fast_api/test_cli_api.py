@@ -328,6 +328,13 @@ def test_missing_file_is_503(client_and_service):
     assert resp.headers["retry-after"] == "10"
 
 
+def _limiter_of(app):
+    """The limiter instance the route closed over."""
+    from skillberry_store.fast_api import cli_api
+
+    return app.state.cli_download_limiter
+
+
 def test_rate_limit_returns_429(tmp_path):
     """§8.2 #10 / B12: an unauthenticated 32 MB GET is an amplification risk."""
     app, _ = _make_app(tmp_path)
@@ -412,3 +419,51 @@ def test_archive_request_is_refused_when_no_archive_was_built(tmp_path):
 
         # The raw variant is unaffected — it is the primary download.
         assert client.get("/cli/download?platform=linux-amd64").status_code == 200
+
+
+def test_polling_readiness_with_head_is_not_rate_limited(tmp_path):
+    """Checking availability must not consume the download budget.
+
+    The limit exists because an unauthenticated GET ships ~32 MB (§7.3). A HEAD
+    ships headers, so charging it the same budget protects nothing and breaks the
+    two patterns the design asks for: read the digest before committing to a
+    download, and poll until a platform is ready. CI hit this — waiting for five
+    platforms exhausted 30 requests and the next GET was refused.
+    """
+    app, _ = _make_app(tmp_path)
+    with TestClient(app) as client:
+        codes = {
+            client.head("/cli/download?platform=linux-amd64").status_code
+            for _ in range(120)
+        }
+        assert codes == {200}, f"a HEAD was refused: {sorted(codes)}"
+
+        # And the download budget is untouched by all that polling.
+        assert client.get("/cli/download?platform=linux-amd64").status_code == 200
+
+
+def test_head_does_not_consume_a_download_slot(tmp_path):
+    """The concurrency cap limits bytes in flight, which a HEAD does not produce.
+
+    The count has to come out exact. Over-release is absorbed today (the semaphore
+    is bounded and release_slot swallows the ValueError), so a mismatch would not
+    surface as an error — it would quietly make the cap mean something other than
+    what it says.
+    """
+    app, service = _make_app(tmp_path)
+    limiter = _limiter_of(app)
+
+    with TestClient(app) as client:
+        for _ in range(50):
+            assert client.head("/cli/download?platform=linux-amd64").status_code == 200
+
+        # Every slot is still free: exhaust them by hand and check the count is
+        # exactly the configured maximum, not more (released too often) or
+        # fewer (leaked).
+        taken = 0
+        while limiter.acquire_slot():
+            taken += 1
+        assert taken == service.settings.max_concurrent_downloads, (
+            f"expected {service.settings.max_concurrent_downloads} free slots "
+            f"after 50 HEADs, found {taken}"
+        )

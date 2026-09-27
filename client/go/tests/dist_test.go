@@ -401,3 +401,62 @@ func TestDownloadCLIHelpFlagExplainsUsage(t *testing.T) {
 		}
 	}
 }
+
+// A busy store answers 429 on the transfer, not on the availability check: the
+// endpoint budgets HEAD far more generously than GET, precisely so that reading a
+// digest or polling for readiness does not spend the download allowance. That
+// makes the GET the path a user actually sees rate-limited, so its message has to
+// name the wait rather than print a bare status code.
+func TestDownloadReportsRateLimitingWithTheServersWait(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.Header().Set("X-SBS-CLI-Platform", "linux-amd64")
+			w.Header().Set("X-SBS-SHA256", strings.Repeat("a", 64))
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.Header().Set("Retry-After", "42")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	info, err := cli.Inspect(srv.URL, "linux-amd64", "raw")
+	if err != nil {
+		t.Fatalf("Inspect should succeed -- a HEAD is not what gets limited: %v", err)
+	}
+
+	_, _, err = cli.DownloadVerified(srv.URL, info, "raw", filepath.Join(t.TempDir(), "sbs"))
+	if err == nil {
+		t.Fatal("a 429 must be reported as an error")
+	}
+	for _, want := range []string{"rate-limiting", "42 seconds"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the message should contain %q, got: %v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "HTTP 429") {
+		t.Errorf("a bare status code is not actionable advice: %v", err)
+	}
+}
+
+func TestDownloadFallsBackToADefaultWaitWhenTheServerGivesNone(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.Header().Set("X-SBS-CLI-Platform", "linux-amd64")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusTooManyRequests) // no Retry-After
+	}))
+	defer srv.Close()
+
+	info, _ := cli.Inspect(srv.URL, "linux-amd64", "raw")
+	_, _, err := cli.DownloadVerified(srv.URL, info, "raw", filepath.Join(t.TempDir(), "sbs"))
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	// Never "try again in  seconds".
+	if !strings.Contains(err.Error(), "60 seconds") {
+		t.Errorf("expected the fallback wait, got: %v", err)
+	}
+}
