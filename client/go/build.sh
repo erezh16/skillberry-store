@@ -49,8 +49,24 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if ! command -v go >/dev/null 2>&1; then
-    echo "build.sh: no Go toolchain on PATH." >&2
+# Which toolchain to use. `make cli-dist` passes GO explicitly so a direct run
+# and a make-driven one agree; standalone, this resolves the same way the
+# makefile does.
+GO="${GO:-go}"
+if ! command -v "$GO" >/dev/null 2>&1; then
+    if [[ -n "${GOROOT:-}" && -x "$GOROOT/bin/go" ]]; then
+        GO="$GOROOT/bin/go"
+    else
+        for _c in /usr/local/go/bin/go /opt/go/bin/go /opt/homebrew/bin/go \
+                  "$HOME/.local/go/bin/go" "$HOME/go/bin/go"; do
+            if [[ -x "$_c" ]]; then GO="$_c"; break; fi
+        done
+    fi
+fi
+
+if ! command -v "$GO" >/dev/null 2>&1; then
+    echo "build.sh: no Go toolchain found (tried '$GO', PATH, GOROOT and the usual locations)." >&2
+    echo "  Point at one with GO=/path/to/go, or set GOROOT." >&2
     echo "  The runtime image does not need one (the default 'patch' mechanism," >&2
     echo "  §5.4 option A, rewrites a CI-built artifact in place). Building from" >&2
     echo "  source does. Install Go >= 1.25 and retry." >&2
@@ -70,7 +86,7 @@ fi
 # The engine version comes from go.mod rather than from a second place that
 # could disagree with what is actually linked in. It is part of the server's
 # preparation stamp key (§5.3), so it has to be the truth.
-ENGINE_VERSION="$(cd "$GO_ROOT" && go list -m -f '{{.Version}}' github.com/rest-sh/restish/v2 2>/dev/null | sed 's/^v//')"
+ENGINE_VERSION="$(cd "$GO_ROOT" && "$GO" list -m -f '{{.Version}}' github.com/rest-sh/restish/v2 2>/dev/null | sed 's/^v//')"
 ENGINE_VERSION="${ENGINE_VERSION:-unknown}"
 
 # §5.7 / §7.2 / B14: a URL that reaches a linker flag is argument injection into
@@ -127,7 +143,7 @@ for platform in $PLATFORMS; do
     (
         cd "$GO_ROOT"
         CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-            go build -trimpath -ldflags "$ldflags" -o "$dest" "$CMD_PKG"
+            "$GO" build -trimpath -ldflags "$ldflags" -o "$dest" "$CMD_PKG"
     )
     elapsed=$(( $(date +%s) - start ))
 
@@ -168,7 +184,7 @@ mv "$manifest.tmp" "$manifest"
 # LICENSE is the more common convention and a future release could switch.
 # Shipping no licence while redistributing an MIT binary is the one outcome that
 # is not acceptable, so a miss is a hard failure rather than a warning.
-engine_dir="$(cd "$GO_ROOT" && go list -m -f '{{.Dir}}' github.com/rest-sh/restish/v2)"
+engine_dir="$(cd "$GO_ROOT" && "$GO" list -m -f '{{.Dir}}' github.com/rest-sh/restish/v2)"
 engine_license=""
 for candidate in LICENSE.md LICENSE LICENSE.txt COPYING; do
     if [[ -f "$engine_dir/$candidate" ]]; then

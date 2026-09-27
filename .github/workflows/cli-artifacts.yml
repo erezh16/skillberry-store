@@ -34,7 +34,6 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: '1.27.1'
   # Must match client/go/cli/version.go's SlotWidth and the Python
   # services/cli_artifacts.py SLOT_WIDTH. A test asserts the first two agree.
   SLOT_WIDTH: '60'
@@ -51,9 +50,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The version comes from the module's own `go` directive, so there is no
+      # second place that has to agree with it.
       - uses: actions/setup-go@v5
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: client/go/go.mod
           cache-dependency-path: client/go/go.sum
 
       # go.sum pins every module by hash, so this is the reproducibility
@@ -63,13 +64,14 @@ jobs:
         working-directory: client/go
         run: go mod verify
 
-      - name: Vet and test
-        working-directory: client/go
-        run: |
-          gofmt -l . | tee /tmp/unformatted
-          test ! -s /tmp/unformatted || { echo "::error::unformatted Go files"; exit 1; }
-          go vet ./...
-          go test ./...
+      # Through the make targets, so CI exercises the same toolchain resolution
+      # and the same flags a developer gets locally -- a makefile that stopped
+      # finding Go would fail here rather than silently skipping.
+      - name: Report the toolchain
+        run: make cli-toolchain
+
+      - name: Format, vet and test
+        run: make cli-fmt-check cli-vet cli-test
 
       - name: Cross-compile all five platforms
         id: build

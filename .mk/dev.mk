@@ -45,11 +45,50 @@ CLI_PLATFORMS  ?= linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd6
 CLI_SOURCES    := $(wildcard $(CLI_DIR)/*.go) $(wildcard $(CLI_DIR)/cmd/sbs/*.go) \
                   $(CLI_GO_ROOT)/go.mod $(CLI_GO_ROOT)/go.sum
 
-# Every Go target is guarded on a toolchain being present rather than declaring
-# one as a prerequisite. A `pip`-only contributor must still be able to run
+# Locating the Go toolchain.
+#
+# Nothing here assumes a particular install layout -- Go arrives differently on a
+# developer laptop, a CI runner and a container image. Resolution order:
+#
+#   1. GO=/path/to/go on the command line or in the environment  (explicit wins)
+#   2. `go` on PATH                                             (the usual case)
+#   3. $GOROOT/bin/go                                           (GOROOT set, bin not on PATH)
+#   4. a few conventional install locations                      (last resort)
+#
+# Set GO explicitly for anything unusual:
+#
+#   make cli-build GO=/opt/go1.27/bin/go
+#
+# Resolved to an absolute path because every recipe below `cd`s into the module
+# root first, and a relative command would not survive that.
+GO ?= go
+_GO_BIN := $(shell     if command -v "$(GO)" >/dev/null 2>&1; then command -v "$(GO)";     elif [ -n "$$GOROOT" ] && [ -x "$$GOROOT/bin/go" ]; then echo "$$GOROOT/bin/go";     else         for _c in /usr/local/go/bin/go /opt/go/bin/go /opt/homebrew/bin/go                   "$$HOME/.local/go/bin/go" "$$HOME/go/bin/go"; do             if [ -x "$$_c" ]; then echo "$$_c"; break; fi;         done;     fi)
+
+# Every Go target is guarded on a toolchain being found rather than declaring one
+# as a prerequisite. A `pip`-only contributor must still be able to run
 # `make test` and `make lint` (§G10): the CLI is a release-time artifact, not a
 # prerequisite for working on the store.
-_HAVE_GO := $(shell command -v go >/dev/null 2>&1 && echo 1)
+_GOFMT_BIN := $(shell \
+    if [ -n "$(_GO_BIN)" ] && [ -x "$$(dirname $(_GO_BIN))/gofmt" ]; then echo "$$(dirname $(_GO_BIN))/gofmt"; \
+    elif command -v gofmt >/dev/null 2>&1; then command -v gofmt; \
+    elif [ -n "$$GOROOT" ] && [ -x "$$GOROOT/bin/gofmt" ]; then echo "$$GOROOT/bin/gofmt"; \
+    elif [ -n "$(_GO_BIN)" ]; then echo "$$($(_GO_BIN) env GOROOT)/bin/gofmt"; \
+    fi)
+
+_HAVE_GO := $(if $(_GO_BIN),1,)
+
+_NO_GO_MSG := no Go toolchain found. Put go on PATH, set GOROOT, or pass GO=/path/to/go.
+
+.PHONY: cli-toolchain
+cli-toolchain: ## Report which Go toolchain the CLI targets would use
+ifeq ($(_HAVE_GO),1)
+	@echo "go:    $(_GO_BIN)"
+	@echo "gofmt: $(_GOFMT_BIN)"
+	@$(_GO_BIN) version
+else
+	@echo "$(_NO_GO_MSG)"
+	@exit 1
+endif
 
 .PHONY: cli-build cli-test cli-fmt cli-fmt-check cli-vet cli-dist cli-vendor cli-clean
 
@@ -59,16 +98,16 @@ ifeq ($(_HAVE_GO),1)
 	@# The -X target is the package's full import path, not `main`: the injected
 	@# variables live in the importable `cli` package. A stale `-X main.version=`
 	@# is accepted silently by the linker and injects nothing.
-	@cd $(CLI_GO_ROOT) && CGO_ENABLED=0 go build -trimpath \
-		-ldflags "-s -w -X $(CLI_PKG).Version=$(VERSION) -X $(CLI_PKG).EngineVersion=$$(go list -m -f '{{.Version}}' github.com/rest-sh/restish/v2 | sed 's/^v//')" \
+	@cd $(CLI_GO_ROOT) && CGO_ENABLED=0 $(_GO_BIN) build -trimpath \
+		-ldflags "-s -w -X $(CLI_PKG).Version=$(VERSION) -X $(CLI_PKG).EngineVersion=$$($(_GO_BIN) list -m -f '{{.Version}}' github.com/rest-sh/restish/v2 | sed 's/^v//')" \
 		-o sbs $(CLI_CMD)
 	@echo "===> Built $(CLI_GO_ROOT)/sbs"
 else
-	@echo "NOTE: no Go toolchain found - skipping the native CLI build."
+	@echo "NOTE: $(_NO_GO_MSG) Skipping the native CLI build."
 endif
 
 cli-dist: ## Cross-compile the CLI for every platform into cli-prebuilt/ (§5.10)
-	@./$(CLI_GO_ROOT)/build.sh --out $(CLI_PREBUILT) --platforms "$(CLI_PLATFORMS)" --version "$(VERSION)"
+	@GO="$(_GO_BIN)" ./$(CLI_GO_ROOT)/build.sh --out $(CLI_PREBUILT) --platforms "$(CLI_PLATFORMS)" --version "$(VERSION)"
 
 # Vendoring is NOT committed: measured at 44 MB / 2248 files for restish's
 # dependency graph, which is a poor trade in a Python repo when go.mod + go.sum
@@ -77,16 +116,16 @@ cli-dist: ## Cross-compile the CLI for every platform into cli-prebuilt/ (§5.10
 # opt-in air-gapped image variant of §5.4 option B, which wants GOFLAGS=-mod=vendor
 # and GOPROXY=off at *runtime* and can vendor at build time.
 cli-vendor: ## Materialise client/go/vendor for an offline/air-gapped build (not committed)
-	@cd $(CLI_GO_ROOT) && go mod vendor && du -sh vendor
+	@cd $(CLI_GO_ROOT) && $(_GO_BIN) mod vendor && du -sh vendor
 
 cli-fmt: ## Format the Go sources
 ifeq ($(_HAVE_GO),1)
-	@cd $(CLI_GO_ROOT) && gofmt -w .
+	@cd $(CLI_GO_ROOT) && $(_GOFMT_BIN) -w .
 endif
 
 cli-fmt-check: ## Fail if any Go source is unformatted
 ifeq ($(_HAVE_GO),1)
-	@cd $(CLI_GO_ROOT) && out=$$(gofmt -l .); \
+	@cd $(CLI_GO_ROOT) && out=$$($(_GOFMT_BIN) -l .); \
 		if [ -n "$$out" ]; then \
 			echo "Lint Failed. Unformatted Go files:"; echo "$$out"; \
 			echo "Please run 'make cli-fmt' to fix the issues"; exit 1; \
@@ -95,16 +134,16 @@ endif
 
 cli-vet: ## Run go vet on the CLI
 ifeq ($(_HAVE_GO),1)
-	@cd $(CLI_GO_ROOT) && go vet ./...
+	@cd $(CLI_GO_ROOT) && $(_GO_BIN) vet ./...
 endif
 
 cli-test: ## Run the Go unit tests for the CLI (§8.1)
 ifeq ($(_HAVE_GO),1)
 	@echo "===> Running the native CLI Go tests"
-	@cd $(CLI_GO_ROOT) && go test ./...
+	@cd $(CLI_GO_ROOT) && $(_GO_BIN) test ./...
 else
-	@echo "NOTE: no Go toolchain found - skipping the native CLI tests."
-	@echo "      Install Go >= 1.25 to run them; see docs/cli.md."
+	@echo "NOTE: $(_NO_GO_MSG) Skipping the native CLI tests."
+	@echo "      Go >= 1.25 is needed to run them; see docs/cli.md."
 endif
 
 cli-clean: ## Remove built CLI artifacts
