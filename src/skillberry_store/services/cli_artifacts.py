@@ -880,17 +880,26 @@ class CliArtifactService:
             self._write_sidecar(platform)
             sidecar_note = " (URL in a sidecar file; use format=archive)"
 
-        # sha256 is computed AFTER patching (§7.2), so the manifest describes the
+        # sha256 is computed AFTER patching (§7.2), so the record describes the
         # bytes actually served rather than the bytes CI produced.
         entry.filename = filename
         entry.size = target.stat().st_size
         entry.sha256 = sha256_file(target)
         entry.url_injection = mechanism
         entry.stamp = self.stamp_key(platform, mechanism)
-        entry.state = STATE_READY
         entry.reason = ""
 
         self._build_archive(platform, entry)
+
+        # READY last, once every variant this platform offers is on disk.
+        #
+        # `state` is what the download route reads, so setting it before the
+        # archive exists advertises `format=archive` while it is still being
+        # written — gzipping a 33 MB binary is not instant, and a client that asks
+        # inside that window gets a 503 for an artifact the record already claims
+        # is ready. Publishing the state last makes "ready" mean ready for every
+        # variant, which is the same discipline that writes the manifest last.
+        entry.state = STATE_READY
 
         logger.info(
             "Prepared the %s CLI artifact via %s: %d bytes, sha256 %s%s",

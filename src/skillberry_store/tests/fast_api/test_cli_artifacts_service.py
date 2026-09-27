@@ -993,3 +993,69 @@ def test_no_public_url_means_pristine(tmp_path, prebuilt_dir):
     svc = _service(tmp_path, prebuilt_dir, public_url=None, toolchain=True)
     for platform in ALL_PLATFORMS:
         assert svc._choose_mechanism(platform) == MECHANISM_PRISTINE, platform
+
+
+# --------------------------------------------------------------------------- #
+# Publication order
+# --------------------------------------------------------------------------- #
+
+
+def test_ready_is_published_only_once_every_variant_exists(tmp_path, prebuilt_dir):
+    """`state = ready` must not be observable before the archive is on disk.
+
+    The download route reads `state` to decide whether to serve. Setting it while
+    the archive is still being written advertises `format=archive` for a file that
+    does not exist yet — gzipping a ~33 MB binary is not instant, so a client
+    asking inside that window gets a 503 for something the record already calls
+    ready. Publishing last makes "ready" mean ready for every variant.
+
+    Observed by watching the entry from inside archive construction, which is the
+    only moment the ordering is distinguishable.
+    """
+    svc = _service(tmp_path, prebuilt_dir)
+
+    seen: list[tuple[str, bool]] = []
+    real_build = svc._build_archive
+
+    def watching_build(platform, entry):
+        # What a concurrent request would see at this instant.
+        seen.append((entry.state, svc.archive_path(platform).is_file()))
+        return real_build(platform, entry)
+
+    svc._build_archive = watching_build  # type: ignore[method-assign]
+    svc.prepare_all()
+
+    assert seen, "the archive step never ran"
+    for state, archive_exists in seen:
+        assert state != STATE_READY, (
+            "the entry was already 'ready' while its archive was still being "
+            "built, so format=archive was advertised for a missing file"
+        )
+        assert not archive_exists
+
+    # And once preparation is done, both variants really are present.
+    for platform in ALL_PLATFORMS:
+        entry = svc.resolve(platform)
+        assert entry.state == STATE_READY, platform
+        assert svc.artifact_path(platform, entry.filename).is_file(), platform
+        assert svc.archive_path(platform).is_file(), platform
+        assert entry.archive_filename and entry.archive_sha256, platform
+
+
+def test_a_failed_archive_leaves_no_archive_record(tmp_path, prebuilt_dir):
+    """So the route can tell "no archive" from "archive at a derived path".
+
+    The handler locates the archive from the record; if building it fails the
+    record must stay empty, or the route would advertise a path nothing wrote.
+    """
+    svc = _service(tmp_path, prebuilt_dir)
+    svc._build_archive = lambda platform, entry: None  # type: ignore[method-assign]
+    svc.prepare_all()
+
+    entry = svc.resolve("linux-amd64")
+    # The raw artifact is still usable — that is the primary download.
+    assert entry.state == STATE_READY
+    assert svc.artifact_path("linux-amd64", entry.filename).is_file()
+    # But nothing claims an archive.
+    assert entry.archive_filename == ""
+    assert entry.archive_sha256 == ""

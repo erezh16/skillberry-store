@@ -370,18 +370,28 @@ jobs:
           done
           curl -sf http://127.0.0.1:8123/health || { tail -50 /tmp/store.log; exit 1; }
 
-      # A HEAD answers 200 once the artifact is ready, 503 while it is being
+      # A HEAD answers 200 once a platform is ready, 503 while it is being
       # prepared — so availability is read from the status, not from a document.
-      - name: Wait for the artifact to be prepared
+      #
+      # Waits for EVERY platform, not just the one the later steps download.
+      # Preparation walks the platforms in order, so linux-amd64 goes ready while
+      # the rest are still being stamped; proceeding then would race the steps
+      # below against work still in flight.
+      - name: Wait for every platform to be prepared
         run: |
-          url='http://127.0.0.1:8123/cli/download?platform=linux-amd64'
-          for i in $(seq 1 60); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' -I "$url")
-            echo "linux-amd64: HTTP $code"
-            [ "$code" = "200" ] && break
-            sleep 2
+          base='http://127.0.0.1:8123/cli/download'
+          for platform in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64; do
+            for i in $(seq 1 90); do
+              code=$(curl -s -o /dev/null -w '%{http_code}' -I "$base?platform=$platform")
+              [ "$code" = "200" ] && break
+              sleep 2
+            done
+            echo "$platform: HTTP $code"
+            [ "$code" = "200" ] || {
+              echo "::error::$platform never became ready"
+              tail -40 /tmp/store.log; exit 1; }
           done
-          curl -sI "$url" | grep -i 'x-sbs-'
+          curl -sI "$base?platform=linux-amd64" | grep -i 'x-sbs-'
 
       - name: Download and verify against the published digest
         run: |

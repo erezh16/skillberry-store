@@ -203,9 +203,30 @@ def register_cli_api(
             )
 
         if format == "archive":
+            # Located from the record rather than recomputed: an empty
+            # archive_filename means building it did not succeed, and serving a
+            # path derived from the platform would then advertise a file that was
+            # never written.
+            if not entry.archive_filename or not entry.archive_sha256:
+                logger.warning(
+                    "No archive recorded for %s; serving raw is still available",
+                    detection.platform,
+                )
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "detail": "archive_unavailable",
+                        "platform": detection.platform,
+                        "message": (
+                            "The archive for this platform is not available. "
+                            "Request format=raw instead."
+                        ),
+                    },
+                    headers={"Retry-After": "10", "Vary": VARY_HEADER},
+                )
             path = service.archive_path(detection.platform)
-            filename = entry.archive_filename or path.name
-            digest = entry.archive_sha256 or entry.sha256
+            filename = entry.archive_filename
+            digest = entry.archive_sha256
             media_type = (
                 "application/zip"
                 if detection.platform.startswith("windows-")

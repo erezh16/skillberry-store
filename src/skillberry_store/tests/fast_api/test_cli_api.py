@@ -390,3 +390,25 @@ def test_download_off_unregisters_the_route(tmp_path):
     with TestClient(app) as client:
         assert client.get("/cli/download").status_code == 404
     assert not [r for r in app.routes if getattr(r, "path", "").startswith("/cli")]
+
+
+def test_archive_request_is_refused_when_no_archive_was_built(tmp_path):
+    """A 503 naming the alternative, not a 404 for a path nothing wrote.
+
+    The route locates the archive from the preparation record, so an empty record
+    has to be answered explicitly — otherwise it would serve a path derived from
+    the platform and report a missing file.
+    """
+    app, service = _make_app(tmp_path)
+    entry = service.resolve("linux-amd64")
+    entry.archive_filename = ""
+    entry.archive_sha256 = ""
+
+    with TestClient(app) as client:
+        resp = client.get("/cli/download?platform=linux-amd64&format=archive")
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "archive_unavailable"
+        assert "format=raw" in resp.json()["message"]
+
+        # The raw variant is unaffected — it is the primary download.
+        assert client.get("/cli/download?platform=linux-amd64").status_code == 200
