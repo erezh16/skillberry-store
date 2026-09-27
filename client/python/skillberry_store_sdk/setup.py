@@ -35,8 +35,8 @@ REQUIRES = [
 # installs anywhere — that is why this is an extra rather than a hard dependency
 # (docs/design/new_cli.md §4.6). Environment markers keep it to the platforms we
 # publish wheels for: on anything else the extra resolves to nothing rather than
-# failing the whole install, and the CLI comes from the store's own
-# /cli/install.sh instead.
+# failing the whole install, and the CLI is downloaded from a store's
+# /cli/download instead.
 _CLI_PLATFORMS = [
     "(sys_platform == 'linux' and platform_machine in 'x86_64 aarch64')",
     "(sys_platform == 'darwin' and platform_machine in 'x86_64 arm64')",

@@ -18,9 +18,9 @@ Three properties are pinned here:
    turned into a test, and the whole promise of a downloaded artifact.
 3. **The ``-ldflags`` control.** A binary linked against a dead port must
    *fail*. ``-X`` silently no-ops unless the target has a constant string
-   initializer (§3.4 #1, G8): during prototyping the happy path looked correct
-   while the flag was being ignored entirely, and only a build that *should*
-   fail revealed it. Without this test, "the URL was baked in" is unverified.
+   initializer (§3.4 #1, G8), and the linker reports nothing. The happy path
+   looks identical either way, so only a build that *should* fail can tell them
+   apart. Without this test, "the URL was baked in" is unverified.
 """
 
 from __future__ import annotations
@@ -113,6 +113,7 @@ ALLOWED_RESTISH_SUBSTRINGS = (
     "Restish version:",  # `cli doctor`'s label
     "restish shell setup",  # `cli doctor`'s hint
     "engine: restish",  # ours, on purpose
+    "Embeds restish",  # ours: the licence pointer required by redistribution
 )
 
 
@@ -325,7 +326,7 @@ def test_env_url_overrides_the_baked_slot(built_cli, clean_home, tmp_path):
 
 
 def test_dead_port_build_must_fail(tmp_path, clean_home):
-    """The control that caught a false positive during prototyping.
+    """The control that makes every other injection claim in this suite mean something.
 
     If the ``-X …cli.URLSlot`` injection were being ignored — a wrong package
     path is enough — this binary would silently fall

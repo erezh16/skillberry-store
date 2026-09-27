@@ -281,6 +281,10 @@ Ids are `<goos>-<goarch>`, a **closed enum** server-side (§7.2).
 
 Two mechanisms, both verified (M6, M9). The manifest records which one produced each artifact, so the UI, the CLI and support can see it:
 
+> **As built:** `patch` for four platforms and `rebuild` only for `darwin-arm64`
+> (sidecar when no toolchain is present) — the cheapest mechanism that works, per
+> platform. See §11.1 R6.
+
 | | `rebuild` | `patch` |
 | --- | --- | --- |
 | How | `GOOS/GOARCH go build -ldflags "-X <cli-pkg>.URLSlot=<url>"` (see the layout note in §9) | Rewrite the padded 60-byte slot in a CI-built artifact, in place, same length |
@@ -326,6 +330,11 @@ Default **A**: it satisfies "prepare artifacts for the current `SBS_PUBLIC_URL` 
 ### 5.5 API surface
 
 #### 5.5.1 Endpoints
+
+> **As built: one endpoint, not five.** `GET`/`HEAD` `/cli/download`, with an
+> artifact's identity in response headers. See §11.1 R1–R3 for what was dropped
+> and why. The rest of this subsection is the original proposal, kept for
+> traceability.
 
 New `fast_api/cli_api.py`, registered from `SBS.__init__`:
 
@@ -469,6 +478,10 @@ New `.github/workflows/cli-artifacts.yml`. Because Go cross-compiles, **one** `u
 
 ## 6. Configuration surface
 
+> **As built: one variable, not eight.** `SBS_CLI_DOWNLOAD` gates the feature and
+> everything else is derived. See §11.1 R5. The table below is the original
+> proposal, kept for traceability.
+
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `SBS_PUBLIC_URL` | unset | Externally reachable base URL. **Adopted from [npx.md §5.11](npx.md) unchanged**: `Field(None, validation_alias="SBS_PUBLIC_URL")` on `SBSettings` ([server.py:58-68](../../src/skillberry_store/fast_api/server.py#L58-L68)), scheme required, trailing slash stripped, logged at boot. Precedence: `SBS_PUBLIC_URL` → `request.base_url` (manifest links and install scripts only, never a baked artifact) → warn and serve pristine |
@@ -587,7 +600,7 @@ linker and injects nothing, so it is a named constant on the Python side
 | **1** | `client/go` with branding, promoted surface, auth handler, verbs; CI build + the "no restish" assertion; **delete the Python shim and its generation step** | Delivers Feature A entirely, with no server change and no new surface. The deletion lands here, not later, so there is never a release with two CLIs |
 | **2** | `SBS_PUBLIC_URL`, `CliArtifactService` with `patch`, `/cli/manifest`, `/cli/download`, ACL floor, `sbs download-cli` | The whole download loop, no toolchain in the image |
 | **3** | Platform wheels + the `[cli]` extra, install scripts, UI modal (masthead, home card, **login screen**), sidecar for `darwin-arm64`, optional `rebuild` mode | Distribution and polish on a working contract |
-| **4** | Signing/notarization, provenance, upstream PR for the two flag strings | Needs accounts, keys and an upstream review cycle |
+| ~~**4**~~ | ~~Signing/notarization, provenance, upstream PR for the two flag strings~~ | **Dropped** (review decision). Unsigned binaries are documented rather than worked around; the two residual flag strings stay as they are |
 
 Rollback: `SBS_CLI_DOWNLOAD=off` removes the server-side feature at any time. The CLI itself rolls back the way any release does — by installing the previous version — which is why the deletion in Phase 1 is safe: the last shim release remains installable for anyone who pins it.
 
@@ -646,6 +659,24 @@ Nothing about the *transport* half of that design was wrong, and it is carried o
 | B1–B18 | Cross-compilation, URL baking with and without a toolchain, the `darwin-arm64` signature, image size, a compiler in production, cache lifetime, concurrency, the ACL override footgun, platform detection, caching, bandwidth, traversal, `Host`/linker injection, spec drift, stale registration, quarantine/AV, verifiability | §5.11 |
 
 ---
+
+## 11.1 Revisions after review
+
+Recorded here, and only here: the rest of the repository describes the final state.
+This section exists so that a reader who finds an earlier draft — or wonders why a
+section above proposes something the code does not do — can see what changed and
+why.
+
+| # | §  | Proposed | Built | Why |
+| --- | --- | --- | --- | --- |
+| R1 | §5.5.1 | Five endpoints: `manifest`, `download`, `install.sh`, `install.ps1`, `license` | **One**: `GET`/`HEAD` `/cli/download`, variants by query argument | Each extra route was a separate public surface to allow-list, cache, document and keep in step. The manifest existed to carry an artifact's identity, which response headers do more directly; the install scripts were a generated shell program — the sharpest security object in the feature (§5.7) — for something `curl -o` already does; and a licence endpoint is a download API for a text file that belongs in the repository |
+| R2 | §5.5.1 | `sha256` read from the manifest before downloading | `X-SBS-SHA256` on the download response | Same request that carries the bytes, so there is no window in which the digest and the artifact could disagree, and no second round trip. `HEAD` still reveals it without transferring ~32 MB. A `format=json` variant was the alternative; a header beats it because it needs no extra request at all |
+| R3 | §7.4 | restish's MIT licence served at `/cli/license` | Reproduced in the repository `LICENSE` under *Third-party software notices*, pointed at by `sbs --version`, and shipped in the `archive` variant | Redistribution obligations are met by the notice travelling with the artifact and the source, not by an HTTP endpoint |
+| R4 | §5.5.3 | A separate `_ALWAYS_UNAUTH_PATHS` floor merged over the operator's list | `/cli*` is one of the `_DEFAULT_UNAUTH_PATHS`, and a config file's list **adds to** the defaults instead of replacing them | One mechanism instead of two. This fixes the replace-vs-extend footgun at its source, which is what made the second list necessary in the first place. **Consequence:** an operator can no longer drop a default — the list only widens. That is deliberate, and it is what stops a config edit from making a deployment unable to answer its own liveness probe |
+| R5 | §6 | Eight `SBS_CLI_*` variables | **One**: `SBS_CLI_DOWNLOAD` | Everything else was derivable. The directories are a function of the source tree; the mechanism is a function of the platform and of whether a toolchain exists; preparation runs when the feature is on. A setting that only ever has one sensible value is a way to misconfigure a deployment, not a way to configure it |
+| R6 | §5.2 | `auto` means "rebuild wherever a toolchain exists" | `auto` means "the cheapest mechanism that works, per platform": patch for four platforms, rebuild only for `darwin-arm64` | Patching is milliseconds and produces a binary indistinguishable from a rebuilt one, so cross-compiling those four buys nothing and costs tens of seconds each. Measured: with a toolchain present the first reading made every server start a five-platform cross-compile, minutes of CPU, and made the test suite unusable |
+| R7 | §9 | Phase 4: signing, notarization, provenance, upstream PR | **Dropped** | Unsigned binaries are documented (B17) rather than worked around |
+| R8 | §5.9 | sha256 shown in the modal beside the download control | Behind a *Verify this download* disclosure | A 64-character hex string next to the primary action is clutter for everyone who will not check it. The disclosure also carries the command whose output it should equal |
 
 ## 12. Future work / open questions
 

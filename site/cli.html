@@ -64,9 +64,9 @@
 
     <h2>Install</h2>
     <p>Every running store serves the CLI for all supported platforms, and the download needs no sign-in:</p>
-    <pre><code>curl -fsSL http://localhost:8000/cli/install.sh | sh</code></pre>
-    <p>The script detects your platform, verifies the download's sha256, and installs to <code>~/.local/bin/sbs</code>. On Windows, in PowerShell:</p>
-    <pre><code>irm http://localhost:8000/cli/install.ps1 | iex</code></pre>
+    <pre><code>curl -fsSL "http://localhost:8000/cli/download?platform=linux-amd64" -o sbs
+chmod +x sbs</code></pre>
+    <p>One endpoint; the platform is a query argument. The response carries the artifact's sha256 in <code>X-SBS-SHA256</code>, and a <code>HEAD</code> request returns it without transferring the binary. Add <code>&amp;format=archive</code> for a tar.gz or zip — the better choice in a browser, since an archive keeps the executable bit and avoids macOS quarantine.</p>
     <p>You can also grab it from the store's web UI — there's a <strong>Download CLI</strong> button in the masthead — or with <code>pip</code>:</p>
     <pre><code>pip install skillberry-store-cli</code></pre>
     <p>Already have <code>sbs</code>? It can fetch itself, verifying the checksum before writing:</p>

@@ -12,58 +12,70 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`sbs` is now a native single-file executable, downloadable from any running
   store.** No Python, no `pip`, no separate `restish` install, nothing unpacked at
-  startup — one static binary per platform (~32 MB), pre-configured with the URL
-  of the store it came from.
+  startup — one static binary per platform (~32 MB), pre-configured with the URL of
+  the store it came from.
 
   ```bash
-  curl -fsSL https://store.example.com/cli/install.sh | sh   # detects platform, verifies sha256
-  sbs list-skills                                            # works immediately; no `connect`
+  curl -fsSL "https://store.example.com/cli/download?platform=linux-amd64" -o sbs
+  chmod +x sbs
+  ./sbs list-skills          # works immediately; no `connect`
   ```
 
   Five platforms are supported — `linux-amd64`, `linux-arm64`, `darwin-amd64`,
   `darwin-arm64`, `windows-amd64` — all cross-compiled from one Linux host.
 
-  **New unauthenticated endpoints, in every ACL mode**, so the download works from
-  a browser, `curl`, CI and the CLI itself without a session:
+  **One new endpoint**, unauthenticated in every ACL mode so the download works
+  from a browser, `curl`, CI and the CLI itself without a session:
 
-  | Endpoint | Purpose |
-  | --- | --- |
-  | `GET /cli/manifest` | Per-platform availability, version, size, sha256 |
-  | `GET`/`HEAD` `/cli/download` | The artifact (`?platform=`, `?format=raw\|archive`) |
-  | `GET /cli/install.sh` / `.ps1` | Generated installer with the store's URL inlined |
-  | `GET /cli/license` | restish's MIT licence, since we redistribute it |
+  | Method | Path | Answer |
+  | --- | --- | --- |
+  | `GET`, `HEAD` | `/cli/download` | The executable. `?platform=<goos>-<goarch>`, `?format=raw\|archive` |
 
-  These are reachable regardless of `unauthenticated_paths`, via a new **mandatory
-  floor** in the access-control loader. That also fixes an existing footgun: an
-  operator's `unauthenticated_paths` list *replaced* the defaults rather than
-  extending them, so anyone with a custom list had silently lost `/health`,
-  `/health/ready`, `/openapi.json` and `/docs`. Anything the floor adds that the
-  config file omitted is named in the boot log, so the widening is never silent.
+  Which artifact you get is a query argument, so there is one route, one cache key
+  shape and one thing to allow-list. The response carries the artifact's identity
+  in headers — `X-SBS-SHA256` (hex, comparable straight against `sha256sum`),
+  `X-SBS-CLI-Version`, `X-SBS-CLI-Platform` — so a `HEAD` reveals the digest and
+  size **without** transferring ~32 MB, and a `GET` carries the digest alongside
+  the bytes it describes.
+
+  It is reachable in every mode because it is one of the built-in
+  `unauthenticated_paths` defaults, alongside `/health` and the auth endpoints, and
+  a config file's own list now **adds to** those defaults instead of replacing
+  them. That also fixes an existing footgun: an operator with a custom list had
+  silently lost `/health`, `/health/ready`, `/openapi.json` and `/docs`, so liveness
+  probes and the API docs demanded a bearer token with nothing in the log to say
+  why.
 
   **New CLI verbs:** `sbs download-cli [--platform] [--output] [--format]` and
-  `sbs self-update`, both verifying the sha256 against the manifest before
-  writing. Both work even when the store's spec is unreachable, which is when you
-  need them.
+  `sbs self-update`, both verifying the published sha256 before writing anything.
+  Both work even when the store's spec is unreachable, which is when you need them.
 
   **New UI:** a **Download CLI** button in the masthead, a card on the home page,
-  and a link on the sign-in screen — the last because a user who cannot sign in
-  yet is exactly the user who wants the CLI.
+  and a link on the sign-in screen — the last because a user who cannot sign in yet
+  is exactly the user who wants the CLI. The expected checksum sits behind a
+  "Verify this download" disclosure rather than beside the button.
 
-  **New configuration** (`docs/config-env-vars.md`): `SBS_CLI_DOWNLOAD`,
-  `SBS_CLI_PREPARE`, `SBS_CLI_BUILD_MODE`, `SBS_CLI_DIST_DIR`,
-  `SBS_CLI_ARTIFACTS_DIR`, `SBS_CLI_ARTIFACTS_URL`,
-  `SBS_CLI_MAX_CONCURRENT_DOWNLOADS`. `SBS_PUBLIC_URL` is what gets baked into the
-  artifacts. Client-side: `SBS_URL` and `SBS_TOKEN`.
+  **One new setting**, `SBS_CLI_DOWNLOAD` (`on`/`off`), which unregisters the route
+  entirely when off. Everything else is derived: the artifact directories are fixed
+  beside the CLI source, the URL-injection mechanism follows from the platform and
+  from whether a Go toolchain is present, and the concurrency cap is fixed.
+  `SBS_PUBLIC_URL` is what gets baked into the artifacts. Client-side: `SBS_URL`
+  and `SBS_TOKEN`.
 
-  Preparing a per-URL artifact at server start is **idempotent and off the
-  critical path**: it runs as a background task, is stamped on
+  Preparing a per-URL artifact at server start is **idempotent and off the critical
+  path**: it runs as a background task, is stamped on
   `(public_url, cli_commit, engine_version, platform, mechanism)` so an unchanged
   `SBS_PUBLIC_URL` does no work at all, and `/health/ready` deliberately does not
-  gate on it. No Go toolchain is required in the runtime image — the default
-  mechanism rewrites a fixed-width URL slot inside a CI-built artifact in place.
+  gate on it. No Go toolchain is required — four of the five platforms are prepared
+  by rewriting a fixed-width URL slot inside a CI-built artifact in place, which
+  needs no compiler.
 
-  The binaries are **not yet code-signed**, so a browser download on macOS is
-  quarantined (the `curl` installer is not) and Windows SmartScreen may warn. See
+  restish is linked into the binaries, so its MIT licence is reproduced in this
+  repository's `LICENSE` under *Third-party software notices*, and `sbs --version`
+  points at it.
+
+  The binaries are **not code-signed**, so a browser download on macOS is
+  quarantined (a `curl` download is not) and Windows SmartScreen may warn. See
   `docs/cli.md`; design in `docs/design/new_cli.md`.
 
 - **`npx skills add` support.** A skill in a running store installs into Claude
@@ -264,7 +276,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ```bash
   pip install skillberry-store-cli            # platform wheel carrying the binary
   pip install 'skillberry-store-sdk[cli]'     # the SDK plus that wheel
-  curl -fsSL https://store.example.com/cli/install.sh | sh   # straight from a store
+  curl -fsSL "https://store.example.com/cli/download?platform=linux-amd64" -o sbs   # from a store
   ```
 
   Nothing is withdrawn: the last SDK release carrying the shim stays installable,

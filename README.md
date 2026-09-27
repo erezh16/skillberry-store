@@ -263,8 +263,8 @@ always match the store you are pointed at.
 Every running store serves it, for all supported platforms, with no sign-in:
 
 ```bash
-# Install straight from your store (detects your platform, verifies the sha256)
-curl -fsSL http://localhost:8000/cli/install.sh | sh
+# Download straight from your store; the response carries the sha256 to check
+curl -fsSL "http://localhost:8000/cli/download?platform=linux-amd64" -o sbs && chmod +x sbs
 
 # A binary downloaded from a store already talks to it — no `connect` step
 sbs list-skills                # List all skills
@@ -277,9 +277,10 @@ sbs connect http://prod:8000   # Point at a different server
 sbs cli doctor                 # Show resolved URLs, paths and spec freshness
 ```
 
-On Windows: `irm http://localhost:8000/cli/install.ps1 | iex`. There is also a
-**Download CLI** button in the store's web UI, and `pip install
-skillberry-store-cli` for a platform wheel carrying the same binary.
+Platform ids are `<goos>-<goarch>`; add `&format=archive` for a tar.gz/zip, which
+is the better choice for a browser download. There is also a **Download CLI**
+button in the store's web UI, and `pip install skillberry-store-cli` for a
+platform wheel carrying the same binary.
 
 > **Changed:** `pip install skillberry-store-sdk` no longer provides `sbs` — it
 > used to, and it required a manual `restish` install. Use

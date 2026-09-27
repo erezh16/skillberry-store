@@ -65,11 +65,11 @@ def test_no_manual_restish_install_instructions(doc_name, cli_doc, cli_page):
 
 
 @pytest.mark.parametrize("doc_name", ["docs/cli.md", "site/cli.html"])
-def test_documents_the_store_install_script(doc_name, cli_doc, cli_page):
+def test_documents_the_download_endpoint(doc_name, cli_doc, cli_page):
     text = cli_doc if doc_name.endswith(".md") else cli_page
-    assert "/cli/install.sh" in text, (
-        f"{doc_name} does not document the store's install script, which is the "
-        f"primary way a user gets the CLI."
+    assert "/cli/download" in text, (
+        f"{doc_name} does not document the download endpoint, which is how a user "
+        f"gets the CLI."
     )
 
 
@@ -162,17 +162,25 @@ CONTAINER_ENV = REPO_ROOT / "container.env"
 # Every variable §6 introduces. A knob that exists in code but nowhere in the
 # docs is a knob nobody can find, and the deployment defaults file is where an
 # operator looks first.
+# Every variable the feature introduces. One server-side switch plus the two the
+# CLI itself reads. A knob that exists in code but nowhere in the docs is a knob
+# nobody can find; a variable in the docs that the code does not read is worse.
 CLI_ENV_VARS = (
     "SBS_CLI_DOWNLOAD",
+    # Client-side.
+    "SBS_URL",
+    "SBS_TOKEN",
+)
+
+# Variables the design once proposed and the implementation derives instead. The
+# docs must not offer them: an operator who sets one would see no effect.
+REMOVED_ENV_VARS = (
     "SBS_CLI_PREPARE",
     "SBS_CLI_BUILD_MODE",
     "SBS_CLI_DIST_DIR",
     "SBS_CLI_ARTIFACTS_DIR",
     "SBS_CLI_ARTIFACTS_URL",
     "SBS_CLI_MAX_CONCURRENT_DOWNLOADS",
-    # Client-side.
-    "SBS_URL",
-    "SBS_TOKEN",
 )
 
 
@@ -204,10 +212,30 @@ def test_config_doc_says_public_url_is_what_gets_baked():
     assert "baked" in text.lower()
 
 
-@pytest.mark.parametrize(
-    "var", ("SBS_PUBLIC_URL", "SBS_CLI_DOWNLOAD", "SBS_CLI_BUILD_MODE")
-)
+@pytest.mark.parametrize("var", ("SBS_PUBLIC_URL", "SBS_CLI_DOWNLOAD"))
 def test_container_env_carries_the_deployment_defaults(var):
     """container.env is baked to /app/.env, so it is the deployment's own doc."""
     text = CONTAINER_ENV.read_text(encoding="utf-8")
     assert var in text, f"{var} is not mentioned in container.env"
+
+
+@pytest.mark.parametrize("var", REMOVED_ENV_VARS)
+def test_docs_offer_no_variable_the_code_ignores(var):
+    """A documented setting that does nothing is worse than an undocumented one."""
+    for path in (CONFIG_DOC, CONTAINER_ENV, CLI_DOC):
+        text = path.read_text(encoding="utf-8")
+        assert var not in text, (
+            f"{path.name} still documents {var}, which nothing reads. The value is "
+            f"derived — see docs/config-env-vars.md for what replaced it."
+        )
+
+
+def test_config_doc_explains_what_is_derived():
+    """With one switch, the docs have to say how the rest is decided."""
+    text = CONFIG_DOC.read_text(encoding="utf-8")
+    assert "derived" in text.lower(), (
+        "docs/config-env-vars.md should say that everything besides the switch is "
+        "derived, or an operator will go looking for the knobs"
+    )
+    for topic in ("client/go/cli/prebuilt", "client/go/cli/dist"):
+        assert topic in text, f"the fixed location {topic} is not documented"

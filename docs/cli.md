@@ -11,7 +11,7 @@
 - **No prerequisites** — one static binary; no Python, no `pip`, no separate REST client to install
 - **Pre-configured** — a binary downloaded from a store already talks to that store
 
-Internally `sbs` embeds [restish](https://rest.sh/) as a Go library. That is an implementation detail: you never install, configure or invoke restish yourself. Its MIT licence is served at `/cli/license` and shipped in every download archive.
+Internally `sbs` embeds [restish](https://rest.sh/) as a Go library. That is an implementation detail: you never install, configure or invoke restish yourself. Its MIT licence is reproduced in this repository's [LICENSE](../LICENSE) under *Third-party software notices*, and `sbs --version` points at it.
 
 > **Upgrading from an older release?** `pip install skillberry-store-sdk` used to install an `sbs` script that required a manual `restish` install. It no longer provides `sbs` at all — see [Installation](#installation) for the replacements. The generated SDK remains a pure Python library.
 
@@ -19,21 +19,37 @@ Internally `sbs` embeds [restish](https://rest.sh/) as a Go library. That is an 
 
 ### From a running store (recommended)
 
-Any store serves the CLI, unauthenticated, for every supported platform:
+Any store serves the CLI, unauthenticated, for every supported platform. One
+endpoint, one query argument:
 
 ```bash
-curl -fsSL http://localhost:8000/cli/install.sh | sh
+curl -fsSL "http://localhost:8000/cli/download?platform=linux-amd64" -o sbs
+chmod +x sbs
 ```
 
-This detects your platform, verifies the download's sha256, and installs to `~/.local/bin/sbs` (override with `SBS_INSTALL_DIR`). On macOS this is the best path: a `curl`-fetched file carries no Gatekeeper quarantine attribute, unlike a browser download.
+Platform ids are `<goos>-<goarch>`: `linux-amd64`, `linux-arm64`, `darwin-amd64`,
+`darwin-arm64`, `windows-amd64`. Omit `platform` and the store detects it from the
+request, which is convenient in a browser and a guess everywhere else — a script
+should always name it.
 
-On Windows, in PowerShell:
+The response carries the artifact's sha256 in `X-SBS-SHA256`, so you can check
+what you received:
 
-```powershell
-irm http://localhost:8000/cli/install.ps1 | iex
+```bash
+curl -fsSI "http://localhost:8000/cli/download?platform=linux-amd64" | grep -i x-sbs-sha256
+shasum -a 256 sbs
 ```
 
-You can also download from the store's web UI — there is a **Download CLI** button in the masthead, a card on the home page, and a link on the sign-in screen.
+`HEAD` (`-I`) answers with the digest, the size and the version **without**
+transferring the ~32 MB body, so it is cheap to ask first.
+
+`&format=archive` returns a `.tar.gz` (`.zip` on Windows) instead of a bare
+executable. Prefer it for a *browser* download: an archive preserves the
+executable bit, and on macOS it avoids the Gatekeeper quarantine attribute that a
+directly-downloaded binary picks up.
+
+You can also download from the store's web UI — there is a **Download CLI** button
+in the masthead, a card on the home page, and a link on the sign-in screen.
 
 ### With pip
 
@@ -41,7 +57,12 @@ You can also download from the store's web UI — there is a **Download CLI** bu
 pip install skillberry-store-cli
 ```
 
-This is a platform wheel carrying the same native binary (the pattern `ruff` and `uv` use). On a platform with no wheel, use the install script above.
+A platform wheel carrying the same native binary (the pattern `ruff` and `uv`
+use). A wheel has no store baked in, so point it at one once:
+
+```bash
+sbs connect https://store.example.com
+```
 
 To get the SDK and the CLI together:
 
@@ -56,17 +77,22 @@ sbs download-cli --platform darwin-arm64   # fetch a build for another machine
 sbs self-update                            # replace this binary with the store's
 ```
 
-Both verify the sha256 against the store's manifest before writing anything.
+Both read the expected sha256 from the store's response and verify the bytes
+before writing anything.
 
 ### Supported platforms
 
-`linux-amd64`, `linux-arm64`, `darwin-amd64`, `darwin-arm64`, `windows-amd64`. `GET /cli/manifest` reports which are available from a given store, with a sha256 for each.
+`linux-amd64`, `linux-arm64`, `darwin-amd64`, `darwin-arm64`, `windows-amd64`. A
+`HEAD` on the download endpoint tells you whether a given store has a particular
+build ready: `200` yes, `404` no build, `503` still being prepared.
 
 ### Unsigned binaries
 
-The artifacts are not yet code-signed or notarized, so:
+The artifacts are not code-signed or notarized, so:
 
-- **macOS** quarantines a *browser* download. Either use the install script, or clear the attribute: `xattr -dr com.apple.quarantine ~/Downloads/sbs`
+- **macOS** quarantines a *browser* download. Either fetch it with `curl` (which
+  sets no quarantine attribute), or clear it:
+  `xattr -dr com.apple.quarantine ~/Downloads/sbs`
 - **Windows** SmartScreen may warn on first run.
 
 ## Basic Usage
@@ -313,25 +339,24 @@ implementation is an importable package.
 | --- | --- |
 | `SBS_URL` | Override the store URL for one invocation |
 | `SBS_TOKEN` | Use a bearer token instead of prompting (CI). Select with `-p env-token` |
-| `SBS_INSTALL_DIR` | Where `install.sh` puts the binary (default `~/.local/bin`) |
 
 ## Troubleshooting
 
 ### CLI not found after installation
 
-Ensure the install directory is on your PATH:
+Put the binary somewhere on your PATH, or add its directory:
 
 ```bash
 # Linux/macOS
-export PATH="$HOME/.local/bin:$PATH"
+mv sbs ~/.local/bin/ && export PATH="$HOME/.local/bin:$PATH"
 
 # Windows
-# Add the directory install.ps1 reported to your PATH
+# Add the directory holding sbs.exe to your PATH
 ```
 
 ### `pip install skillberry-store-sdk` no longer gives me `sbs`
 
-That is deliberate. Install `skillberry-store-cli` (or `skillberry-store-sdk[cli]`), or use the store's install script — see [Installation](#installation).
+That is deliberate. Install `skillberry-store-cli` (or `skillberry-store-sdk[cli]`), or download the binary from a store — see [Installation](#installation).
 
 ### "could not load the API description from ..."
 

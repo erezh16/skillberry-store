@@ -27,14 +27,15 @@ A binary downloaded **from a store** needs none of this — it already talks to
 that store. If you have access to one, that is the better route:
 
 ```bash
-curl -fsSL https://store.example.com/cli/install.sh | sh
+curl -fsSL "https://store.example.com/cli/download?platform=linux-amd64" -o sbs
+chmod +x sbs
 ```
 
 ## No wheel for your platform?
 
 Wheels are published for `linux-amd64`, `linux-arm64`, `darwin-amd64`,
-`darwin-arm64` and `windows-amd64`. Anywhere else, use a store's install script
-(above) or build from source — `client/go` in the repository.
+`darwin-arm64` and `windows-amd64`. Anywhere else, download from a store (above)
+or build from source — `client/go` in the repository.
 
 ## Upgrading from `skillberry-store-sdk`
 
@@ -45,6 +46,6 @@ a pure Python library that installs anywhere.
 
 ## Licence
 
-Apache-2.0. The binary embeds [restish](https://rest.sh/) (MIT); its licence
-ships alongside the executable inside the wheel and is served by every store at
-`/cli/license`.
+Apache-2.0. The binary embeds [restish](https://rest.sh/) (MIT); its licence ships
+alongside the executable inside the wheel, and is reproduced in the repository's
+own LICENSE under *Third-party software notices*. `sbs --version` points at it.

@@ -48,7 +48,7 @@ def main() -> int:
             "platform wheel, or get the binary straight from your store:\n"
             "\n"
             "  pip install --force-reinstall --only-binary :all: skillberry-store-cli\n"
-            "  curl -fsSL <store-url>/cli/install.sh | sh\n"
+            '  curl -fsSL "<store-url>/cli/download?platform=linux-amd64" -o sbs\n'
         )
         return 1
 

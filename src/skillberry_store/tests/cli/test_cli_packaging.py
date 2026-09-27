@@ -109,8 +109,8 @@ def test_launcher_reports_a_missing_binary_actionably():
     assert "--only-binary" in source, (
         "name the pip flag that forces a platform wheel"
     )
-    assert "install.sh" in source, (
-        "offer the store's install script, which works where no wheel exists"
+    assert "/cli/download" in source, (
+        "offer a store download, which works where no wheel exists"
     )
 
 

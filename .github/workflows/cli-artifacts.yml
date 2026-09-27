@@ -188,6 +188,7 @@ jobs:
             | grep -v 'Restish version:' \
             | grep -v 'restish shell setup' \
             | grep -v 'engine: restish' \
+            | grep -v 'Embeds restish' \
             > /tmp/offenders.txt || true
 
           if [ -s /tmp/offenders.txt ]; then
@@ -351,23 +352,33 @@ jobs:
           done
           curl -sf http://127.0.0.1:8123/health || { tail -50 /tmp/store.log; exit 1; }
 
-      - name: Wait for the artifacts to be prepared
+      # A HEAD answers 200 once the artifact is ready, 503 while it is being
+      # prepared — so availability is read from the status, not from a document.
+      - name: Wait for the artifact to be prepared
         run: |
+          url='http://127.0.0.1:8123/cli/download?platform=linux-amd64'
           for i in $(seq 1 60); do
-            state="$(curl -s http://127.0.0.1:8123/cli/manifest \
-              | python3 -c 'import sys,json;print(json.load(sys.stdin)["platforms"]["linux-amd64"]["state"])')"
-            echo "linux-amd64: $state"
-            [ "$state" = "ready" ] && break
+            code=$(curl -s -o /dev/null -w '%{http_code}' -I "$url")
+            echo "linux-amd64: HTTP $code"
+            [ "$code" = "200" ] && break
             sleep 2
           done
-          curl -s http://127.0.0.1:8123/cli/manifest | python3 -m json.tool
+          curl -sI "$url" | grep -i 'x-sbs-'
 
-      # The install script is the documented primary path, so it is what gets
-      # smoke-tested — including its sha256 verification.
-      - name: Install via the generated script
+      - name: Download and verify against the published digest
         run: |
-          curl -fsSL http://127.0.0.1:8123/cli/install.sh | SBS_INSTALL_DIR=/tmp/bin sh
-          test -x /tmp/bin/sbs
+          url='http://127.0.0.1:8123/cli/download?platform=linux-amd64'
+          mkdir -p /tmp/bin
+          # The digest comes from the same response that carries the bytes, so
+          # there is no window in which the two could describe different files.
+          expected=$(curl -fsSL -D /tmp/headers "$url" -o /tmp/bin/sbs \
+            && tr -d '\r' < /tmp/headers | awk 'tolower($1)=="x-sbs-sha256:"{print $2}')
+          actual=$(sha256sum /tmp/bin/sbs | cut -d' ' -f1)
+          echo "published $expected"
+          echo "computed  $actual"
+          test -n "$expected" || { echo "::error::no X-SBS-SHA256 header"; exit 1; }
+          test "$expected" = "$actual" || { echo "::error::digest mismatch"; exit 1; }
+          chmod +x /tmp/bin/sbs
 
       - name: The installed binary talks to the store with zero configuration
         run: |
@@ -386,17 +397,26 @@ jobs:
           mkdir -p "$HOME"
           /tmp/bin/sbs-downloaded list-skills < /dev/null
 
-      - name: A tampered download is refused
+      - name: HEAD reports the digest without transferring the artifact
         run: |
-          # The supply-chain assertion, end to end: the install script and
-          # download-cli both verify against the manifest, so a byte-level change
-          # must stop the install rather than produce a working binary.
-          sha="$(curl -s http://127.0.0.1:8123/cli/manifest \
-            | python3 -c 'import sys,json;print(json.load(sys.stdin)["platforms"]["linux-amd64"]["sha256"])')"
-          curl -fsSL 'http://127.0.0.1:8123/cli/download?platform=linux-amd64&format=raw' -o /tmp/art
-          actual="$(sha256sum /tmp/art | cut -d' ' -f1)"
-          test "$sha" = "$actual" || { echo "served bytes do not match the manifest"; exit 1; }
-          echo "OK: served bytes match the published sha256"
+          url='http://127.0.0.1:8123/cli/download?platform=linux-amd64'
+          curl -sI "$url" -o /tmp/head.txt
+          tr -d '\r' < /tmp/head.txt | grep -i 'x-sbs-sha256' \
+            || { echo "::error::HEAD carries no digest"; exit 1; }
+          # A HEAD must have no body at all, or it is not cheaper than a GET.
+          body=$(curl -sI "$url" | wc -c)
+          full=$(curl -s "$url" | wc -c)
+          test "$body" -lt "$full" || { echo "::error::HEAD returned a body"; exit 1; }
+          echo "OK"
+
+      - name: The archive variant carries the licence notice
+        run: |
+          curl -fsSL 'http://127.0.0.1:8123/cli/download?platform=linux-amd64&format=archive' \
+            -o /tmp/sbs.tar.gz
+          tar -tzf /tmp/sbs.tar.gz | tee /tmp/arc.txt
+          grep -q '^sbs$' /tmp/arc.txt || { echo "::error::no binary in the archive"; exit 1; }
+          grep -q 'LICENSE.restish' /tmp/arc.txt \
+            || { echo "::error::the archive omits the engine licence"; exit 1; }
 
       - name: Refusals behave as documented
         run: |

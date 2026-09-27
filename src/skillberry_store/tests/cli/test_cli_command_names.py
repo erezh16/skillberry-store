@@ -242,6 +242,7 @@ EXPECTED_ALLOWLIST = (
     "Restish version:",
     "restish shell setup",
     "engine: restish",
+    "Embeds restish",
 )
 
 
