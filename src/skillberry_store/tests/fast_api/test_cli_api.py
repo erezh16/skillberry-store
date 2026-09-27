@@ -119,12 +119,15 @@ def test_download_serves_the_prepared_artifact(client_and_service):
 
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "application/octet-stream"
-    # The bytes must be the prepared ones, carrying this store's URL.
-    assert PUBLIC_URL.encode() in resp.content
-    assert SLOT_PATTERN not in resp.content
 
+    # Byte-for-byte what preparation produced, which is the strongest statement
+    # available: it covers the baked URL, the padding and every other byte, and
+    # it is the same digest the response advertises.
     entry = service.resolve("linux-amd64")
+    on_disk = service.artifact_path("linux-amd64", entry.filename).read_bytes()
+    assert resp.content == on_disk
     assert hashlib.sha256(resp.content).hexdigest() == entry.sha256
+    assert SLOT_PATTERN not in resp.content, "an unpatched slot was served"
 
 
 def test_download_sets_content_disposition(client_and_service):

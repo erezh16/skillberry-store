@@ -25,6 +25,7 @@ Three properties are pinned here:
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -376,9 +377,14 @@ def test_connect_writes_config_without_reaching_a_store(tmp_path, clean_home):
         f"exactly that is what it is for.\nstdout:\n{proc.stdout}\n"
         f"stderr:\n{proc.stderr}"
     )
+    # Parsed and compared for equality, not searched for a substring: what
+    # matters is that `connect` wrote the URL into the field the CLI reads, and a
+    # URL appearing anywhere in the file would not establish that.
     cfg = clean_home / ".config" / "sbs" / "sbs.json"
-    body = cfg.read_text(encoding="utf-8")
-    assert "http://example.test:8080" in body, body
+    parsed = json.loads(cfg.read_text(encoding="utf-8"))
+    entry = parsed["apis"]["store"]
+    assert entry["base_url"] == "http://example.test:8080", parsed
+    assert entry["spec_url"] == "http://example.test:8080/openapi.json", parsed
 
 
 def test_download_cli_works_without_a_reachable_spec(tmp_path, clean_home):

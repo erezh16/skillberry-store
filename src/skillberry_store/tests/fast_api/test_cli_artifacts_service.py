@@ -180,17 +180,47 @@ def _fake_binary(slots: int = 3, filler: bytes = b"\x00ELF-ish padding\x00") -> 
     return data
 
 
+def _padded(url: str) -> bytes:
+    """The exact bytes a slot must hold for ``url``."""
+    encoded = url.encode()
+    return encoded + SLOT_PAD * (SLOT_WIDTH - len(encoded))
+
+
+def _slot_offsets(data: bytes) -> list[int]:
+    """Where the unpatched slots are in ``data``."""
+    offsets, start = [], 0
+    while (i := data.find(SLOT_PATTERN, start)) >= 0:
+        offsets.append(i)
+        start = i + SLOT_WIDTH
+    return offsets
+
+
+def _slots_after(before: bytes, after: bytes) -> list[bytes]:
+    """Read each slot out of ``after``, at the offsets it occupied in ``before``.
+
+    Reads the slots positionally and compares them for equality, rather than
+    searching the whole blob for a URL substring. A URL that merely appears
+    somewhere in a binary proves nothing about what the CLI will read at runtime:
+    the value has to be in the slot, at the slot's offset, padded to exactly the
+    slot's width. Patching is same-size and in place, so the offsets line up.
+    """
+    return [after[o : o + SLOT_WIDTH] for o in _slot_offsets(before)]
+
+
 def test_patch_rewrites_every_slot_without_changing_size():
     data = _fake_binary(slots=3)
+    pristine = bytes(data)
     original_size = len(data)
 
-    count = patch_url_slot(data, "http://store.example.com:9443")
+    url = "http://store.example.com:9443"
+    count = patch_url_slot(data, url)
 
     assert count == 3, f"patched {count} slots, want 3"
     # The invariant that makes patching possible at all: a linked binary has
     # offsets (and on some formats checksums) that a length change invalidates.
     assert len(data) == original_size, "patching changed the file size"
-    assert b"http://store.example.com:9443" in bytes(data)
+    # Every slot holds exactly the padded URL, in place.
+    assert _slots_after(pristine, bytes(data)) == [_padded(url)] * 3
     assert SLOT_PATTERN not in bytes(data), "an unpatched slot remains"
 
 
@@ -352,9 +382,13 @@ def test_prepared_artifact_carries_the_public_url(tmp_path, prebuilt_dir):
     svc = _service(tmp_path, prebuilt_dir)
     svc.prepare_all()
 
-    body = svc.artifact_path("linux-amd64", "sbs").read_bytes()
-    assert b"http://store.test:8000" in body
-    assert SLOT_PATTERN not in body, "an unpatched slot survived"
+    source = (prebuilt_dir / "linux-amd64" / "sbs").read_bytes()
+    prepared = svc.artifact_path("linux-amd64", "sbs").read_bytes()
+
+    slots = _slots_after(source, prepared)
+    assert slots, "the source artifact had no slot to patch"
+    assert slots == [_padded("http://store.test:8000")] * len(slots)
+    assert SLOT_PATTERN not in prepared, "an unpatched slot survived"
 
 
 def test_darwin_arm64_uses_a_sidecar_without_a_toolchain(tmp_path, prebuilt_dir):
@@ -468,10 +502,14 @@ def test_changed_public_url_re_prepares(tmp_path, prebuilt_dir):
 
     entry = svc2.resolve("linux-amd64")
     assert entry.state == STATE_READY
-    assert entry.sha256 != old_sha, "a changed SBS_PUBLIC_URL did not re-prepare"
-    body = svc2.artifact_path("linux-amd64", entry.filename).read_bytes()
-    assert b"http://other.test:9000" in body
-    assert b"http://store.test:8000" not in body
+    assert entry.sha256 != old_sha, "a changed public URL did not re-prepare"
+
+    source = (prebuilt_dir / "linux-amd64" / "sbs").read_bytes()
+    prepared = svc2.artifact_path("linux-amd64", entry.filename).read_bytes()
+    slots = _slots_after(source, prepared)
+    assert slots == [_padded("http://other.test:9000")] * len(slots), (
+        "the slots do not hold the new URL"
+    )
 
 
 def test_changed_cli_commit_re_prepares(tmp_path, prebuilt_dir):
