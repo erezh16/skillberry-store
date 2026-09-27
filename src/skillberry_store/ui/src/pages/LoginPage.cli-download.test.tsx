@@ -35,28 +35,16 @@ vi.mock('@/contexts/AuthContext', () => ({
 
 const LOGIN_INFO_META = 'sbs-login-info';
 
-const MANIFEST = {
-  cli_name: 'sbs',
-  cli_version: '1.2.3',
-  public_url: 'http://store.test:8000',
-  generated_at: '2026-09-25T12:00:00Z',
-  engine: {
-    name: 'restish',
-    version: '2.3.0',
-    license: 'MIT',
-    license_url: '/cli/license',
-  },
-  platforms: {
-    'linux-amd64': {
-      state: 'ready',
-      filename: 'sbs',
-      size: 33_000_000,
-      sha256: 'a'.repeat(64),
-      url_injection: 'patch',
-      download_url: '/cli/download?platform=linux-amd64&format=raw',
-      archive_url: '/cli/download?platform=linux-amd64&format=archive',
-    },
-  },
+/** What a HEAD on /cli/download reports for a ready artifact. */
+const HEAD_OK = {
+  ok: true,
+  status: 200,
+  headers: new Headers({
+    'X-SBS-SHA256': 'a'.repeat(64),
+    'X-SBS-CLI-Version': '1.2.3',
+    'X-SBS-CLI-URL-Injection': 'patch',
+    'Content-Length': '33000000',
+  }),
 };
 
 function renderLoginPage() {
@@ -73,11 +61,7 @@ beforeEach(() => {
     configurable: true,
   });
   delete (window.navigator as any).userAgentData;
-  global.fetch = vi.fn().mockResolvedValue({
-    ok: true,
-    status: 200,
-    json: async () => MANIFEST,
-  }) as any;
+  global.fetch = vi.fn().mockResolvedValue(HEAD_OK) as any;
 });
 
 afterEach(() => {
@@ -94,7 +78,7 @@ describe('LoginPage CLI download link', () => {
     expect(screen.getByRole('button', { name: /Download the sbs CLI/i })).toBeTruthy();
   });
 
-  it('does not fetch the manifest until the link is clicked', () => {
+  it('does not touch the network until the link is clicked', () => {
     // The sign-in screen must not pay for a feature most visitors will not use.
     renderLoginPage();
     expect(global.fetch).not.toHaveBeenCalled();
@@ -109,10 +93,12 @@ describe('LoginPage CLI download link', () => {
     await waitFor(() => {
       expect(screen.getByLabelText('Select your platform')).toBeTruthy();
     });
-    expect(global.fetch).toHaveBeenCalledWith('/cli/manifest');
+    const [url, init] = (global.fetch as any).mock.calls[0];
+    expect(url).toContain('/cli/download?platform=');
+    expect(init?.method).toBe('HEAD');
   });
 
-  it("sends no credentials with the modal's manifest fetch", async () => {
+  it("sends no credentials with the modal's request", async () => {
     // It has to work before a session exists, so credentials would be both
     // pointless and (in some deployments) a CORS failure.
     renderLoginPage();

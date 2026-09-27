@@ -4,77 +4,37 @@
 /**
  * CliDownloadModal — docs/design/new_cli.md §8.3 #21.
  *
- * The assertions that matter here are the ones a user notices when they break:
- * the detected platform is preselected, unavailable platforms are disabled *and
- * labelled*, the sha256 is on screen, `preparing` reads as "come back" rather
- * than "broken", a fetch failure is visible rather than a blank modal, and the
- * download control is a real `<a href download>` carrying the right query string
- * (not a Button whose onClick would buffer 32 MB into memory).
+ * The assertions that matter are the ones a user notices when they break: the
+ * detected platform is preselected, every platform stays selectable, the digest
+ * is reachable but not cluttering the primary action, `preparing` reads as "come
+ * back" rather than an error, a failure is visible rather than a blank modal, and
+ * the download control is a real `<a href download>` carrying the right query
+ * string (not a Button whose onClick would buffer 32 MB into memory).
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { CliDownloadModal } from './CliDownloadModal';
-import type { CliManifest } from '@/types/cli';
 
-const READY_SHA = 'a'.repeat(64);
+const SHA = 'a'.repeat(64);
 
-function manifest(overrides: Partial<CliManifest> = {}): CliManifest {
-  return {
-    cli_name: 'sbs',
-    cli_version: '1.2.3',
-    public_url: 'http://store.test:8000',
-    generated_at: '2026-09-25T12:00:00Z',
-    engine: {
-      name: 'restish',
-      version: '2.3.0',
-      license: 'MIT',
-      license_url: '/cli/license',
-    },
-    platforms: {
-      'linux-amd64': {
-        state: 'ready',
-        filename: 'sbs',
-        size: 33_000_000,
-        sha256: READY_SHA,
-        url_injection: 'patch',
-        download_url: '/cli/download?platform=linux-amd64&format=raw',
-        archive_url: '/cli/download?platform=linux-amd64&format=archive',
-        archive_sha256: 'b'.repeat(64),
-        archive_size: 11_000_000,
-        archive_filename: 'sbs-linux-amd64.tar.gz',
-      },
-      'darwin-arm64': {
-        state: 'ready',
-        filename: 'sbs',
-        size: 31_000_000,
-        sha256: 'c'.repeat(64),
-        url_injection: 'sidecar',
-        download_url: '/cli/download?platform=darwin-arm64&format=raw',
-        archive_url: '/cli/download?platform=darwin-arm64&format=archive',
-        archive_sha256: 'd'.repeat(64),
-        archive_size: 10_000_000,
-      },
-      'windows-amd64': { state: 'preparing', retry_after: 10 },
-      'linux-arm64': { state: 'unavailable', reason: 'not_bundled' },
-      // darwin-amd64 absent entirely — the manifest is a Partial record, and a
-      // missing key must behave like `unavailable` rather than crashing.
-    },
+/** A HEAD response from the download endpoint. */
+function headOk(overrides: Record<string, string> = {}) {
+  const headers = new Headers({
+    'X-SBS-SHA256': SHA,
+    'X-SBS-CLI-Version': '1.2.3',
+    'X-SBS-CLI-URL-Injection': 'patch',
+    'Content-Length': '33000000',
     ...overrides,
-  };
-}
-
-function mockFetch(body: unknown, ok = true) {
-  return vi.fn().mockResolvedValue({
-    ok,
-    status: ok ? 200 : 500,
-    statusText: ok ? 'OK' : 'Internal Server Error',
-    json: async () => body,
   });
+  return { ok: true, status: 200, headers };
 }
 
-/** Force the User-Agent so platform preselection is deterministic. */
+function headStatus(status: number, headers: Record<string, string> = {}) {
+  return { ok: false, status, headers: new Headers(headers) };
+}
+
 function setUserAgent(ua: string) {
   Object.defineProperty(window.navigator, 'userAgent', {
     value: ua,
@@ -89,33 +49,33 @@ const UA_WINDOWS = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/123.0.0.0';
 describe('CliDownloadModal', () => {
   beforeEach(() => {
     setUserAgent(UA_LINUX);
-    // No userAgentData by default: that is Safari and Firefox, and it is the
-    // path where the server's guess has to stand on its own.
+    // No userAgentData by default: that is Safari and Firefox, and the path where
+    // the User-Agent guess has to stand on its own.
     delete (window.navigator as any).userAgentData;
+    global.fetch = vi.fn().mockResolvedValue(headOk()) as any;
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('fetches the manifest and shows the store URL', async () => {
-    global.fetch = mockFetch(manifest()) as any;
+  it('inspects the selected platform with HEAD, not GET', async () => {
+    // The point of HEAD: learn the digest and size without pulling ~32 MB.
     render(<CliDownloadModal isOpen onClose={() => {}} />);
 
-    await waitFor(() => {
-      expect(screen.getByText(/http:\/\/store\.test:8000/)).toBeTruthy();
-    });
-    expect(global.fetch).toHaveBeenCalledWith('/cli/manifest');
+    await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+    const [url, init] = (global.fetch as any).mock.calls[0];
+    expect(init?.method).toBe('HEAD');
+    expect(url).toContain('/cli/download?platform=');
+    expect(url).toContain('format=raw');
   });
 
-  it('does not fetch while closed', () => {
-    global.fetch = mockFetch(manifest()) as any;
+  it('does not touch the network while closed', () => {
     render(<CliDownloadModal isOpen={false} onClose={() => {}} />);
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it('preselects the platform detected from the User-Agent', async () => {
-    global.fetch = mockFetch(manifest()) as any;
     setUserAgent(UA_WINDOWS);
     render(<CliDownloadModal isOpen onClose={() => {}} />);
 
@@ -129,7 +89,6 @@ describe('CliDownloadModal', () => {
     // Every Mac reports "Intel Mac OS X 10_15_7", so the UA cannot reveal the
     // CPU. Apple Silicon is the more likely machine, and the chooser stays
     // visible precisely because this is a guess.
-    global.fetch = mockFetch(manifest()) as any;
     setUserAgent(UA_MAC);
     render(<CliDownloadModal isOpen onClose={() => {}} />);
 
@@ -141,8 +100,7 @@ describe('CliDownloadModal', () => {
 
   it('refines a Mac guess with userAgentData when available', async () => {
     // The only client-side way to learn a Mac's real architecture. An Intel Mac
-    // must end up on darwin-amd64 despite the UA guess above.
-    global.fetch = mockFetch(manifest()) as any;
+    // must end up on darwin-amd64 despite the UA guess.
     setUserAgent(UA_MAC);
     (window.navigator as any).userAgentData = {
       getHighEntropyValues: vi.fn().mockResolvedValue({
@@ -164,7 +122,6 @@ describe('CliDownloadModal', () => {
 
   it('keeps the guess when userAgentData is rejected', async () => {
     // Some privacy configurations refuse the request; the guess must survive.
-    global.fetch = mockFetch(manifest()) as any;
     setUserAgent(UA_MAC);
     (window.navigator as any).userAgentData = {
       getHighEntropyValues: vi.fn().mockRejectedValue(new Error('denied')),
@@ -177,16 +134,12 @@ describe('CliDownloadModal', () => {
     expect(select.value).toBe('darwin-arm64');
   });
 
-  it('always shows every platform, and labels the unavailable ones', async () => {
-    global.fetch = mockFetch(manifest()) as any;
+  it('offers every platform, none hidden behind the detection', async () => {
     render(<CliDownloadModal isOpen onClose={() => {}} />);
 
     const select = await screen.findByLabelText('Select your platform');
-    const options = within(select).getAllByRole(
-      'option'
-    ) as HTMLOptionElement[];
+    const options = within(select).getAllByRole('option') as HTMLOptionElement[];
 
-    // Every platform is offered — the chooser is never reduced to the guess.
     expect(options.map((o) => o.value).sort()).toEqual(
       [
         'darwin-amd64',
@@ -196,30 +149,49 @@ describe('CliDownloadModal', () => {
         'windows-amd64',
       ].sort()
     );
-
-    const unavailable = options.find((o) => o.value === 'linux-arm64')!;
-    expect(unavailable.disabled).toBe(true);
-    // Disabled AND labelled: a greyed-out option with no explanation reads as
-    // a bug in the page.
-    expect(unavailable.textContent).toMatch(/unavailable/i);
-
-    // A platform missing from the manifest entirely behaves like unavailable.
-    const absent = options.find((o) => o.value === 'darwin-amd64')!;
-    expect(absent.disabled).toBe(true);
-
-    // A ready one is selectable.
-    expect(options.find((o) => o.value === 'linux-amd64')!.disabled).toBe(false);
   });
 
-  it('shows the sha256 for the selected platform', async () => {
-    global.fetch = mockFetch(manifest()) as any;
+  it('keeps the digest behind a disclosure rather than beside the button', async () => {
     render(<CliDownloadModal isOpen onClose={() => {}} />);
+
+    // Collapsed until asked for: 64 hex characters next to the primary action is
+    // clutter for everyone who will not check it. PatternFly renders the content
+    // with `hidden` rather than omitting it, so the assertion is on the
+    // disclosure state, not on the digest's absence from the DOM.
+    await screen.findByRole('link', { name: /Download sbs/i });
+    const toggle = await screen.findByRole('button', {
+      name: /Verify this download/i,
+    });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.getByDisplayValue(SHA).closest('[hidden]')).not.toBeNull();
+
+    await userEvent.click(toggle);
+
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
     // ClipboardCopy renders its content in a read-only input, not as text.
-    expect(await screen.findByDisplayValue(READY_SHA)).toBeTruthy();
+    expect(screen.getByDisplayValue(SHA).closest('[hidden]')).toBeNull();
+  });
+
+  it('shows a command whose output the digest can be compared against', async () => {
+    render(<CliDownloadModal isOpen onClose={() => {}} />);
+    await userEvent.click(
+      await screen.findByRole('button', { name: /Verify this download/i })
+    );
+    expect(await screen.findByDisplayValue(/shasum -a 256 sbs/)).toBeTruthy();
+  });
+
+  it('uses the PowerShell hash command for Windows', async () => {
+    render(<CliDownloadModal isOpen onClose={() => {}} />);
+    const select = await screen.findByLabelText('Select your platform');
+    await userEvent.selectOptions(select, 'windows-amd64');
+
+    await userEvent.click(
+      await screen.findByRole('button', { name: /Verify this download/i })
+    );
+    expect(await screen.findByDisplayValue(/Get-FileHash.*sbs\.exe/)).toBeTruthy();
   });
 
   it('offers the download as an <a href download> with the right query string', async () => {
-    global.fetch = mockFetch(manifest()) as any;
     render(<CliDownloadModal isOpen onClose={() => {}} />);
 
     const link = (await screen.findByRole('link', {
@@ -235,18 +207,16 @@ describe('CliDownloadModal', () => {
   });
 
   it('offers the archive download separately', async () => {
-    global.fetch = mockFetch(manifest()) as any;
     render(<CliDownloadModal isOpen onClose={() => {}} />);
-
     const link = (await screen.findByRole('link', {
       name: /Download archive/i,
     })) as HTMLAnchorElement;
     expect(link.getAttribute('href')).toContain('format=archive');
   });
 
-  it('updates the download link when the platform changes', async () => {
-    global.fetch = mockFetch(manifest()) as any;
+  it('re-inspects and repoints the link when the platform changes', async () => {
     render(<CliDownloadModal isOpen onClose={() => {}} />);
+    await screen.findByRole('link', { name: /Download sbs/i });
 
     const select = await screen.findByLabelText('Select your platform');
     await userEvent.selectOptions(select, 'darwin-arm64');
@@ -257,160 +227,96 @@ describe('CliDownloadModal', () => {
       }) as HTMLAnchorElement;
       expect(link.getAttribute('href')).toContain('platform=darwin-arm64');
     });
+    // The digest is per-artifact, so a platform change must re-read it.
+    const urls = (global.fetch as any).mock.calls.map((c: any[]) => c[0]);
+    expect(urls.some((u: string) => u.includes('platform=darwin-arm64'))).toBe(true);
   });
 
   it('explains the sidecar mechanism for platforms that need it', async () => {
-    // darwin-arm64 carries its URL beside the binary, so a *raw* download alone
+    // darwin-arm64 carries its URL beside the binary, so a raw download alone
     // would come up pointing at the compile-time default.
-    global.fetch = mockFetch(manifest()) as any;
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue(headOk({ 'X-SBS-CLI-URL-Injection': 'sidecar' })) as any;
+
     render(<CliDownloadModal isOpen onClose={() => {}} />);
-
-    const select = await screen.findByLabelText('Select your platform');
-    await userEvent.selectOptions(select, 'darwin-arm64');
-
     await waitFor(() => {
       expect(screen.getByText(/separate file/i)).toBeTruthy();
     });
   });
 
-  it('shows a "being prepared" message rather than an error', async () => {
-    global.fetch = mockFetch(manifest()) as any;
+  it('reads "being prepared" from a 503, not as an error', async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue(headStatus(503, { 'Retry-After': '10' })) as any;
+
     render(<CliDownloadModal isOpen onClose={() => {}} />);
-
-    const select = await screen.findByLabelText('Select your platform');
-    await userEvent.selectOptions(select, 'windows-amd64');
-
     await waitFor(() => {
       expect(screen.getByText(/being prepared/i)).toBeTruthy();
     });
 
-    // And the download is not offered as if it would work. A `preparing` entry
-    // carries no download_url, so the control renders as an anchor with no href
-    // — which has no link role at all, and is marked aria-disabled. Queried by
-    // text rather than by role for exactly that reason.
+    // And the download is not offered as if it would work. A disabled anchor
+    // carries no href, so it has no link role — hence the text query.
     const control = screen.getByText(/Download sbs/i).closest('a');
-    expect(control).toBeTruthy();
-    expect(control!.getAttribute('aria-disabled')).toBe('true');
-    expect(control!.hasAttribute('href')).toBe(false);
+    expect(control?.getAttribute('aria-disabled')).toBe('true');
+    expect(control?.hasAttribute('href')).toBe(false);
   });
 
-  it('explains an unavailable platform with the server reason', async () => {
-    global.fetch = mockFetch(manifest()) as any;
+  it('reads "not available" from a 404 and names the alternative', async () => {
+    global.fetch = vi.fn().mockResolvedValue(headStatus(404)) as any;
+
     render(<CliDownloadModal isOpen onClose={() => {}} />);
-
-    const select = await screen.findByLabelText('Select your platform');
-    // Disabled in the chooser, but a programmatic change still exercises the
-    // rendering path — and the option could become selectable after a refresh.
-    await userEvent.selectOptions(select, 'linux-arm64').catch(() => {});
-    (select as HTMLSelectElement).value = 'linux-arm64';
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-
     await waitFor(() => {
-      expect(screen.getByText(/No build for this platform is bundled/i)).toBeTruthy();
+      expect(screen.getByText(/Not available from this store/i)).toBeTruthy();
     });
+    expect(screen.getByText(/skillberry-store-cli/)).toBeTruthy();
   });
 
-  it('shows an inline alert on a fetch failure, never a blank modal', async () => {
+  it('shows an inline alert on a network failure, never a blank modal', async () => {
     global.fetch = vi.fn().mockRejectedValue(new Error('network down')) as any;
-    render(<CliDownloadModal isOpen onClose={() => {}} />);
 
+    render(<CliDownloadModal isOpen onClose={() => {}} />);
     await waitFor(() => {
-      expect(screen.getByText(/Could not load the available builds/i)).toBeTruthy();
+      expect(screen.getByText(/Could not reach the store/i)).toBeTruthy();
     });
-    // And it still offers the route that needs no prepared artifact list.
-    expect(
-      await screen.findByDisplayValue(/curl -fsSL .*\/cli\/install\.sh \| sh/)
-    ).toBeTruthy();
   });
 
   it('can retry after a failure', async () => {
     const fetchMock = vi
       .fn()
       .mockRejectedValueOnce(new Error('network down'))
-      .mockResolvedValue({
-        ok: true,
-        status: 200,
-        json: async () => manifest(),
-      });
+      .mockResolvedValue(headOk());
     global.fetch = fetchMock as any;
 
     render(<CliDownloadModal isOpen onClose={() => {}} />);
-    await screen.findByText(/Could not load the available builds/i);
+    await screen.findByText(/Could not reach the store/i);
 
     await userEvent.click(screen.getByRole('button', { name: /Try again/i }));
 
-    expect(await screen.findByDisplayValue(READY_SHA)).toBeTruthy();
-  });
-
-  it('offers the curl one-liner, and the PowerShell one for Windows', async () => {
-    global.fetch = mockFetch(manifest()) as any;
-    render(<CliDownloadModal isOpen onClose={() => {}} />);
-
-    expect(
-      await screen.findByDisplayValue(
-        'curl -fsSL http://store.test:8000/cli/install.sh | sh'
-      )
-    ).toBeTruthy();
-
-    const select = await screen.findByLabelText('Select your platform');
-    await userEvent.selectOptions(select, 'windows-amd64');
-
-    // Windows users get the PowerShell twin, not a curl command they cannot run.
-    expect(
-      await screen.findByDisplayValue(
-        'irm http://store.test:8000/cli/install.ps1 | iex'
-      )
-    ).toBeTruthy();
-  });
-
-  it('links the engine licence, because we redistribute it', async () => {
-    global.fetch = mockFetch(manifest()) as any;
-    render(<CliDownloadModal isOpen onClose={() => {}} />);
-
-    const link = (await screen.findByRole('link', {
-      name: /restish 2\.3\.0 \(MIT\)/i,
-    })) as HTMLAnchorElement;
-    expect(link.getAttribute('href')).toContain('/cli/license');
+    await waitFor(() => {
+      expect(screen.getByRole('link', { name: /Download sbs/i })).toBeTruthy();
+    });
   });
 
   it('warns that the binaries are unsigned', async () => {
-    global.fetch = mockFetch(manifest()) as any;
     render(<CliDownloadModal isOpen onClose={() => {}} />);
     await waitFor(() => {
       expect(screen.getByText(/not code-signed/i)).toBeTruthy();
     });
   });
 
-  it('falls back to the page origin when the store has no public URL', async () => {
-    // An operator who never set SBS_PUBLIC_URL still gets a usable one-liner.
-    global.fetch = mockFetch(manifest({ public_url: null })) as any;
+  it('sends no credentials with the inspect request', async () => {
+    // The modal is offered on the sign-in screen, so it must work with no
+    // session. Credentials would also fail CORS in some deployments.
     render(<CliDownloadModal isOpen onClose={() => {}} />);
 
-    expect(
-      await screen.findByDisplayValue(
-        `curl -fsSL ${window.location.origin}/cli/install.sh | sh`
-      )
-    ).toBeTruthy();
-  });
-
-  it('sends no credentials with the manifest request', async () => {
-    // §8.3 #21b: the modal is offered on the sign-in screen, so the fetch must
-    // work with no session. Passing credentials would also make it fail CORS in
-    // some deployments.
-    const fetchMock = mockFetch(manifest());
-    global.fetch = fetchMock as any;
-    render(<CliDownloadModal isOpen onClose={() => {}} />);
-
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const [, init] = fetchMock.mock.calls[0];
-    // Either no init at all, or one that does not ask for credentials or add
-    // an Authorization header.
+    await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+    const [, init] = (global.fetch as any).mock.calls[0];
     expect(init?.credentials).toBeUndefined();
-    expect(init?.headers?.Authorization).toBeUndefined();
+    expect((init?.headers as any)?.Authorization).toBeUndefined();
   });
 
   it('calls onClose from the Close button', async () => {
-    global.fetch = mockFetch(manifest()) as any;
     const onClose = vi.fn();
     render(<CliDownloadModal isOpen onClose={onClose} />);
 
