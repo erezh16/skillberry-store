@@ -17,14 +17,14 @@ mode: standalone
 #   false       nothing is; the /pub routes are not registered at all
 #   selective   each skill's own `npx_publish` flag decides (the DEFAULT when
 #               this key is absent). A skill that has not set it is NOT
-#               published — opt one in with the toggle on its page in the UI, or
-#               `PUT /skills/{name}` with `npx_publish: true`.
+#               published, so skills are opted in deliberately — edit one with
+#               `PUT /skills/{name}` or the toggle on its page in the UI.
 #
 # `true`/`false` ignore the per-skill flag, so either one publishes or withdraws
 # the whole store in a single edit.
 #
-# This demo ships `true` so every seeded skill is installable out of the box.
-# A real deployment that wants npx for only some skills uses `selective`.
+# This shipped config is `mode: disabled`, where nothing is protected anyway, so
+# it ships `true` to make a bare dev checkout usable out of the box.
 npx_publish: true
 
 unauthenticated_paths:
