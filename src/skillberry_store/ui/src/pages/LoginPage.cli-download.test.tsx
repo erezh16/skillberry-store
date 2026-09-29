@@ -75,7 +75,16 @@ describe('LoginPage CLI download link', () => {
   it('renders unauthenticated, with no session', () => {
     // The whole point: this is rendered by a user who has no token at all.
     renderLoginPage();
-    expect(screen.getByRole('button', { name: /Download the sbs CLI/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Download CLI' })).toBeTruthy();
+  });
+
+  it('shows only the download icon, with no visible caption', () => {
+    // Uniformity with the masthead's control, which is icon-only and is the
+    // only one that exists once signed in or in `mode: disabled`. The label
+    // lives in aria-label, so the control stays reachable without it.
+    renderLoginPage();
+    const link = screen.getByRole('button', { name: 'Download CLI' });
+    expect(link.textContent).toBe('');
   });
 
   it('does not touch the network until the link is clicked', () => {
@@ -87,7 +96,7 @@ describe('LoginPage CLI download link', () => {
   it('opens the download modal', async () => {
     renderLoginPage();
     await userEvent.click(
-      screen.getByRole('button', { name: /Download the sbs CLI/i })
+      screen.getByRole('button', { name: 'Download CLI' })
     );
 
     await waitFor(() => {
@@ -103,7 +112,7 @@ describe('LoginPage CLI download link', () => {
     // pointless and (in some deployments) a CORS failure.
     renderLoginPage();
     await userEvent.click(
-      screen.getByRole('button', { name: /Download the sbs CLI/i })
+      screen.getByRole('button', { name: 'Download CLI' })
     );
 
     await waitFor(() => expect(global.fetch).toHaveBeenCalled());
@@ -114,7 +123,7 @@ describe('LoginPage CLI download link', () => {
 
   it('sits below the sign-in form', () => {
     const { container } = renderLoginPage();
-    const link = screen.getByRole('button', { name: /Download the sbs CLI/i });
+    const link = screen.getByRole('button', { name: 'Download CLI' });
     const form = container.querySelector('form');
     expect(form).toBeTruthy();
 
@@ -134,7 +143,7 @@ describe('LoginPage CLI download link', () => {
     renderLoginPage();
 
     const info = screen.getByText('Shared eval box — do not store secrets.');
-    const link = screen.getByRole('button', { name: /Download the sbs CLI/i });
+    const link = screen.getByRole('button', { name: 'Download CLI' });
     const relation = info.compareDocumentPosition(link);
     expect(relation & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });

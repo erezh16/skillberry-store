@@ -49,7 +49,8 @@ executable bit, and on macOS it avoids the Gatekeeper quarantine attribute that 
 directly-downloaded binary picks up.
 
 You can also download from the store's web UI — there is a **Download CLI** button
-in the masthead, a card on the home page, and a link on the sign-in screen.
+in the masthead, a card on the home page, and the same icon-only button on the
+sign-in screen.
 
 ### With pip
 

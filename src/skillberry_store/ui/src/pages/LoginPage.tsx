@@ -165,14 +165,17 @@ export function LoginPage() {
             works pre-session with no special case. In `mode: disabled` there is
             no login screen at all and nothing here renders. */}
         <CardFooter>
+          {/* Icon-only, matching the masthead's control (AppLayout): the same
+              affordance should look the same before and after sign-in, and in
+              `mode: disabled` where only the masthead one exists. aria-label,
+              not a visible caption, so screen readers and tests can still
+              reach it. */}
           <Button
-            variant="link"
-            isInline
+            variant="plain"
+            aria-label="Download CLI"
             icon={<DownloadIcon />}
             onClick={() => setIsCliModalOpen(true)}
-          >
-            Download the sbs CLI
-          </Button>
+          />
         </CardFooter>
       </Card>
       <CliDownloadModal
