@@ -86,6 +86,7 @@ fi
 # The engine version comes from go.mod rather than from a second place that
 # could disagree with what is actually linked in. It is part of the server's
 # preparation stamp key (§5.3), so it has to be the truth.
+#
 # Reported, not discarded, when it cannot be read. `2>/dev/null | sed` under the
 # `set -o pipefail` above is a trap: pipefail hands the pipeline go's non-zero
 # status, `set -e` kills the script on the assignment, and the `:-unknown`
@@ -220,7 +221,11 @@ for candidate in LICENSE.md LICENSE LICENSE.txt COPYING; do
     fi
 done
 if [[ -n "$engine_license" ]]; then
-    cp "$engine_license" "$OUT_DIR/LICENSE.restish"
+    # `install`, not `cp`: the module cache is read-only, so a plain copy lands
+    # as mode 0444 and the *next* run cannot overwrite it -- `make cli-dist`
+    # twice in a row failed on "Permission denied" after every artifact had
+    # already been built. install replaces the destination and sets the mode.
+    install -m 0644 "$engine_license" "$OUT_DIR/LICENSE.restish"
     echo "==> Bundled $(basename "$engine_license") as LICENSE.restish"
 else
     echo "build.sh: could not find restish's licence under $engine_dir." >&2
