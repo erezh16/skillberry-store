@@ -231,19 +231,30 @@ class PlatformArtifact:
 # --------------------------------------------------------------------------- #
 # Fixed locations
 # --------------------------------------------------------------------------- #
-# Both directories live beside the CLI's own source, and neither is
-# configurable: the prepared artifacts are a function of the source tree and the
-# deployment's public URL, so there is nothing for an operator to choose.
+# Both directories sit at the top of the tree, and neither is configurable: the
+# prepared artifacts are a function of the source tree and the deployment's
+# public URL, so there is nothing for an operator to choose (R5).
 #
-#   prebuilt/  the cross-compiled binaries `client/go/build.sh` emits, baked into
-#              the image or mounted in
-#   dist/      the same binaries with this deployment's URL stamped into them,
-#              plus the manifest that records what was prepared
+#   cli-prebuilt/  the cross-compiled binaries `client/go/build.sh` emits, baked
+#                  into the image or mounted in
+#   cli-dist/      the same binaries with this deployment's URL stamped into
+#                  them, plus the manifest that records what was prepared
 #
 # Both are build/cache products and are gitignored.
-_GO_CLI_ROOT = Path(__file__).resolve().parents[3] / "client" / "go" / "cli"
-ARTIFACTS_DIR = _GO_CLI_ROOT / "prebuilt"
-DIST_DIR = _GO_CLI_ROOT / "dist"
+#
+# `cli-prebuilt` is not a name chosen here -- it is where the build already
+# writes, and the only reason this constant has to agree with something. One
+# spelling has to be canonical and the build's is the one with five other
+# users: build.sh's own --out default, CLI_PREBUILT in .mk/dev.mk, the
+# `cli-prebuilt` artifact in the CI workflow, and both Dockerfile stages
+# (/app/cli-prebuilt, which is what this resolves to in the image). This used
+# to read client/go/cli/{prebuilt,dist} instead, a path nothing wrote to, so a
+# local `make cli-dist` was invisible to the server and every platform reported
+# `not_bundled`; CI passed only because its smoke job hand-copied the artifacts
+# across. test_artifacts_dir_is_where_the_build_writes pins the two together.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+ARTIFACTS_DIR = _REPO_ROOT / "cli-prebuilt"
+DIST_DIR = _REPO_ROOT / "cli-dist"
 
 # Concurrent downloads allowed to start at once (§7.3). An unauthenticated
 # ~32 MB GET is an amplification opportunity; this is in-process and therefore
@@ -599,8 +610,9 @@ class CliArtifactService:
 
         if not source_dir.is_dir():
             logger.warning(
-                "No CLI artifacts at %s; every platform will report %r. Build them "
-                "with `make cli-dist`, mount them, or set SBS_CLI_ARTIFACTS_DIR.",
+                "No CLI artifacts at %s; every platform will report %r. Build "
+                "them with `make cli-dist`, or mount them there. The location is "
+                "derived, not configurable (R5), so there is no variable to set.",
                 source_dir,
                 REASON_NOT_BUNDLED,
             )

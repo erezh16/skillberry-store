@@ -773,19 +773,50 @@ def test_sbs_cli_download_is_the_only_environment_variable():
         REPO_ROOT / "src" / "skillberry_store" / "fast_api" / "cli_api.py"
     ).read_text(encoding="utf-8")
 
-    found = set(re.findall(r'"(SBS_CLI_[A-Z_]+)"', source + api))
+    # Every occurrence, not just a quoted one. The narrower r'"(SBS_CLI_...)"'
+    # this used to spell missed a bare mention inside a log message -- which is
+    # exactly where a removed variable had survived, telling operators to "set
+    # SBS_CLI_ARTIFACTS_DIR" when nothing reads it.
+    found = set(re.findall(r"(SBS_CLI_[A-Z_]+)", source + api))
     assert found == {"SBS_CLI_DOWNLOAD"}, (
         f"unexpected SBS_CLI_* variables in the code: {sorted(found - {'SBS_CLI_DOWNLOAD'})}"
     )
 
 
-def test_directories_are_fixed_beside_the_cli_source():
+def test_directories_are_fixed_at_the_top_of_the_tree():
     """Not configurable: the artifacts are a function of the source tree."""
-    go_cli = REPO_ROOT / "client" / "go" / "cli"
-    assert ARTIFACTS_DIR == go_cli / "prebuilt"
-    assert DIST_DIR == go_cli / "dist"
+    assert ARTIFACTS_DIR == REPO_ROOT / "cli-prebuilt"
+    assert DIST_DIR == REPO_ROOT / "cli-dist"
     # Absolute, so nothing depends on the process's working directory.
     assert ARTIFACTS_DIR.is_absolute() and DIST_DIR.is_absolute()
+
+
+def test_artifacts_dir_is_where_the_build_writes():
+    """The read location and the write location are one fact, so pin them together.
+
+    This is the assertion whose absence let the two drift: the service read
+    client/go/cli/prebuilt while every producer wrote cli-prebuilt/, so a local
+    `make cli-dist` left the server reporting `not_bundled` for all five
+    platforms. Checked against the producers' own text -- a test that restated
+    the path would drift with it.
+    """
+    build_sh = (REPO_ROOT / "client" / "go" / "build.sh").read_text(encoding="utf-8")
+    assert f'OUT_DIR="$REPO_ROOT/{ARTIFACTS_DIR.name}"' in build_sh, (
+        f"build.sh does not default --out to {ARTIFACTS_DIR.name}; the server "
+        f"would read a directory the build never writes"
+    )
+
+    dev_mk = (REPO_ROOT / ".mk" / "dev.mk").read_text(encoding="utf-8")
+    assert f"CLI_PREBUILT   := {ARTIFACTS_DIR.name}" in dev_mk, (
+        f"CLI_PREBUILT in .mk/dev.mk no longer matches {ARTIFACTS_DIR.name}, so "
+        f"`make cli-dist` writes where the server does not look"
+    )
+
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert f"/app/{ARTIFACTS_DIR.name}" in dockerfile, (
+        f"the runtime image no longer lands artifacts at /app/{ARTIFACTS_DIR.name}, "
+        f"which is what ARTIFACTS_DIR resolves to when the app lives at /app"
+    )
 
 
 def test_a_service_uses_the_fixed_directories_by_default():

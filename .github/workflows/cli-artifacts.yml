@@ -353,10 +353,14 @@ jobs:
 
       # Straight into the fixed location the store reads: the artifact
       # directories are not configurable, so there is nothing to point at them.
+      # That location is the build's own output directory, so this unpacks the
+      # artifact where it was produced rather than relocating it -- when those
+      # two disagreed, this job was the only thing bridging the gap and a local
+      # `make cli-dist` served nothing.
       - uses: actions/download-artifact@v4
         with:
           name: cli-prebuilt
-          path: client/go/cli/prebuilt
+          path: cli-prebuilt
 
       - name: Install the store
         run: |
@@ -365,7 +369,7 @@ jobs:
 
       - name: Start the store
         run: |
-          ls -la client/go/cli/prebuilt
+          ls -la cli-prebuilt
           SBS_PORT=8123 \
           SBS_PUBLIC_URL=http://127.0.0.1:8123 \
           nohup ./venv/bin/python -m skillberry_store.main > /tmp/store.log 2>&1 &

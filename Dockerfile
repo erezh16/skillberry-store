@@ -192,7 +192,9 @@ COPY --from=builder $APP_HOME $APP_HOME
 # Without it, /cli/manifest truthfully reports every platform as
 # `not_bundled` and the rest of the store is unaffected -- users install via
 # `pip install skillberry-store-cli` instead. Operators who would rather mount
-# the artifacts than bake them can point SBS_CLI_ARTIFACTS_DIR at a volume.
+# the artifacts than bake them can mount a volume over /app/cli-prebuilt, which
+# is the fixed location the store reads; there is no variable to redirect it
+# (R5 -- the directories are derived, not configured).
 #
 # Copied unconditionally from a directory the builder stage always creates. A
 # Dockerfile cannot skip a COPY conditionally, and COPY fails outright on a

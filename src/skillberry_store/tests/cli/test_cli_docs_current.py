@@ -237,5 +237,5 @@ def test_config_doc_explains_what_is_derived():
         "docs/config-env-vars.md should say that everything besides the switch is "
         "derived, or an operator will go looking for the knobs"
     )
-    for topic in ("client/go/cli/prebuilt", "client/go/cli/dist"):
+    for topic in ("cli-prebuilt", "cli-dist"):
         assert topic in text, f"the fixed location {topic} is not documented"

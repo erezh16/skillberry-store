@@ -31,8 +31,8 @@ is derived rather than configured:
 
 | Behaviour | How it is decided |
 |-----------|-------------------|
-| Where the cross-compiled binaries are read from | fixed: `client/go/cli/prebuilt` |
-| Where prepared artifacts are written | fixed: `client/go/cli/dist` — a cache, not state |
+| Where the cross-compiled binaries are read from | fixed: `cli-prebuilt/` at the top of the tree — where `make cli-dist` writes them, and `/app/cli-prebuilt` in the container image |
+| Where prepared artifacts are written | fixed: `cli-dist/` at the top of the tree — a cache, not state |
 | When preparation runs | at startup, whenever downloads are on; skipped per platform when the stamp already matches |
 | How the store's URL gets into a binary | per platform, cheapest mechanism that works: an in-place slot rewrite for four of five platforms, and a real build for `darwin-arm64` when a Go toolchain is present (a sidecar file when it is not) |
 | Concurrent download starts | fixed at 8 |
