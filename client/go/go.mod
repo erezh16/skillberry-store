@@ -1,6 +1,6 @@
 module github.com/skillberry-ai/skillberry-store/client/go
 
-go 1.27.1
+go 1.25.3
 
 require github.com/rest-sh/restish/v2 v2.3.0
 

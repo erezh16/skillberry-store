@@ -86,8 +86,31 @@ fi
 # The engine version comes from go.mod rather than from a second place that
 # could disagree with what is actually linked in. It is part of the server's
 # preparation stamp key (§5.3), so it has to be the truth.
-ENGINE_VERSION="$(cd "$GO_ROOT" && "$GO" list -m -f '{{.Version}}' github.com/rest-sh/restish/v2 2>/dev/null | sed 's/^v//')"
-ENGINE_VERSION="${ENGINE_VERSION:-unknown}"
+# Reported, not discarded, when it cannot be read. `2>/dev/null | sed` under the
+# `set -o pipefail` above is a trap: pipefail hands the pipeline go's non-zero
+# status, `set -e` kills the script on the assignment, and the `:-unknown`
+# fallback on the next line never runs -- so the build died with no output at
+# all. The usual cause is a toolchain older than go.mod's `go` directive under
+# GOTOOLCHAIN=local, which is a fixable local condition and worth naming.
+# stderr is folded into the captured value so a failure carries go's own
+# diagnostic; on success `go list -m -f {{.Version}}` writes only the version.
+if ! ENGINE_VERSION="$(cd "$GO_ROOT" && "$GO" list -m -f '{{.Version}}' \
+        github.com/rest-sh/restish/v2 2>&1)"; then
+    echo "build.sh: cannot resolve the restish module version from $GO_ROOT/go.mod:" >&2
+    printf '  %s\n' "$ENGINE_VERSION" >&2
+    echo "  This is also what every per-platform build below would fail on, so it" >&2
+    echo "  stops here. If the message above is about the Go version, either" >&2
+    echo "  install the toolchain go.mod asks for and point at it with" >&2
+    echo "  GO=/path/to/go, or allow Go to fetch it with GOTOOLCHAIN=auto." >&2
+    exit 1
+fi
+ENGINE_VERSION="${ENGINE_VERSION#v}"
+if [[ -z "$ENGINE_VERSION" ]]; then
+    echo "build.sh: the restish module resolved to an empty version." >&2
+    echo "  It is part of the server's preparation stamp key (§5.3) and cannot" >&2
+    echo "  be guessed, so this is a hard failure rather than an 'unknown'." >&2
+    exit 1
+fi
 
 # §5.7 / §7.2 / B14: a URL that reaches a linker flag is argument injection into
 # our own build, so it is validated before it is used and never passed through a
