@@ -226,7 +226,10 @@ def test_health_and_ready_agree_on_the_stage(sbs_app):
     """
     client = TestClient(sbs_app, raise_server_exceptions=False)
 
-    for warmup, expected in ((None, STAGE_OPERATIONAL), (_PendingTask(), STAGE_INITIALIZING)):
+    for warmup, expected in (
+        (None, STAGE_OPERATIONAL),
+        (_PendingTask(), STAGE_INITIALIZING),
+    ):
         sbs_app.state.encoder_warmup_task = warmup
         health = client.get("/health").json()
         ready = client.get("/health/ready").json()
