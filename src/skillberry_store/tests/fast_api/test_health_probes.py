@@ -277,3 +277,109 @@ def test_health_report_uptime_counts_from_the_injected_start(sbs_app):
     service = AdminService(started_at=time.monotonic() - 42.0)
 
     assert service.health_report(True)["uptime_seconds"] >= 42.0
+
+
+# --------------------------------------------------------------------------- #
+# Availability across every access-control mode
+# --------------------------------------------------------------------------- #
+#
+# A platform health check never has a token. There are exactly two ACL modes
+# (``VALID_MODES`` in access_control/config.py; anything else is refused at
+# config load), and `/health` has to answer the full stage payload in both — not
+# merely return 200. An ACL short-circuit that bypassed the handler, or a mode
+# that gated the route, would leave a deployment unprobeable in the one
+# configuration it ships with.
+
+
+_STANDALONE_YAML = """
+mode: standalone
+standalone:
+  users:
+    - username: alice
+      tenant_id: alice
+      password_hash: "$2b$04$1Qm8h1u4Tz0Zq7d9Yx2mFe6s5c3b1a0J9k8i7h6g5f4e3d2c1b0a9"
+      groups: []
+roles: []
+bindings: []
+"""
+
+# An operator who writes their own list, dropping every default. The built-in
+# allow-list is a floor that config *adds* to (``_effective_unauth_paths``), so
+# this must change nothing about reachability.
+_STANDALONE_YAML_OPERATOR_REPLACED_UNAUTH = _STANDALONE_YAML + """
+unauthenticated_paths:
+  - GET /some-operator-specific-thing
+"""
+
+
+@pytest.fixture
+def sbs_with_acl(tmp_path, monkeypatch):
+    """Build an app from a caller-supplied access-control YAML."""
+    from skillberry_store.access_control import config as acl_config
+    from skillberry_store.modules import object_handler
+    from skillberry_store.services import registry
+
+    def build(yaml_text: str):
+        path = tmp_path / "acl.yaml"
+        path.write_text(yaml_text)
+        monkeypatch.setenv("SBS_ACCESS_CONTROL_CONFIG", str(path))
+        acl_config.reset_config_cache()
+        clean_test_tmp_dir()
+        object_handler.clear_object_handlers()
+        registry.clear_services()
+        return SBS()
+
+    yield build
+    object_handler.clear_object_handlers()
+    registry.clear_services()
+    acl_config.reset_config_cache()
+
+
+@pytest.mark.parametrize(
+    "yaml_text,expected_mode",
+    [
+        ("mode: disabled\n", "disabled"),
+        (_STANDALONE_YAML, "standalone"),
+        (_STANDALONE_YAML_OPERATOR_REPLACED_UNAUTH, "standalone"),
+    ],
+    ids=["disabled", "standalone", "standalone-operator-replaced-unauth-list"],
+)
+def test_health_answers_the_full_payload_in_every_acl_mode(
+    sbs_with_acl, yaml_text, expected_mode
+):
+    app = sbs_with_acl(yaml_text)
+    assert app.state.acl_cfg.mode == expected_mode
+    client = TestClient(app, raise_server_exceptions=False)
+
+    # No Authorization header anywhere: this is all a platform probe ever is.
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "healthy"
+    assert body["stage"] in (STAGE_INITIALIZING, STAGE_OPERATIONAL)
+    # The payload itself, not just the status code — an ACL layer that
+    # short-circuited the route would satisfy a status-only assertion.
+    assert "encoder_warmup" in body["checks"]
+    assert "uptime_seconds" in body
+
+
+def test_only_two_acl_modes_exist(sbs_with_acl):
+    """Pins the claim the parametrization above rests on.
+
+    If a third mode is added, this fails and whoever added it has to decide what
+    `/health` does there — rather than the probe silently going dark in a mode
+    nobody thought to cover.
+    """
+    from skillberry_store.access_control.config import VALID_MODES
+
+    assert VALID_MODES == {"disabled", "standalone"}
+
+
+def test_standalone_gates_content_but_never_health(sbs_with_acl):
+    """The contrast that shows the allow-list is doing real work."""
+    client = TestClient(sbs_with_acl(_STANDALONE_YAML), raise_server_exceptions=False)
+
+    assert client.get("/skills/").status_code == 401
+    assert client.get("/health").status_code == 200
+    assert client.get("/health/ready").status_code in (200, 503)

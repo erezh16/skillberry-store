@@ -421,12 +421,24 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   semantic search waits for `stage == "operational"` instead of keying off a
   status code that cannot express it.
 
+  Both probes answer in **every** ACL mode (`disabled` and `standalone`) with no
+  credentials, and stay reachable even if an operator writes an
+  `unauthenticated_paths` list that omits them — the built-in allow-list is a
+  floor that config adds to, now asserted over both modes and over every shipped
+  YAML including `access_control_config.yaml.demo`.
+
   **Deployers: set Render's Health Check Path to `/health`, not
-  `/health/ready`.** See [docs/health-probes.md](docs/health-probes.md) for the
-  Render, Kubernetes and Docker settings, and for two non-probe causes of the
-  same restart symptom — the port stays closed for the ~3 s (longer on shared
-  CPU) that `SBS.__init__` takes before uvicorn binds, and peak RSS measures
-  ~414 MB against the free plan's 512 MB cap.
+  `/health/ready`.** Render restarts an instance after 60 s of consecutive
+  health-check failures, which a cold encoder warmup on a shared-CPU free
+  instance can exceed — and the restart re-enters the same window. See
+  [docs/health-probes.md](docs/health-probes.md) for the Render, Kubernetes and
+  Docker settings, and for three non-probe causes of the same restart symptom:
+  the service does not read Render's `$PORT` (`SBS_PORT` defaults to 8000), peak
+  RSS measures ~414 MB against the free plan's 512 MB cap, and uvicorn binds only
+  2.7 s after process start. That last one is why binding early and serving a
+  cut-down route table was considered and rejected — the doc records the
+  reasoning, including that deferring route registration would move
+  `audit_rbac_coverage` behind a server already accepting traffic.
 
   Payload changes are additive: `/health` still carries `"status": "healthy"` and
   a ready `/health/ready` still carries `"status": "ready"` plus `checks`, so the
