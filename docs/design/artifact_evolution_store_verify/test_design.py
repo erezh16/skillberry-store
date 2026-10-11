@@ -21,6 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from gitstore import *  # noqa
+from gitstore import _mk  # noqa: E402
 
 SRC = Path(os.environ.get("CORPUS", "corpus")).resolve()
 UP = SRC / "anthropic-skills"
@@ -244,6 +245,118 @@ restored = work2 / "restored.git"
 subprocess.run(["git", "clone", "-q", "--bare", "--mirror", str(bundle), str(restored)], check=True)
 refs = lambda r: git(r, "for-each-ref", "--format=%(refname) %(objectname)")
 check("T19 bundle backup restores every ref (incl. refs/artifacts, refs/keep) identically", refs(nsc) == refs(restored) and "refs/keep/" in refs(restored))
+
+# ---------------- third batch: generic aggregates (§34.3, §34.7) ----------------
+# An aggregate snapshot = its own files under content/ + .sbs/members.json (member snapshot records and
+# mount specs). It never embeds members' objects; the served tree is assembled from the records.
+work3 = Path(tempfile.mkdtemp(prefix="sbsproto3-"))
+home = init_ns(work3 / "home.git")
+EXTRACT = (".py", ".sh", ".bash")
+
+
+def tree_entries(repo, tree):
+    """(path, mode, sha) for every blob under a tree."""
+    out = []
+    for line in git(repo, "ls-tree", "-r", tree).splitlines():
+        meta, path = line.split("\t", 1); mode, _t, sha = meta.split()
+        out.append((path, mode, sha))
+    return out
+
+
+def mktree_from(repo, entries):
+    """Nested tree from (path, mode, blob-sha) without rewriting any blob."""
+    root = {}
+    for path, mode, sha in entries:
+        node = root; *dirs, name = path.split("/")
+        for d in dirs:
+            node = node.setdefault(d, {})
+        node[name] = (mode, sha)
+    return _mk(repo, root)
+
+
+def publish_aggregate(repo, own_entries, members, keep=True):
+    """members: [{target, member_commit, source}] -> commit whose tree is content/ (own) + .sbs/members.json.
+
+    keep=True: the publish holds a keep-ref per referenced member (the §34.9 rule), so records retain.
+    """
+    if keep:
+        for m in members:
+            git(repo, "update-ref", f"refs/keep/member/{m['member_commit']}", m["member_commit"])
+    own = write_tree(repo, own_entries) if own_entries else git(repo, "mktree", inp=b"")
+    rec = canonical_json(sorted(members, key=lambda m: m["target"]))
+    sbs = write_tree(repo, [("members.json", "100644", rec)])
+    root = git(repo, "mktree", inp=f"040000 tree {own}\tcontent\n040000 tree {sbs}\t.sbs\n".encode())
+    return commit(repo, root, msg="aggregate")
+
+
+def assemble(repo, c):
+    """Served tree of a snapshot: own content/ + every member mounted at its target (recursively)."""
+    entries = tree_entries(repo, git(repo, "rev-parse", f"{c}:content"))
+    raw = subprocess.run(["git", "-C", str(repo), "cat-file", "blob", f"{c}:.sbs/members.json"], capture_output=True).stdout
+    for m in (json.loads(raw) if raw else []):
+        sub = assemble(repo, m["member_commit"])
+        sub = mktree_from(repo, sub) if isinstance(sub, list) else sub
+        for path, mode, sha in tree_entries(repo, sub):
+            if m["source"] in ("", path):
+                rel = path if m["source"] == "" else ""
+                entries.append((f"{m['target']}/{rel}".rstrip("/") if rel else m["target"], mode, sha))
+    return mktree_from(repo, entries)
+
+
+import json  # noqa: E402
+total = exact = 0; bad = []; n_tools = 0; skill_commits = {}
+for r in ["anthropic-skills", "cap-evolve", "Arbor", "harbor", "superpowers"]:
+    root = SRC / r
+    for sk in sorted(root.rglob("SKILL.md")):
+        if ".git" in sk.parts:
+            continue
+        d = sk.parent; rel = d.relative_to(root).as_posix()
+        tracked = set(git(root, "ls-files", "--", rel).splitlines())
+        ents = [e for e in canonical_entries(d)[0] if f"{rel}/{e[0]}" in tracked]
+        own, members = [], []
+        for path, mode, data in ents:
+            base = path.rsplit("/", 1)[-1]
+            if path.endswith(EXTRACT) and not base.startswith("_"):
+                tool_c = publish_aggregate(home, [(base, mode, data),
+                                                  ("tool.json", "100644", canonical_json({"entry": base}))], [])
+                members.append({"target": path, "member_commit": tool_c, "source": base}); n_tools += 1
+            else:
+                own.append((path, mode, data))
+        c = publish_aggregate(home, own, members)
+        total += 1
+        if assemble(home, c) == git(root, "rev-parse", f"HEAD:{rel}"):
+            exact += 1; skill_commits[f"{r}:{rel}"] = c
+        else:
+            bad.append(f"{r}:{rel}")
+check("T24 corpus: skill = own files + linked tool snapshots; assembled tree == upstream tree",
+      exact == total, f"{exact}/{total} skills, {n_tools} extracted tools, {bad[:3]}")
+
+# T25 two-level aggregate: a skill group points at skill snapshots only; assembly reproduces the
+# upstream skills/ directory for the six Anthropic skills
+grp_members = [{"target": f"skills/{s}", "member_commit": skill_commits[f"anthropic-skills:skills/{s}"], "source": ""} for s in skills]
+grp = publish_aggregate(home, [], grp_members)
+up_skills = tree_of(UP, {s: git(UP, "rev-parse", f"HEAD:skills/{s}") for s in skills})
+check("T25 skill group (records only) assembles to exactly the six upstream skill trees",
+      git(home, "rev-parse", f"{assemble(home, grp)}:skills") == up_skills)
+own_only = tree_entries(home, git(home, "rev-parse", f"{grp}:content"))
+check("T25b the group snapshot itself holds no member objects", own_only == [])
+
+# T26 retention: records alone do not retain; publish-time keep-refs retain the whole closure
+g2 = publish_aggregate(home, [], [{"target": f"skills/{s}", "member_commit": skill_commits[f"anthropic-skills:skills/{s}"], "source": ""} for s in skills])
+git(home, "update-ref", "refs/artifacts/composition/g2/heads/main", g2)
+lone_tool = publish_aggregate(home, [("t.py", "100755", b"print('x')\n")], [], keep=False)
+lone_skill = publish_aggregate(home, [("SKILL.md", "100644", b"---\nname: lone\n---\n")],
+                               [{"target": "scripts/t.py", "member_commit": lone_tool, "source": "t.py"}], keep=False)
+git(home, "update-ref", "refs/artifacts/skill/lone/heads/main", lone_skill)
+before = assemble(home, g2)
+git(home, "-c", "gc.reflogExpire=now", "-c", "gc.reflogExpireUnreachable=now", "reflog", "expire", "--all")
+git(home, "gc", "--prune=now", "-q")
+exists = lambda o: subprocess.run(["git", "-C", str(home), "cat-file", "-e", o], capture_output=True).returncode == 0
+check("T26a with publish-time keep-refs, a group's whole closure (skills and their tools) survives gc and re-assembles identically",
+      assemble(home, g2) == before)
+check("T26b negative control: a member referenced only inside a record, with no keep-ref, is pruned by gc",
+      exists(lone_skill) and not exists(lone_tool))
+shutil.rmtree(work3, ignore_errors=True)
 
 print(f"\n{sum(r[1] for r in results)}/{len(results)} passed (all batches)")
 shutil.rmtree(work2, ignore_errors=True)

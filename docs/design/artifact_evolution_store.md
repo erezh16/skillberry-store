@@ -1321,7 +1321,8 @@ everything.
 
 A composition (skill, skill group) is a tree whose entries are its members' trees, referenced by
 hash, so no files are copied. Pinning a different member version means writing a new composition
-tree.
+tree. §34.3 refines this: aggregates hold records pointing at member snapshots rather than member
+trees, and retain members through keep-refs.
 
 Demonstrated in a scratch bare repo **[measured]**:
 
@@ -1635,7 +1636,7 @@ artifacts are stored, identified, versioned, composed, retained and published, a
 binds to them.
 
 Every mechanical claim below was tested with a prototype against the survey's 81-skill corpus and
-Harbor's own resolution code. 40 of 40 checks pass (§34.15). Two test findings changed the design:
+Harbor's own resolution code. 45 of 45 checks pass (§34.15). Two test findings changed the design:
 
 - **I3:** internal repositories must never be served over git.
 - **I4:** garbage collection must never prune with a zero grace window.
@@ -1650,7 +1651,7 @@ Harbor's own resolution code. 40 of 40 checks pass (§34.15). Two test findings 
 | 34.4 | Identity |
 | 34.5 | Physical layout |
 | 34.6 | Operations and their commit points |
-| 34.7 | Projections and dependencies |
+| 34.7 | Extracted tools, prompts and dependencies |
 | 34.8 | Listing and views |
 | 34.9 | Concurrency, consistency and retention |
 | 34.10 | Binding evidence |
@@ -1672,7 +1673,7 @@ Harbor's own resolution code. 40 of 40 checks pass (§34.15). Two test findings 
 | **G2** | **Bytes are the truth.** A snapshot is an artifact's exact file tree. Nothing is regenerated, normalised or inferred on the way in or out. | survey §2.3, A3 |
 | **G3** | **Identity is content.** A snapshot is identified by `content_digest`. A git commit identifies a *version event*, not a snapshot. | A2 |
 | **G4** | **Immutable snapshots, mutable pointers, mutable labels.** Content never changes. Pointers (HEAD, named pointers) move only by compare-and-set. Labels and state live in per-snapshot metadata refs in git, under compare-and-set (§34.19). | J3, survey §8.2 |
-| **G5** | **Every artifact has its own line; compositions pin members.** Aggregates of any kind are compositions of member snapshots. | J2, P5, A1 |
+| **G5** | **Every artifact has its own line; aggregates point at member snapshots.** Skills, skill groups and every other composition record their members' snapshots, never their members' internals. | J2, P5, A1 |
 | **G6** | **Declared vs resolved.** Dependencies are declared by name. The snapshot that satisfied each one is recorded in a lock when the composition is assembled. | §20 R2 |
 | **G7** | **Evidence binds to content plus context, and whatever evidence cites is retained.** | survey §1.2, A5 |
 | **G8** | **Git outward is derived; git inward is a proposal.** Mirrors are rebuilt from the store. Anything arriving from outside becomes a proposal, never a silent change. | A6 |
@@ -1689,19 +1690,19 @@ Harbor's own resolution code. 40 of 40 checks pass (§34.15). Two test findings 
              artifact service   evidence        mirror service   indexers   reconciler
              (git plumbing)     service         (git push)       (async)    (rebuilds
                     │               │                │               │       indexes)
-        namespace repos (bare,   evidence store   mirror repos     derived indexes
-        internal, one per ns):   (append-only     (public, push-   (in-memory; optional
+        home repos (bare,        evidence store   mirror repos     derived indexes
+        internal, one per home): (append-only     (public, push-   (in-memory; optional
         content + metadata refs   files: folder    populated only)  SQLite file; vector
                                   tree or object                    store)
                                   store)
 ```
 | Store | Authoritative for | Derived from it, and rebuildable |
 |---|---|---|
-| **Namespace repos** (git, one bare repo per namespace) | snapshot content, version events (commits), line pointers (refs), retention refs, and **mutable metadata**: labels, lifecycle state, line declarations, workspaces (metadata refs, §34.19) | — |
+| **Home repos** (git, one bare repo per home; one home per deployment by default, §34.3) | snapshot content, version events (commits), line pointers (refs), retention refs, and **mutable metadata**: labels, lifecycle state, line declarations, workspaces (metadata refs, §34.19) | — |
 | **Evidence store** (a folder tree; or an S3-compatible object store, same layout) | measurement, finding and run records (append-only files); evidence payloads (trajectories, rollouts, `evidence.jsonl`), content-addressed; budget counters | — |
-| **Configuration files** | ACLs, namespace policies (today's approach, `access_control_config.yaml`) | — |
+| **Configuration files** | ACLs, including namespace `scope:` bindings; home policies (promotion, extraction). Today's approach, `access_control_config.yaml` | — |
 | **Derived indexes** (in memory, optionally persisted to an SQLite file; the vector store) | nothing | ref and digest index, link records, lineage edges, query and facet indexes, search |
-| **Mirror repos** | nothing | everything (rebuilt from namespace repos) |
+| **Mirror repos** | nothing | everything (rebuilt from home repos) |
 
 **No database is required** (§34.19). Every authoritative byte lives in git or in plain files. An
 SQLite file, if used, is a disposable cache: deleting it costs only a rebuild.
@@ -1711,32 +1712,89 @@ SQLite file, if used, is a disposable cache: deleting it costs only a rebuild.
 **Kinds.** The registry is open (survey §8.1). Each kind registers four things:
 
 - a layout validator;
-- projection rules;
+- extraction rules;
 - a default `digest_ignore` scope;
 - a schema for its derived labels.
 
 | Class | Kind | Snapshot content | Stored in |
 |---|---|---|---|
-| Capability | `skill` | the **verbatim** bundle tree: `SKILL.md` and every file, mode-exact | namespace repo |
-| Capability | `tool` | canonical layout: `tool.json` plus source files (§34.7) | namespace repo |
-| Capability | `prompt` (today's snippet) | `prompt.md` verbatim, plus an optional `prompt.json` | namespace repo |
-| Capability | `toolset` | `tools.json` (MCP tool surface) | namespace repo |
-| Composition | `composition`, with profiles `skill-group`, `agent-config`, `knowledge-snapshot`, `evaluator`, `lock` | `.sbs-composition.json` plus one subtree per member | namespace repo |
-| External | `external-repo` | none of its own. Pinned commits of a foreign repository | namespace repo (`refs/external/…`) |
+| Capability | `skill` | its own files, plus member records for its extracted tools and prompts. Together they assemble to the **verbatim** bundle: `SKILL.md` and every file, mode-exact | home repo |
+| Capability | `tool` | canonical layout: `tool.json` plus source files (§34.7); no members | home repo |
+| Capability | `prompt` (today's snippet) | `prompt.md` verbatim, plus an optional `prompt.json`; no members | home repo |
+| Capability | `toolset` | `tools.json` (MCP tool surface) | home repo |
+| Composition | `composition`, with profiles `skill-group`, `agent-config`, `knowledge-snapshot`, `evaluator`, `lock` | member records only; normally no own files | home repo |
+| External | `external-repo` | none of its own. Pinned commits of a foreign repository | home repo (`refs/external/…`) |
 | Eval | `task`, `dataset` | by reference to Harbor where it exists (survey §8.1, open question 3) | metadata refs (references only) |
 | Evidence | `measurement`, `trajectory`, `finding`, `run` | survey §8.7–§8.8 | evidence store |
 
+**Homes and namespaces.** These are two different concepts (I32):
+
+| | **Home** | **Namespace** (as in SBS today) |
+|---|---|---|
+| What it is | where an artifact's history physically lives: one internal git repo | a tenancy and visibility scope (`docs/design/access-control.md:62`) |
+| Per artifact | exactly one | zero or more |
+| Part of identity | yes: `<kind>/<name>` is unique within a home | no |
+| Stored as | the repo itself | the line's declarations (`refs/meta/<kind>/<name>/_line`, field `namespaces`), so membership changes are versioned and attributed |
+| Used for | storage, quota, retention, backup, deletion, the per-home writer | access-control `scope:` bindings (OR across namespaces, `access-control.md:809`), listing filters, `ns:` publish scopes, mirrors |
+| Default | **one home per deployment**. More only for scale, physical isolation or separate retention | as today |
+
+Extracted tools and prompts inherit their skill's namespaces by default; more can be added.
+
 **Lines and names.**
 
-- An **artifact line** is identified by `<namespace>/<kind>/<name>`, unique per `(namespace, kind)`.
-- Projected lines are scoped under their skill (`<skill>/<entry>`, A4). A shared tool is an explicit,
+- An **artifact line** is identified by `<kind>/<name>`, unique within its home. In a deployment with
+  more than one home, the global id is `<home>:<kind>/<name>`.
+- Names are unique per home, just as SBS names are global today. Parallel candidates with the same
+  name, the reason survey §8.2 scoped names, are now branches of one line. Tenants that need
+  independent name spaces get separate homes (I37).
+- Extracted lines are scoped under their skill (`<skill>/<entry>`, A4). A shared tool is an explicit,
   separately named line.
 - Names use git-refname-safe characters, `[a-z0-9._-]` per segment, with `/` used only for scoping.
 - For a skill, the line name is the identity. A `name` in `SKILL.md` frontmatter is indexed. If it
   disagrees with the line name, the snapshot gets a `name-mismatch` warning label rather than being
   rejected (I22).
 
-**Refs of a line** (all in the namespace repo; ref scheme verified in T6–T8):
+**Snapshot layout: one model for every artifact (I35).** Every snapshot is a commit whose tree has
+two parts:
+
+```
+<commit> tree
+├── content/            ← the snapshot's OWN files only
+└── .sbs/               ← immutable records written with the snapshot
+    ├── members.json    ← aggregates: one record per member snapshot, with its mount (below)
+    └── identity.json   ← the served tree's content_digest, git tree hash and harbor_digest
+```
+
+**Aggregates point at member snapshots, never into them.**
+
+- Any snapshot with members is an aggregate:
+  - a skill, whose members are its extracted tools and prompts;
+  - a skill group, whose members are skills;
+  - an agent configuration, a knowledge snapshot, an evaluator, a lock.
+- A member record is `{target, kind, line, content_digest, commit, source}`:
+  - `target` is where the member mounts in the served tree;
+  - `source` is `""` to mount the member's whole served tree, or one path inside it, for example a
+    tool's entry file.
+- An aggregate never copies or references its members' internal objects. Those are reached through
+  the member's own record, recursively.
+- The **served tree** is assembled from a snapshot's own `content/` plus every member mounted at its
+  target. A skill group's served tree is its skills' served trees. A skill's served tree is the
+  verbatim bundle.
+- Assembly is pure tree composition: it reuses existing file objects, never rewrites bytes, and
+  checks its result against `identity.json` (fail closed). So exports, mirrors, Harbor's digest and
+  the upstream comparison all see exactly the original bundle.
+- The assembled tree is cached as a derived object and can be dropped at any time.
+- At publish, SBS rejects overlapping mounts, and mounts that collide with own files (I39).
+
+**Prototype checks:**
+
+- **T24:** all **81/81** corpus skills, stored as own files plus 177 extracted tool snapshots,
+  assemble to exactly the upstream tree.
+- **T25:** a skill group holding only member records assembles to exactly the six upstream skill
+  trees, and holds no member objects itself.
+- **T26:** see retention, §34.9.
+
+**Refs of a line** (all in the home repo; ref scheme verified in T6–T8):
 
 | Ref | Meaning | Moves |
 |---|---|---|
@@ -1744,56 +1802,59 @@ SQLite file, if used, is a disposable cache: deleting it costs only a rebuild.
 | `refs/artifacts/<kind>/<name>/heads/<branch>` | candidates (`cand/<id>`), proposals (`proposal/<id>`), workspace branches (`ws/<ws>`) | compare-and-set |
 | `refs/artifacts/<kind>/<name>/pointers/<p>` | mutable named pointers set by producers: `best`, `user_best`, … | compare-and-set |
 | `refs/artifacts/<kind>/<name>/tags/<version>` | immutable version names | create-only |
-| `refs/keep/<kind>/<name>/<commit>` | retention for snapshots cited by evidence or by retention policy | create; deleted only by an admin operation |
+| `refs/keep/<kind>/<name>/<commit>` | retention for snapshots that evidence cites, that an aggregate's member records reference, or that retention policy keeps | created with the record that needs it; reclaimed only by the mark phase (§34.9) or an admin operation |
 | `refs/external/<host>/<org>/<repo>/<commit>` | pinned commits of a foreign repository (S1) | create |
 | `refs/meta/<kind>/<name>/<digest>` and `…/_line` | mutable metadata of one snapshot (labels, lifecycle state) and of the line (declarations), as commit chains (§34.19) | compare-and-set |
+| `refs/meta/content/<digest>` | content facts shared by every line holding identical bytes (§34.7) | compare-and-set |
 | `refs/meta/workspace/<ws>` | a workspace's pins | compare-and-set |
 
 **Version events.**
 
-- A commit's tree is the snapshot.
+- A commit's tree is the snapshot: `content/` plus `.sbs/` (above).
 - Its parents are the lineage within the line. Several parents mean a merge (cap-evolve, GEPA,
   Arbor).
 - The author is the producer and the committer is SBS.
 - Lineage across lines is recorded as portable commit trailers, and indexed as typed edges (survey
   §8.2) by the derived index:
-  - `Sbs-Derived-From:` for a projection source, a fork origin, or GEPA merge sources;
+  - `Sbs-Derived-From:` for an extraction source, a fork origin, or GEPA merge sources;
   - `Sbs-Origin: <url>@<commit>:<path>` for imported upstream content;
   - `Sbs-Producer:`.
 
-**Compositions.**
+**Compositions** are aggregates that normally have no own files.
 
-- A composition snapshot is a tree containing `.sbs-composition.json` plus one subtree per member,
-  named by role.
-- The manifest is canonical JSON: UTF-8, keys sorted, compact separators, trailing LF.
-- It lists `{role, kind, line, content_digest, tree}` per member, sorted by role.
-- Role names use GEPA's own component-name character set, `[A-Za-z0-9_.-]` (`state.py:42`).
-- Because members are subtrees, a composition **keeps every member reachable**, so no extra retention
-  refs are needed (T8a). Writing a composition copies no files.
+- Each member record's `target` is the member's **role**, a path segment such as a skill name or a
+  GEPA component name. Role names use GEPA's own component-name character set, `[A-Za-z0-9_.-]`
+  (`state.py:42`).
+- `.sbs/members.json` is canonical JSON (UTF-8, keys sorted, compact separators, trailing LF), sorted
+  by target.
+- A composition's `content_digest` is that of its served tree, so roles are part of its identity
+  (I5).
+- Members are retained by keep-refs written in the same transaction as the composition. A record on
+  its own does not keep a member alive (T26b; §34.9).
 
 ### 34.4 Identity
 
 | Question | Identifier | Definition | Verified |
 |---|---|---|---|
-| Is this the same content? (snapshot primary key; evidence subject) | `content_digest` | `sha256` over entries sorted by path bytes. Each entry is `path\0mode\0bytes\0`, with `mode ∈ {100644, 100755}`. A composition's digest uses the same rule over its own tree. | T2, T3 |
+| Is this the same content? (snapshot primary key; evidence subject) | `content_digest` | `sha256` over the **served tree's** entries, sorted by path bytes. Each entry is `path\0mode\0bytes\0`, with `mode ∈ {100644, 100755}`. The same rule applies to every kind, aggregates included. It is recorded in `.sbs/identity.json` at publish | T2, T3 |
 | Is this the same capability, ignoring scratch files? (evaluation cache) | `capability_digest[<scope>]` | `content_digest` after removing the paths in a **registered** ignore scope. The scope id is part of the value (`cap:<scope>:sha256:…`), so two clients' scopes never collide (I13) | T14 |
-| Is this the same as an upstream directory? (provenance) | git tree hash (indexed) | the snapshot's tree. For a verbatim import it **equals** `git rev-parse <upstream-commit>:<path>` | T1, **T13: 81/81 corpus skills** |
+| Is this the same as an upstream directory? (provenance) | git tree hash of the served tree (indexed, in `identity.json`) | for a verbatim import it **equals** `git rev-parse <upstream-commit>:<path>` | T1, **T13 and T24: 81/81 corpus skills** |
 | Which Harbor lock entry is this? | `harbor_digest` | re-implementation of Harbor's `compute_skill_digest` | **T10b: equal for every skill** |
 | Which version event? | commit SHA | git commit | T2 (differs for equal content) |
-| Which artifact? (stable handle) | line id | `<namespace>/<kind>/<name>`. Snapshots within it are addressed by `@<tag \| pointer \| branch \| content_digest>`. There are no UUIDs | — |
+| Which artifact? (stable handle) | line id | `<kind>/<name>`, or `<home>:<kind>/<name>` when a deployment has several homes. Snapshots within it are addressed by `@<tag \| pointer \| branch \| content_digest>`. There are no UUIDs | — |
 
-**Object format (I24).** Namespace repos use git's SHA-1 object format, the format git hosts accept
+**Object format (I24).** Home repos use git's SHA-1 object format, the format git hosts accept
 for mirrors. Evidence and caches are keyed by the SHA-256 `content_digest`, which is independent of
 git's object format. So git's SHA-1 → SHA-256 transition never touches evidence keys. (Resolves §33
 question 1.)
 
 ### 34.5 Physical layout
 
-**Namespace repos.**
+**Home repos.**
 
-- One bare, internal git repo per namespace.
-- A namespace is the ownership, authorisation, quota and retention boundary (survey §8.5). A tenant
-  may own many namespaces.
+- One bare, internal git repo per home, and one home per deployment by default (I32).
+- A home is the storage, quota, retention, backup and deletion boundary. It is **not** the tenancy
+  boundary: that is the namespace, enforced by the API (§34.3, §34.12).
 - Configuration:
   - `gc.auto=0`, so SBS schedules gc;
   - no git daemon or HTTP endpoint (G1, I3);
@@ -1809,29 +1870,28 @@ question 1.)
 | delete one packed ref | 110 ms |
 | `pack-refs` (maintenance) | 31.5 s |
 
-**Workspaces** are a separate axis from namespaces (survey §11 question 2, I14). A workspace is:
+**Workspaces** are a separate axis from both homes and namespaces (survey §11 question 2, I14). A
+workspace belongs to one home and consists of:
 
-- a metadata ref (`refs/meta/workspace/<ws>`, tree `pins.json`) holding a set of pins, each `line → content_digest` (marked `immutable`) or
-  `line → ref` (`floating`);
+- a metadata ref (`refs/meta/workspace/<ws>`, tree `pins.json`) holding a set of pins, each
+  `line → content_digest` (marked `immutable`) or `line → ref` (`floating`);
 - optional `ws/<ws>` branches;
 - a **lock composition** written at every `:apply`, which records what the pins resolved to.
 
-A workspace may pin across namespaces (I12).
+A workspace may pin lines from other homes (I12).
 
-**Cross-namespace pins copy objects.**
+**Cross-home pins copy objects.** This only matters in deployments with more than one home.
 
-- The pinned snapshot's objects are copied into the pinning namespace (`pack-objects | index-pack`)
-  and given a keep-ref.
-- Each namespace is then self-contained and can be deleted independently. A pinned snapshot survived
-  deletion of its source namespace (T16).
-- Shared object alternates were rejected: they make namespaces mutually dependent for gc and
-  deletion.
-- Splitting an oversized namespace uses the same copy, then moves the lines' refs and leaves redirect
-  entries in the old namespace's metadata. (Resolves §33 question 4.)
+- The pinned snapshot's objects are copied into the pinning home (`pack-objects | index-pack`) and
+  given a keep-ref.
+- Each home is then self-contained and can be deleted independently. A pinned snapshot survived
+  deletion of its source repo (T16).
+- Shared object alternates were rejected: they make homes mutually dependent for gc and deletion.
+- Splitting an oversized home uses the same copy, then moves the lines' refs and leaves redirect
+  entries in the old home's metadata. (Resolves §33 question 4.)
 
 **Mirror repos** are separate bare repos, one per published surface (§34.11). They are populated only
-by `git push` from a namespace repo. A push transfers only objects reachable from the pushed refs
-(T9d).
+by `git push` from a home repo. A push transfers only objects reachable from the pushed refs (T9d).
 
 **Evidence store and derived indexes** as described in §34.19. Evidence payloads are reached only
 through the API. On an object store, the API issues short-lived signed URLs (I26).
@@ -1844,63 +1904,113 @@ fails, those objects are pruned after the gc grace window (I4).
 
 | Operation | Steps | Commit point | On conflict or failure |
 |---|---|---|---|
-| **Import** (folder, zip, or git URL `repo@ref:path`) | 1. read bytes; 2. validate (§34.12); 3. secret-scan; 4. write blobs with no filters (T15); 5. build tree; 6. compute digests; 7. if `content_digest` equals HEAD, no-op (fixes M6); 8. compute projections; 9. one commit per line with `Sbs-Origin`; 10. labels-at-create as metadata commits | one ref transaction: the skill line, every changed projection line, and their metadata refs (T6a) | any stale ref → nothing moves (T6b), `409` with current heads |
+| **Import** (folder, zip, or git URL `repo@ref:path`) | 1. read bytes; 2. validate (§34.12); 3. secret-scan; 4. write blobs with no filters (T15); 5. compute the bundle's digests; 6. if `content_digest` equals HEAD, no-op (fixes M6); 7. split the bundle into own files and extracted tools and prompts (§34.7); 8. one commit per changed extracted line, then the skill commit with member records and `identity.json`, all with `Sbs-Origin`; 9. check that assembly reproduces the bundle exactly (T24); 10. labels-at-create as metadata commits | one ref transaction: the skill line, every changed extracted line, the members' keep-refs, and the metadata refs (T6a) | any stale ref → nothing moves (T6b), `409` with current heads |
 | **Publish candidate** | as import, onto `heads/cand/<id>` | ref transaction | `409` |
 | **Promote** | move `heads/main` from the expected old commit: fast-forward, or a merge commit if diverged and the policy allows | compare-and-set (T7: one winner of 8 racing) | `409` with current HEAD |
 | **Tag** | create `tags/<v>` | create-only | `409` if it exists |
 | **Set pointer** (`best`, `user_best`) | compare-and-set on `pointers/<p>` | compare-and-set | `409` |
-| **Compose / lock** | write manifest plus member subtrees; commit on the composition line | ref transaction (with any members created in the same call) | `409` |
+| **Compose / lock** | write member records and `identity.json`; commit on the composition line | ref transaction, with the members' keep-refs and any members created in the same call | `409`; overlapping mounts are rejected (I39) |
 | **Apply workspace** | resolve pins → write the lock composition → move `ws/*` refs and the workspace's metadata ref | one ref transaction | ref `409` aborts the whole apply |
 | **Propose** (tool-centric edit, upstream change, inbound mirror push, enrichment plugin) | create `heads/proposal/<id>` on the target line | ref create | — |
-| **Fork** (S3) | copy objects into the target namespace; first commit's parent = the upstream commit; record `Sbs-Derived-From` | ref transaction | — |
+| **Fork** (S3) | copy objects into the target home if it differs; first commit's parent = the upstream commit; record `Sbs-Derived-From` | ref transaction | — |
 | **Upstream proposal for a fork** | three-way merge of upstream into the fork (`git merge-tree --write-tree`) → a proposal branch | ref create | conflict → proposal marked `conflicted` with the conflict list, never auto-resolved (T17, T17b) |
 | **Pin external** (S1) | fetch the foreign commit into `refs/external/…` | ref create | upstream unreachable → `502`, nothing recorded |
 | **Record measurement** | ensure a keep-ref for each subject commit (idempotent) → write the record file (temp file, fsync, rename) under the subject's directory and the cache path (§34.19) | atomic rename | a stray keep-ref from a crash is reclaimed by the reconciler if no record cites it |
 | **Yank** | lifecycle state `yanked` in the snapshot's metadata ref. HEAD moves back to the previous promoted commit if policy says so. Refs are kept. | one ref transaction (metadata + HEAD) | — |
 | **Delete line** (admin) | delete the line's `heads/`, `pointers/` and `tags/`. Keep-refs of cited snapshots stay | ref transaction | — |
-| **Redact** (admin; secrets, legal) | rewrite the affected line's history without the offending blob → new commits → delete old refs and keep-refs → mark evidence on affected snapshots `provenance.redacted` with old→new digest mapping → prune that namespace under a maintenance lock | ref transaction, then maintenance gc | — |
-| **Mirror sync** | build the derived tree (members are existing trees, no copying; T9) → commit → flat tag and branches → push | `git push` to the mirror repo | retried; the mirror is never authoritative |
-| **Backup** | `git bundle create --all` per namespace (content and metadata), plus an incremental copy of the append-only evidence store. Derived indexes are not backed up | — | restore by clone of the bundle plus a file copy; indexes rebuild; non-destructive (T19) |
+| **Redact** (admin; secrets, legal) | rewrite the affected line's history without the offending blob → new commits → delete old refs and keep-refs → mark evidence on affected snapshots `provenance.redacted` with old→new digest mapping → prune that home under a maintenance lock | ref transaction, then maintenance gc | — |
+| **Mirror sync** | assemble the served trees (T24, T25) → build the mirror tree from them (no copying; T9) → commit → flat tag and branches → push | `git push` to the mirror repo | retried; the mirror is never authoritative |
+| **Backup** | `git bundle create --all` per home (content and metadata), plus an incremental copy of the append-only evidence store. Derived indexes are not backed up | — | restore by clone of the bundle plus a file copy; indexes rebuild; non-destructive (T19) |
 
-### 34.7 Projections and dependencies
+### 34.7 Extracted tools, prompts and dependencies
 
 There are two ways a skill relates to a tool. Both are needed, and they must be kept apart.
 
-**1. Bundled files: projections (A3, J2.2).** A file inside the skill's tree that is a tool or a
-prompt gets an *owned* projection line, `<skill>/<entry>`.
+**1. Files inside the bundle: extracted tools and prompts (A3, J2.2; I33).** A file inside the
+skill's bundle that is a tool or a prompt gets an *extracted* line, `<skill>/<entry>`.
 
-- The projection's script blob **is** the skill's blob (T5), so the link is checkable by hash. The
-  link record (`skill snapshot, path ↔ projection snapshot`) lives in the derived index and is
-  re-verifiable.
-- **Skill → projection:** a new skill snapshot that changes the file advances the projection line in
-  the **same** ref transaction.
-- **Projection → skill:** a tool-centric commit on a projection line (on a branch) creates a
-  *proposal* on the skill line that replaces the blob at that path. Adoption is an explicit
-  promotion, so pinned compositions never change underneath their users.
-- **Classification (I10).** Projections are created for:
-  - files declared as tools or prompts, in frontmatter or in the skill line's declarations (metadata ref);
-  - entry points detected by the kind's rules (today's `.py`, `.sh`, `.bash`), labelled
-    `projection: detected`, and excluding `_`-prefixed private modules (survey M5).
+An extracted tool is a **full artifact**:
 
-  Other files stay plain bundle files and get no line of their own. A wrong projection affects only
-  the advertised tool surface, never the bundle. (Resolves §33 question 2.)
-- **Stable projection identity (I17).** A projection's `tool.json` holds only declared, stable fields
-  (`entry`, `language`, declared `name`). Derived metadata (parameters parsed from docstrings,
-  descriptions, embeddings) are **labels** attributed to the deriver and its version. Upgrading a
-  deriver therefore never changes a tool's identity.
+- its own snapshots, `content_digest`, history and metadata;
+- executable in SBS's sandbox and servable through vMCP;
+- pinnable in compositions and by other skills, and measurable on its own.
+
+"Extracted" says only where its bytes come from and which side owns changes.
+
+**A skill is an aggregate of its extracted tools and prompts (I35).** The skill's `content/` holds
+only the files that were not extracted: `SKILL.md`, `LICENSE.txt`, references, assets. Its
+`.sbs/members.json` holds one record per extracted artifact, for example:
+
+```json
+{"target": "scripts/fill.py", "kind": "tool", "line": "pdf/fill", "content_digest": "sha256:…", "commit": "…", "source": "fill.py"}
+```
+
+- The records are written **once, in the same ref transaction** that creates or advances the
+  extracted lines, together with their keep-refs (§34.9). They are immutable, like the rest of the
+  snapshot.
+- From any skill snapshot, SBS reaches each member's own record, and through it the member's metadata
+  (lifecycle, approval, scan results), without recomputing anything.
+- SBS can compute an **effective state** under a configurable rule. For example, a skill snapshot
+  counts as approved only if every member snapshot is approved.
+- The reverse question ("which skill snapshots contain this tool snapshot?") is answered by a derived
+  index, rebuilt from these authoritative forward records.
+- Nothing is stored twice. The tool's entry file is the one object both the tool snapshot and the
+  served bundle use (T5, T24).
+- **Members are fixed per snapshot (I38).** Re-importing identical content is a no-op (§34.6), so the
+  members stay as they were. A change to the extraction rules affects only new snapshots, unless an
+  administrator runs an explicit **re-extract**. Re-extract writes a new commit with the same served
+  tree and a new split between own files and members, so the change is visible in history.
+- **Standalone use (I40).** An extracted tool whose entry file imports other bundle files (for
+  example a private `_helpers.py`) is labelled `standalone: false` unless those files are declared as
+  part of the tool. It still runs in the skill's context; it is just not advertised as runnable on its
+  own.
+
+**Ownership of changes.**
+
+- **Skill → tool:** a new skill snapshot that changes the file advances the extracted line in the
+  **same** ref transaction. Unchanged files keep their existing tool snapshot, and the new skill's
+  member record points to it.
+- **Tool → skill:** a tool-centric commit on an extracted line (on a branch) creates a *proposal* on
+  the skill line that replaces the file at that path. Adoption is an explicit promotion, so pinned
+  compositions never change underneath their users.
+
+**What gets extracted (I10, I34).** Each home sets an extraction policy.
+
+| Policy | What it extracts | Notes |
+|---|---|---|
+| **`declared`** (default) | files declared as tools or prompts, in frontmatter or the line's declarations, plus entry points detected by the kind's rules (today's `.py`, `.sh`, `.bash`) | detected ones are labelled `extraction: detected`. `_`-prefixed private modules are excluded (survey M5) |
+| **`all-text`** | additionally, every text file becomes a prompt line | matches today's behaviour, where every file becomes a snippet. Cheap, because all lines share one repo (200k refs measured) |
+
+Under either policy, other files stay plain bundle files: readable through the skill
+(`files/{path}`) and indexable for search, but without a line of their own. A wrong extraction
+affects only the advertised tool surface, never the bundle. (Resolves §33 question 2.)
+
+**Stable identity (I17).** An extracted tool's `tool.json` holds only declared, stable fields
+(`entry`, `language`, declared `name`). Derived metadata (parameters parsed from docstrings,
+descriptions, embeddings) are **labels** attributed to the deriver and its version. Upgrading a
+deriver therefore never changes a tool's identity.
+
+**Two kinds of metadata (I36).**
+
+| Kind of metadata | Examples | Keyed by | Stored at |
+|---|---|---|---|
+| **Content facts** | security-scan results, licence, exec-bit checks | `content_digest` alone, so they are shared wherever identical bytes appear (survey §10.1's amortisation) | `refs/meta/content/<digest>` |
+| **Line state** | lifecycle, approval, producer labels | `(line, content_digest)` | `refs/meta/<kind>/<name>/<digest>` |
 
 **2. Runtime dependencies: declared and resolved (G6).** Some tools are called by name and are not
 present in the bundle, such as cap-evolve's frozen primitives (`spa_env.py:1025-1031`).
 
 - The skill **declares** them in its line declarations, kept in a metadata ref (`depends: [{kind: tool, line, constraint}]`).
-- **`:apply` resolves them and records the result in the lock composition.**
+- **`:apply` resolves them and records the result in the lock composition.** They are not members of
+  the skill: a skill's members are only the files of its own bundle, which are known exactly at
+  publish time.
 - A deployment that bypassed `:apply` produces a lock with `resolution: unresolved`. Its measurements
   are excluded from cache hits, because their key is incomplete. (Resolves §23 question 3.)
 
 **Standalone tools and prompts (I11).**
 
 - A tool is `tool.json` plus source files under `src/`. A prompt is `prompt.md` (bytes verbatim)
-  plus an optional `prompt.json` (variables, role).
+  plus an optional `prompt.json` (variables, role). Both are stored under `content/`, with no members.
 - SBS canonicalises **only its own JSON manifests**: UTF-8, keys sorted, 2-space indent, trailing
   LF. User-authored files are never touched.
 - Identical tools therefore hash identically. (Resolves §33 question 3.)
@@ -1915,13 +2025,13 @@ present in the bundle, such as cap-evolve's frozen primitives (`spa_env.py:1025-
   - `?versions=all` (history);
   - `?state=`;
   - frontier and best-by-metric, which are evidence queries returning snapshot lists (survey §8.7).
-- **Promotion policy per namespace or line:**
+- **Promotion policy per home or line:**
 
 | Policy | When HEAD moves | Who uses it |
 |---|---|---|
 | `manual` | only on an explicit promote | — |
 | `on-gate` | the producer promotes after its own gate passes | cap-evolve accept, SkillOpt adopt, Arbor merge |
-| `on-publish` | every publish promotes | the default for a namespace with no policy set. It keeps today's experience that a write is immediately what everyone sees |
+| `on-publish` | every publish promotes | the default for a home with no policy set. It keeps today's experience that a write is immediately what everyone sees |
 
 - `best`, `user_best` and the like are **pointers**, not tags: they move, so they must not be
   immutable tags (I16).
@@ -1932,8 +2042,8 @@ present in the bundle, such as cap-evolve's frozen primitives (`spa_env.py:1025-
 
 - Content and pointers are protected by ref compare-and-set and all-or-nothing multi-ref
   transactions (T6, T7).
-- Each namespace has one writer: an in-process queue, with git's lock files as the backstop. Reads
-  run concurrently. Across hosts, one leader per namespace takes writes (I27, untested here).
+- Each home has one writer: an in-process queue, with git's lock files as the backstop. Reads run
+  concurrently. Across hosts, one leader per home takes writes (I27, untested here).
 - Labels and lifecycle state are protected the same way. Each snapshot's metadata ref is updated by
   compare-and-set: the ETag is the metadata commit, and If-Match is the expected old value.
   Additive label merge is a server-side read–merge–CAS loop with retry (survey B3, B4; T20).
@@ -1951,7 +2061,18 @@ present in the bundle, such as cap-evolve's frozen primitives (`spa_env.py:1025-
 **Retention.**
 
 - A snapshot is retained if it is reachable from any `heads/`, `pointers/`, `tags/`, `keep/` or
-  `external/` ref, or is a member of a retained composition (T8a, T8b).
+  `external/` ref.
+- **References in records do not retain by themselves.** Git does not follow a commit id written
+  inside a JSON file (T26b). So **every record that references a snapshot creates a keep-ref for it
+  in the same transaction (I41).** That covers:
+  - an aggregate's member records (skill → tools, group → skills, lock → everything it pins);
+  - evidence (§34.10).
+
+  The whole closure of a retained aggregate therefore survives gc and re-assembles identically
+  (T26a).
+- **Keep-refs are reclaimed by a mark phase.** The reconciler starts from the live roots (`heads/`,
+  `pointers/`, `tags/`, workspaces, evidence), follows member records, and deletes keep-refs nothing
+  reachable needs.
 - Unreferenced candidates are pruned (T8c), **unless** the producer's retention policy is `all`. In
   that case every candidate commit gets a keep-ref. cap-evolve needs this, because it audits rejected
   iterations (I23).
@@ -1960,7 +2081,7 @@ present in the bundle, such as cap-evolve's frozen primitives (`spa_env.py:1025-
 
 **Garbage collection (I4).**
 
-- SBS runs gc per namespace under a maintenance lock, with git's default prune grace (2 weeks).
+- SBS runs gc per home under a maintenance lock, with git's default prune grace (2 weeks).
 - A just-written, unreferenced object survives a default gc (T12), so an in-flight publish is safe.
 - **`--prune=now` is forbidden** except for Redact. In testing it deleted the trees of a publish
   that had not yet reached its commit point.
@@ -1994,7 +2115,7 @@ bindings:
 
 | Surface | Contents | Refs |
 |---|---|---|
-| Namespace catalogue | `skills/<name>/` for promoted skills | `main`, plus flat tags `<ns>-r<N>` |
+| Namespace catalogue (one per SBS namespace) | `skills/<name>/` holding the served trees of promoted skills in that namespace. A skill in two namespaces appears in both | `main`, plus flat tags `<ns>-r<N>` |
 | Workspace view | `skills/<name>/` for the workspace's pins | branch `ws-<name>` |
 | Per-artifact upstream (J2.6) | the line's own history | `main`, plus tags `v<N>` |
 
@@ -2012,7 +2133,7 @@ bindings:
 ### 34.12 Security
 
 - **Authorisation** is the API's job, and it is the only boundary (G1). The internal repo is not an
-  authorisation boundary (T9b). Mirrors are created per visibility level.
+  authorisation boundary (T9b). Tenancy is by namespace, many-to-many as today: `scope:` bindings filter by membership (OR across namespaces). Mirrors are created per namespace.
 - **Secrets.** Content is immutable, so secrets are scanned **before** the commit point (survey
   §8.10). A secret that gets through is removed only by **Redact** (§34.6), which marks affected
   evidence (I19).
@@ -2064,7 +2185,8 @@ bindings:
 2. Otherwise, reconstruct through the existing exporter and label the result
    `provenance.reconstructed: true` (survey §8.12).
 3. Version chains (`parent`) become commits on one line, in order. Tools and snippets become
-   projections or standalone lines. Tags become labels on the matching snapshot.
+   extracted or standalone lines. `namespace:<x>` tags become namespace memberships, so today's
+   multi-namespace membership is preserved. Other tags become labels on the matching snapshot.
 4. Each migrated snapshot carries its old UUID as a `legacy_uuid` label. The new API never accepts it
    as an address, but logs, exports and results that cite old UUIDs can still be traced to the new
    artifact.
@@ -2103,7 +2225,7 @@ The prototype and its checks are committed at
 - git 2.39.5, Python 3.11.2, one host.
 - Corpus commits: `anthropics/skills` `dbd4588`, cap-evolve `c2a4aa6`, Arbor `7cdaf1f`, Harbor
   `15da91c`, `obra/superpowers` `bb92a77`.
-- **Result: 34/34 pass** (`test_design.py`), plus **6/6** (`test_nodb.py`).
+- **Result: 39/39 pass** (`test_design.py`), plus **6/6** (`test_nodb.py`).
 
 | Check | Claim | Result |
 |---|---|---|
@@ -2113,10 +2235,10 @@ The prototype and its checks are committed at
 | T3 | the exec bit changes both the tree hash and `content_digest` | pass |
 | T4 | 54 `.ttf` fonts and a `.tar.gz` round-trip byte-exact | pass |
 | T15 | CRLF and a missing final newline are stored byte-exact (no filters) | pass |
-| T5 | a projected tool's script blob is the same object as in the skill | pass |
+| T5 | an extracted tool's script blob is the same object as in the skill | pass |
 | T6a, T6b | multi-line publish commits together; one stale compare-and-set aborts all | pass |
 | T7 | 8 concurrent promotions from one base: exactly 1 wins | pass |
-| T8a–c | a composition keeps its members through gc; a keep-ref keeps a branchless cited snapshot; an unreferenced snapshot is pruned | pass |
+| T8a–c | subtree reachability keeps objects through gc (an alternative the design no longer uses; see T26); a keep-ref keeps a branchless cited snapshot; an unreferenced snapshot is pruned | pass |
 | T12 | default gc keeps a fresh unreferenced object (in-flight publish) | pass |
 | T9a | `transfer.hideRefs` hides internal refs from `ls-remote` | pass |
 | **T9b** | **finding:** under protocol v2 a hidden ref's commit *is* fetchable by SHA from the internal repo | confirmed; also with `uploadpack.allow*SHA1InWant=false` (manual run) |
@@ -2126,9 +2248,12 @@ The prototype and its checks are committed at
 | T11 | 20k lines: list 24 ms; 10-ref transaction 4 ms | pass |
 | — | 200k refs (manual run): compare-and-set 2.9 ms, lookup 2.6 ms, 10-ref transaction 4.0 ms, delete 110 ms, `pack-refs` 31.5 s, `packed-refs` 13.8 MB | measured |
 | T14 | `capability_digest` equal under a declared ignore scope; `content_digest` differs | pass |
-| T16 | a cross-namespace pin (object copy) resolves after the source namespace is deleted | pass |
+| T16 | a cross-home pin (object copy) resolves after the source repo is deleted | pass |
 | T17, T17b | an upstream edit merges cleanly into a diverged fork; a conflicting edit is detected, not auto-resolved | pass |
 | T19 | `git bundle --all` backup restores every ref, incl. `refs/artifacts` and `refs/keep`, identically | pass |
+| **T24** | every corpus skill stored as own files + extracted tool snapshots (member records) assembles to exactly the upstream tree | **81/81**, 177 extracted tools |
+| T25, T25b | a skill group holding only member records assembles to exactly the six upstream skill trees; it holds no member objects | pass |
+| T26a, T26b | with publish-time keep-refs a group's whole closure survives gc and re-assembles identically; a member referenced only inside a record is pruned | pass |
 | T20–T23 | mutable state without a database: concurrent metadata compare-and-set, label write latency, content-addressed cache lookup, per-subject and cross-subject scans, locked counters (`test_nodb.py`, 6/6) | pass; numbers in §34.19 |
 
 **Not tested here:**
@@ -2146,31 +2271,31 @@ These are implementation-phase checks (§34.16).
 | Phase | Content | Exit criteria |
 |---|---|---|
 | **0 = survey T0**, in the **existing** release | delete the licence heuristic; read bytes; correct-or-`409` delete; lenient parse; atomic plugin label merge. Users who stay on existing releases need these fixes, and they make the migration tool's reconstruction path (§34.13 step 2) less lossy | survey T0 measures |
-| **1 — store core** | namespace repos; verbatim import; the four digests; lines and refs; projections; compositions; keep-refs; gc policy; the unversioned API with heads-only listing; the migration tool | App. B fidelity **0/12 → 12/12**; T13 **81/81** in CI; M6 re-import **3 → 3** tools; T6b, T7, T8, T12 as regression tests |
+| **1 — store core** | home repo; verbatim import; the four digests; lines and refs; aggregates with member records (skills, groups, compositions) and exact assembly; namespace memberships; keep-refs and the mark phase; gc policy; the unversioned API with heads-only listing; the migration tool | App. B fidelity **0/12 → 12/12**; T13 and T24 **81/81** in CI; M6 re-import **3 → 3** tools; T6b, T7, T8, T12 as regression tests |
 | **2 — consistency and git surface** | metadata refs with ETag/If-Match; atomic file writes everywhere (I29); reconciler; mirror service; `npx` archives of verbatim trees | lost update → `412`; reconciler rebuilds every index from repos and evidence alone; Harbor resolves from an SBS mirror over HTTPS |
 | **3 — workspaces** | pins, `:apply` with lock compositions, candidate branches, pointers, promotion policies; cap-evolve seam | `spa_env.py` workaround LOC → 0; parallel candidates 1 → K |
 | **4 — evidence (survey T4)** | measurements bound to `content_digest` and lock compositions; keep-ref-before-insert; cache | reproduce cap-evolve's published numbers from store queries; report rollouts avoided × cost |
 | **5 — S1–S3 and knowledge (survey T5)** | external lines, evaluator compositions, forks with upstream proposals; findings | the §31.2 measures |
-| **6 — scale and governance (survey T6–T7)** | leader per namespace; replicas; redact; seals; quotas | ref-store envelope at 10⁶ refs per namespace (§34.18 Q1); ACL conformance |
+| **6 — scale and governance (survey T6–T7)** | leader per home; replicas; redact; seals; quotas | ref-store envelope at 10⁶ refs per home (§34.18 Q1); ACL conformance, including many-to-many namespaces |
 
 ### 34.17 Issues and resolutions (decision log)
 
 | # | Issue | Resolution | Grounds |
 |---|---|---|---|
 | I1 | Which hash identifies a snapshot? | `content_digest` is primary. The tree hash is indexed. The commit is the version event. | A2; T2 |
-| I2 | Physical or logical repo per artifact? | Logical: ref namespaces per line, in one bare repo per namespace | A1; §28 |
+| I2 | Physical or logical repo per artifact? | Logical: one ref prefix per line (`refs/artifacts/<kind>/<name>/…`), in one bare repo per home (one home by default) | A1; §28 |
 | I3 | Internal objects are fetchable by SHA under protocol v2 despite `hideRefs` | Never serve internal repos. Mirrors are separate and push-populated | **T9b–d** |
 | I4 | gc with `--prune=now` deleted a not-yet-committed publish | Default grace window (2 weeks). `--prune=now` only for Redact, under a maintenance lock | **T8c, T12** |
-| I5 | Composition digest canonicalisation and roles (§23 Q1) | Roles are part of the composition tree and manifest. The digest uses the same rule as any tree | §34.3 |
+| I5 | Composition digest canonicalisation and roles (§23 Q1) | Roles are the mount targets in member records. A composition's digest is that of its served tree, so roles are part of identity | §34.3 |
 | I6 | CORAL snapshot granularity (§23 Q2) | One `knowledge-snapshot` composition (skills + notes). Attempts become measurements | §34.14 |
 | I7 | Who records pins for name-bound dependencies (§23 Q3)? | `:apply` writes the lock. Bypassing it gives `unresolved`, which is excluded from cache hits | §34.7 |
 | I8 | Retention of compositions (§23 Q4) | Cited locks are kept by keep-refs. Uncited locks expire with their workspace after the gc grace | §34.9 |
 | I9 | Mirror authority and direct pushes (§23 Q5, §33 Q5, survey Q9) | SBS is authoritative. Inbound pushes become proposal branches | §34.11 |
 | I10 | Tool classification (§33 Q2) | Declared files, plus conservatively detected ones labelled `detected`. `_`-private names excluded | §34.7; survey M5 |
 | I11 | Canonical layouts for standalone tools and prompts (§33 Q3) | `tool.json` + `src/`; `prompt.md` + `prompt.json`. SBS canonicalises only its own JSON | §34.7 |
-| I12 | Physical layout under scale (§33 Q4) | Per namespace. Cross-namespace pins copy objects. Split by moving lines | **T16**; measured envelope |
+| I12 | Physical layout under scale (§33 Q4) | One home by default. Cross-home pins copy objects. Split a home by moving lines | **T16**; measured envelope |
 | I13 | `capability_digest` scope: store policy or client-declared (survey §11 Q1)? | Registered scope ids. A kind's default scope, or a client-registered scope, named inside the digest value | **T14** |
-| I14 | Workspaces vs namespaces (survey §11 Q2) | A separate axis. Workspaces pin across namespaces via I12 | §34.5 |
+| I14 | Workspaces vs homes and namespaces (survey §11 Q2) | A separate axis. A workspace belongs to one home and may pin across homes via I12 | §34.5 |
 | I15 | Consistency between authoritative stores and indexes | Content, pointers and metadata share one ref transaction. Evidence follows its keep-refs. Indexes are derived, watermarked and rebuildable | §34.9 |
 | I16 | Producers need moving names (`best`) but tags must be immutable | `pointers/` refs moved by compare-and-set; tags create-only | §34.3 |
 | I17 | Derived tool metadata would change tool identity when derivers change | Only stable declared fields in `tool.json`. Derived fields are attributed labels | §34.7 |
@@ -2183,20 +2308,30 @@ These are implementation-phase checks (§34.16).
 | I24 | Git object format | SHA-1 repos for host compatibility. Evidence keys are SHA-256 `content_digest` | §34.4 |
 | I25 | Ref names consumers can use | Restricted charset; mirror refs are a single segment | **T18** |
 | I26 | Access to evidence payloads | Only via the API. On an object store, short-lived signed URLs | §34.5 |
-| I27 | Writers on several hosts | One leader per namespace takes every write for that namespace, including budget counters. Read replicas. Untested here | §34.9; Phase 6 |
-| I28 | Is a database required for mutable state? | No. Metadata in git refs, evidence as append-only files, counters as locked files under the per-namespace leader, indexes derived. An SQLite file is an optional, disposable index; a database server is only a deployment option for many stateless API hosts | §34.19; T20–T23 |
+| I27 | Writers on several hosts | One leader per home takes every write for that home, including budget counters. Read replicas. Untested here | §34.9; Phase 6 |
+| I28 | Is a database required for mutable state? | No. Metadata in git refs, evidence as append-only files, counters as locked files under the per-home leader, indexes derived. An SQLite file is an optional, disposable index; a database server is only a deployment option for many stateless API hosts | §34.19; T20–T23 |
 | I29 | SBS's file writes are not atomic today (`file_handler.py:190-233` writes in place), contrary to survey §6.1 and §6.3 | Every file write is temp file + fsync + rename. Required, because files become authoritative for evidence | §34.19 |
 | I30 | One metadata ref per line becomes a hotspot under concurrent plugins (T20: 73 retries for 16 writers) | Shard metadata by snapshot (`refs/meta/<kind>/<name>/<digest>`), so writers to different snapshots never contend | §34.19; T20 |
-| I31 | Evidence records need a lifecycle (`pending → scored`, `archived`), but record files are append-only | The record file is immutable. Lifecycle lives in a sidecar state file, replaced atomically under the namespace writer | §34.19 |
+| I31 | Evidence records need a lifecycle (`pending → scored`, `archived`), but record files are append-only | The record file is immutable. Lifecycle lives in a sidecar state file, replaced atomically under the home writer | §34.19 |
+| I32 | §34 used "namespace" for the storage partition, unlike SBS's many-to-many tenancy namespaces (`access-control.md:62`, `:809`) | Two concepts. A **home** is the single-valued storage partition: one repo, and one per deployment by default. A **namespace** is today's many-to-many tenancy scope, held as versioned line metadata and enforced by the API | §34.3 |
+| I33 | "Projection" suggested a lesser artifact | Renamed **extracted** tool or prompt. It is a full artifact; the word only says where its bytes come from and who owns changes | §34.7 |
+| I34 | Today every bundle file becomes a snippet; §34 extracted only declared and detected files | Per-home extraction policy: `declared` (default) or `all-text` (today's behaviour) | §34.7 |
+| I35 | A skill snapshot did not know its tool snapshots; links lived only in a derived index | **One aggregate model for every kind.** A snapshot is own `content/` plus `.sbs/members.json`, records pointing at member snapshots and never into them. The served tree is assembled exactly and checked against `identity.json` | §34.3, §34.7; **T24, T25** |
+| I36 | Some tool metadata describes the bytes, some describes a version of an artifact | Content facts are keyed by `content_digest` alone and shared across lines. Line state is keyed by `(line, content_digest)` | §34.7 |
+| I37 | Names unique per home, while tenants share a home | As today (names are global now). Parallel candidates are branches. Tenants needing separate name spaces get separate homes | §34.3 |
+| I38 | Extraction rules change over time | Members are fixed per snapshot. Rule changes affect new snapshots only, unless an explicit re-extract writes a new commit | §34.7 |
+| I39 | Member mounts may overlap each other or own files | Rejected at publish | §34.3 |
+| I40 | An extracted tool may import other bundle files | Labelled `standalone: false` unless those files are declared part of the tool | §34.7 |
+| I41 | Git does not follow commit ids inside records, so aggregates and evidence would not retain what they reference | Every record that references a snapshot creates its keep-ref in the same transaction. A mark phase from the live roots reclaims unneeded keep-refs | §34.9; **T26a, T26b** |
 
 ### 34.18 Remaining open questions
 
 These need data rather than decisions:
 
-1. **Q1 — ref-store envelope beyond 200k refs per namespace** (content, keep and metadata refs together). Measured up to 200k (§34.15). Before
+1. **Q1 — ref-store envelope beyond 200k refs per home** (content, keep and metadata refs together). Measured up to 200k (§34.15). Before
    general availability, measure at 10⁶, including `pack-refs` and deletes. If needed, evaluate git's
-   newer `reftable` ref backend (not available in the git 2.39.5 used here) or more namespace
-   splitting.
+   newer `reftable` ref backend (not available in the git 2.39.5 used here) or splitting into more
+   homes.
 2. **Q2 — mirror throughput under Harbor fan-out.** Harbor resolves once per job and caches by SHA
    (`skills.py:140-187`), so the load is likely low. Benchmark over smart HTTP.
 3. **Q3 — do learned skills degrade as their target repos move?** This is the hypothesis S1 makes
@@ -2233,10 +2368,10 @@ deployment case (point 4 below), and even then not as the source of truth.
 | Workspaces and pins | concurrency control; atomic with the lock composition | `refs/meta/workspace/<ws>`, tree `pins.json` | in the same ref transaction as the lock | T6 mechanism |
 | Measurements, findings, runs | append-only; point lookup; per-subject aggregation | evidence store: `measurements/<subject>/<record>.json` | temp file, fsync, rename | T22b |
 | Evaluation cache (`seen`) | O(1) lookup before each rollout | `seen/<k[:2]>/<k>.json`, where `k = sha256(cache key)`: the path *is* the key | atomic rename; existence test | T22a |
-| Record lifecycle (`pending → scored`, `archived`) | single-writer updates | sidecar `<record>.state.json` | atomic replace by the namespace writer (I31) | standard mechanism |
-| Budgets and counters | atomic increment by many writers | `budgets/<scope>` | `flock` under the per-namespace leader | T23 |
+| Record lifecycle (`pending → scored`, `archived`) | single-writer updates | sidecar `<record>.state.json` | atomic replace by the home writer (I31) | standard mechanism |
+| Budgets and counters | atomic increment by many writers | `budgets/<scope>` | `flock` under the per-home leader | T23 |
 | Cross-subject queries (frontier, transfer, filtered search, facets), lineage edges, link records | fast queries over everything | derived index | in memory (as today), optionally persisted to an SQLite file (stdlib `sqlite3`); the vector store for semantic search | T22c shows the cost without an index |
-| ACLs and namespace policies | rarely written | configuration files | as today | — |
+| ACLs (including namespace `scope:` bindings) and home policies | rarely written | configuration files | as today | — |
 
 **Measured (`test_nodb.py`; git 2.39.5, git CLI, one host):**
 
@@ -2255,7 +2390,7 @@ deployment case (point 4 below), and even then not as the source of truth.
    database there is a second consistency domain, which needs an outbox and reconciliation (I15).
 2. **Every label and state change is a commit.** That gives the producer-attributed, timestamped
    history the survey asks of enrichment (§10.1) with no extra machinery.
-3. **One backup artifact** per namespace (T19), plus an append-only evidence directory.
+3. **One backup artifact** per home (T19), plus an append-only evidence directory.
 4. **No new service to run.** Today's operational model (a folder tree plus a vector store) is
    preserved.
 
@@ -2273,9 +2408,9 @@ deployment case (point 4 below), and even then not as the source of truth.
    already indexes, but those caches are *authoritative* and rebuilt by a full scan at every boot.
    Here the index is derived, carries a watermark, and can be persisted so boots do not rescan.
 4. **Several hosts.** Git ref locks and `flock` assume one filesystem. The design sends every write
-   for a namespace through one leader (I27), so counters and compare-and-set stay local to that
+   for a home through one leader (I27), so counters and compare-and-set stay local to that
    host. **The one case for a database server** is a deployment with many stateless API hosts that
-   all need the same fresh cross-namespace index. There, Postgres can hold the derived index, as a
+   all need the same fresh cross-home index. There, Postgres can hold the derived index, as a
    deployment profile. Content, metadata and evidence stay where they are.
 5. **Evidence on an object store.** An object store has no rename, but a single-object PUT is
    atomic, so record files map one-to-one. Scans become LIST calls, which makes the derived index
