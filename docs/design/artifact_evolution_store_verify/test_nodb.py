@@ -1,4 +1,4 @@
-"""Checks for §34.19: can §34's mutable state live in git + plain files, without a database?
+"""Checks for §34.20: can §34's mutable state live in git + plain files, without a database?
 
 Usage: python3 test_nodb.py   (stdlib + git only; no corpus needed)
 """

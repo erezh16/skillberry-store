@@ -1,4 +1,4 @@
-"""Checks for the mechanical claims in artifact_evolution_store.md §34 (see §34.15).
+"""Checks for the mechanical claims in artifact_evolution_store.md §34 (see §34.16).
 
 Usage:
     CORPUS=/path/to/clones python3 test_design.py
@@ -246,7 +246,7 @@ subprocess.run(["git", "clone", "-q", "--bare", "--mirror", str(bundle), str(res
 refs = lambda r: git(r, "for-each-ref", "--format=%(refname) %(objectname)")
 check("T19 bundle backup restores every ref (incl. refs/artifacts, refs/keep) identically", refs(nsc) == refs(restored) and "refs/keep/" in refs(restored))
 
-# ---------------- third batch: generic aggregates (§34.3, §34.7) ----------------
+# ---------------- third batch: generic aggregates (§34.4, §34.8) ----------------
 # An aggregate snapshot = its own files under content/ + .sbs/members.json (member snapshot records and
 # mount specs). It never embeds members' objects; the served tree is assembled from the records.
 work3 = Path(tempfile.mkdtemp(prefix="sbsproto3-"))
@@ -277,7 +277,7 @@ def mktree_from(repo, entries):
 def publish_aggregate(repo, own_entries, members, keep=True):
     """members: [{target, member_commit, source}] -> commit whose tree is content/ (own) + .sbs/members.json.
 
-    keep=True: the publish holds a keep-ref per referenced member (the §34.9 rule), so records retain.
+    keep=True: the publish holds a keep-ref per referenced member (the §34.10 rule), so records retain.
     """
     if keep:
         for m in members:
