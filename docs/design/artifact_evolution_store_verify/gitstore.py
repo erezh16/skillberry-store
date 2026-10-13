@@ -51,7 +51,8 @@ def canonical_entries(src: Path, ignore: set[str] = frozenset()):
     return out, skipped
 
 
-def content_digest(entries) -> str:
+def sha256_entries_digest(entries) -> str:
+    """SHA-256 over (path, mode, bytes). An earlier draft's identity; §34.5 now uses the git tree hash."""
     h = hashlib.sha256()
     for rel, mode, data in sorted(entries, key=lambda e: e[0].encode()):
         h.update(rel.encode() + b"\0" + mode.encode() + b"\0" + data + b"\0")

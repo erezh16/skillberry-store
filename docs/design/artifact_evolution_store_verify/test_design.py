@@ -50,17 +50,17 @@ for s in skills:
 pub = [(line_ref("skill", s), commit(ns, imported[s][1], msg=f"{s} v1"), None) for s in skills if s not in ("xlsx", "pdf")]
 assert transact(ns, pub)[0]
 
-# T2 identity: same content -> same tree, different commit; content_digest deterministic
+# T2 identity: same content -> same tree hash (the snapshot identity), different commit SHA
 ents, t = imported["pdf"]
 c1 = commit(ns, t, msg="a"); time.sleep(1.1); c2 = commit(ns, t, msg="a")
 check("T2 same tree, different commit SHAs", c1 != c2 and git(ns, "rev-parse", c1 + "^{tree}") == git(ns, "rev-parse", c2 + "^{tree}"))
-check("T2 content_digest deterministic", content_digest(ents) == content_digest(list(reversed(ents))))
+check("T2 tree hash independent of input order", write_tree(ns, ents) == write_tree(ns, list(reversed(ents))))
 
 # T3 exec bit is part of identity
 modes = {m for _r, m, _d in imported["skill-creator"][0]}
 ents2 = [(r, "100644", d) for r, _m, d in imported["skill-creator"][0]]
-check("T3 exec bit changes tree hash and content_digest", "100755" in modes and
-      write_tree(ns, ents2) != imported["skill-creator"][1] and content_digest(ents2) != content_digest(imported["skill-creator"][0]))
+check("T3 exec bit changes the tree hash (the content_digest)", "100755" in modes and
+      write_tree(ns, ents2) != imported["skill-creator"][1])
 
 # T4 binaries stored byte-exact (canvas-design fonts, web-artifacts-builder tarball)
 fonts = [e for e in imported["canvas-design"][0] if e[0].endswith(".ttf")]
@@ -96,7 +96,7 @@ check("T7 8 concurrent CAS promotions from one base: exactly 1 wins", wins == 1,
 # T8 composition: manifest + member subtrees; reachability keeps members alive through gc
 members = {"pdf": imported["pdf"][1], "xlsx": imported["xlsx"][1]}
 manifest = canonical_json({"kind": "composition", "profile": "skill-group", "members": [
-    {"role": r, "kind": "skill", "line": f"anthropic/{r}", "content_digest": content_digest(imported[r][0]), "tree": t}
+    {"role": r, "kind": "skill", "line": f"anthropic/{r}", "content_digest": "sha1:" + t, "tree": t}
     for r, t in sorted(members.items())]})
 comp_tree = tree_of(ns, members, {".sbs-composition.json": manifest})
 comp_c = commit(ns, comp_tree, msg="group v1")
@@ -152,6 +152,16 @@ check("T10b SBS harbor_digest == Harbor's compute_skill_digest for each skill", 
 up_match = all(hs.compute_skill_digest(UP / "skills" / s.name) == hs.compute_skill_digest(s.source) for s in found)
 check("T10c Harbor digest via SBS mirror == digest of upstream directory", up_match)
 
+# T28 Harbor lock join without Harbor's digest: (git_commit_id, source path) -> served tree hash
+joined = 0
+for sk in found:
+    url_sha = hs.get_git_skill_metadata(sk.source)
+    sub = Path(sk.source).resolve().relative_to(hs._CACHE_DIR.resolve()).parts[4:]   # after host/org/name/sha
+    tree = git(mirror, "rev-parse", f"{url_sha[1]}:{'/'.join(sub)}")
+    joined += tree == imported[sk.name][1]
+check("T28 every Harbor lock entry resolves to its snapshot via mirror commit + path (no harbor_digest needed)",
+      joined == len(found), f"{joined}/{len(found)}")
+
 # T11 scale: 20k artifact lines (refs) in one namespace repo
 big = init_ns(work / "ns-scale.git")
 t0 = write_tree(big, [("x", "100644", b"x\n")]); c0 = commit(big, t0)
@@ -196,12 +206,13 @@ for r in ["anthropic-skills", "cap-evolve", "Arbor", "harbor", "superpowers"]:
             mism.append(f"{r}:{rel}")
 check("T13 corpus: imported tree == upstream tree for every SKILL.md dir", match == total, f"{match}/{total} {mism[:3]}")
 
-# T14 capability_digest: declared ignore-set makes scratch-only differences invisible
+# T14 scratch excluded at publish: candidates differing only in an ignored file get one identity
+IGNORE = {"JOURNAL.md", "MEMORY.md", "trajectories", "prior_iterations"}
 a = [("SKILL.md", "100644", b"x\n"), ("JOURNAL.md", "100644", b"run 1\n")]
 b = [("SKILL.md", "100644", b"x\n"), ("JOURNAL.md", "100644", b"run 2\n")]
-cap = lambda es, ign: content_digest([e for e in es if e[0].split("/")[0] not in ign])
-check("T14 capability_digest equal under ignore={JOURNAL.md}, content_digest differs",
-      cap(a, {"JOURNAL.md"}) == cap(b, {"JOURNAL.md"}) and content_digest(a) != content_digest(b))
+publish_view = lambda es: [e for e in es if e[0].split("/")[0] not in IGNORE]
+check("T14 with the ignore set applied at publish, scratch-only differences give the same tree hash",
+      write_tree(nsc, publish_view(a)) == write_tree(nsc, publish_view(b)) and write_tree(nsc, a) != write_tree(nsc, b))
 
 # T15 raw bytes: CRLF and no-trailing-newline preserved (no filters applied)
 raw = b"line1\r\nline2"
@@ -357,6 +368,13 @@ check("T26a with publish-time keep-refs, a group's whole closure (skills and the
 check("T26b negative control: a member referenced only inside a record, with no keep-ref, is pruned by gc",
       exists(lone_skill) and not exists(lone_tool))
 shutil.rmtree(work3, ignore_errors=True)
+
+# T27 identity is home-independent: the same skill imported into two homes has the same identity
+h1 = init_ns(work3 / "h1.git"); h2 = init_ns(work3 / "h2.git")
+pdf_ents = canonical_entries(UP / "skills" / "pdf")[0]
+check("T27 same skill in two homes -> same tree hash (and same object format)",
+      write_tree(h1, pdf_ents) == write_tree(h2, pdf_ents)
+      and git(h1, "rev-parse", "--show-object-format") == git(h2, "rev-parse", "--show-object-format") == "sha1")
 
 print(f"\n{sum(r[1] for r in results)}/{len(results)} passed (all batches)")
 shutil.rmtree(work2, ignore_errors=True)

@@ -1605,7 +1605,7 @@ needs T5's staged proposals first.
    `content_digest` is independent of git's hash function, and git's own move from SHA-1 to SHA-256
    object formats is still in progress. Keeping `content_digest` primary, with the tree hash indexed,
    avoids tying long-lived identities and evidence keys to git's object format.
-   **Resolved (I1, I24):** `content_digest` is primary and the tree hash is indexed; repos use SHA-1 for host compatibility.
+   **Resolved (I1, I24):** the served tree's git tree hash *is* `content_digest`, the only snapshot identity, prefixed with the repo's object format. Other digests are derived.
 2. **How are tools classified?** Declared entry points only, or also detected ones? A wrong
    projection no longer damages the bundle, but it still publishes a wrong tool surface.
    **Resolved (I10):** declared files, plus conservatively detected entry points labelled `detected`, with `_`-private names excluded.
@@ -1636,7 +1636,7 @@ artifacts are stored, identified, versioned, composed, retained and published, a
 binds to them.
 
 Every mechanical claim below was tested with a prototype against the survey's 81-skill corpus and
-Harbor's own resolution code. 45 of 45 checks pass (§34.16). Two test findings changed the design:
+Harbor's own resolution code. 47 of 47 checks pass (§34.16). Two test findings changed the design:
 
 - **I3:** internal repositories must never be served over git.
 - **I4:** garbage collection must never prune with a zero grace window.
@@ -1716,13 +1716,12 @@ single example, and maps them to the terms SBS uses today.
 
      | Identifier | Value [measured] |
      |---|---|
-     | `content_digest` | `sha256:c14a449f…66b1` |
-     | git tree hash | `6369f464…9238`, equal to upstream `dbd4588:skills/pdf` |
-     | `harbor_digest` | `sha256:b8b6cddc…028e` |
+     | `content_digest` (the served tree's git hash) | `sha1:6369f464…9238`, equal to upstream `dbd4588:skills/pdf` |
+     | `harbor_digest` (derived, for Harbor joins) | `sha256:b8b6cddc…028e` |
 
 4. **The tool snapshot `T1` on `tool/pdf/fill_fillable_fields`.**
    - It holds `fill_fillable_fields.py` and a `tool.json` naming the entry file.
-   - Its `content_digest` is `sha256:ce4959cf…f2f3` [measured].
+   - Its `content_digest` is `sha1:169bf0d3…f48b` [measured].
    - Its script is the same git object (`51c2600f…`) [measured] that the served bundle uses.
 5. **Promotion and metadata.**
    - The `on-publish` **policy** moves `skill/pdf`'s **HEAD** to `S1`, and Alice tags it **`v1`**.
@@ -1753,7 +1752,7 @@ single example, and maps them to the terms SBS uses today.
 | Term | Meaning | In the example |
 |---|---|---|
 | **Artifact** | Anything SBS versions: a skill, tool, prompt, toolset or composition. Precisely, the history of one is its *line* | "the pdf skill"; "the `fill_fillable_fields` tool" |
-| **Kind** | The type of an artifact. It decides layout, extraction rules and digest scope (§34.4) | `skill`, `tool`, `composition` |
+| **Kind** | The type of an artifact. It decides layout, extraction rules and the ignore set (§34.4) | `skill`, `tool`, `composition` |
 | **Line** (artifact line) | The continuing identity of one artifact over time: a named history of snapshots, with its own refs and metadata | `skill/pdf`; `tool/pdf/fill_fillable_fields` |
 | **Line id** | How a line is addressed: `<kind>/<name>`, prefixed `<home>:` only in multi-home deployments | `skill/pdf` (or `main:skill/pdf`) |
 | **Snapshot** | One immutable state of a line: own content plus member records. It never changes once written | `S1`, `S2` on `skill/pdf`; `T1`, `T2` on the tool line |
@@ -1770,12 +1769,11 @@ single example, and maps them to the terms SBS uses today.
 
 | Term | Answers | In the example |
 |---|---|---|
-| **`content_digest`** | "Is this the same content?" SHA-256 over the served tree's path, mode and bytes. The primary key for snapshots, evidence and caches | `S1`: `sha256:c14a449f…` [measured] |
-| **`capability_digest[scope]`** | "Same capability, ignoring declared scratch files?" Keys the evaluation cache | `cap:cap-evolve:sha256:…` for a candidate |
-| **`harbor_digest`** | "Which entry in a Harbor job lock is this?" | `S1`: `sha256:b8b6cddc…` [measured] |
-| **Git tree hash** | "Is this byte-identical to an upstream directory?" Provenance | `6369f464…` = upstream `dbd4588:skills/pdf` [measured] |
+| **`content_digest`** | "Is this the same content?" The **git tree hash of the served tree**, prefixed with the repo's object format. It covers paths, bytes and the exec bit, and no metadata or history. It is the *only* snapshot identity: the key for snapshots, evidence, caches, deduplication and provenance (equal to an upstream directory's tree hash after a verbatim import) | `S1`: `sha1:6369f464…`, equal to upstream `dbd4588:skills/pdf` [measured] |
+| **Ignore set** | A kind's declared scratch paths (for cap-evolve: `JOURNAL.md`, `MEMORY.md`, `trajectories/`, `prior_iterations/`). They are excluded at publish and stored with the run's evidence, so they never enter a snapshot or its identity | a candidate's `JOURNAL.md` goes to run `r7`'s evidence |
+| **`harbor_digest`** | Derived, not an identity: Harbor's own digest, computed from the served tree so a Harbor lock entry from a local-path run can be matched to a snapshot | `S1`: `sha256:b8b6cddc…` [measured] |
 | **Commit** (version event) | "Which change created this snapshot: when, by whom, from which parents?" Two commits can hold identical content | the commit that wrote `S2` on `cand/r7-3` |
-| **Selector** | How one snapshot of a line is named in the API: `@tag`, `@pointer`, `@branch` or `@content_digest` | `skill/pdf@v2`, `@best`, `@cand/r7-3`, `@sha256:c14a…` |
+| **Selector** | How one snapshot of a line is named in the API: `@tag`, `@pointer`, `@branch` or `@content_digest` | `skill/pdf@v2`, `@best`, `@cand/r7-3`, `@sha1:6369f464…` |
 
 **Versioning**
 
@@ -1798,7 +1796,7 @@ single example, and maps them to the terms SBS uses today.
 | Term | Meaning | In the example |
 |---|---|---|
 | **Label** | An attributed, mutable annotation on a snapshot | `optimizer:cap-evolve accepted-run=r7` |
-| **Content fact** | A label about the bytes, keyed by `content_digest` alone, so it is shared wherever the same bytes appear | `secret-scan: clean` on `sha256:c14a449f…` |
+| **Content fact** | A label about the bytes, keyed by `content_digest` alone, so it is shared wherever the same bytes appear | `secret-scan: clean` on `sha1:6369f464…` |
 | **Line state** | Lifecycle and approval of one snapshot *of one line* | `S1`: `approved` |
 | **Effective state** | A snapshot's state computed with its members' states under a rule | "`S2` is approved only when `T2` is approved" |
 | **Line declarations** | Mutable, versioned settings of a line: namespace memberships, declared dependencies, declared tools, policy | `skill/pdf`: `namespaces: [docs, public]` |
@@ -1842,7 +1840,7 @@ Today an object is identified by **name** and **UUID** (`schemas/manifest_schema
 |---|---|---|
 | **Object** (`skill`, `tool`, `snippet`, `vmcp_server`, `vnfs_server`) | **Artifact** of a **kind**: `skill`, `tool`, `prompt`, `toolset`, `composition`, `external-repo` | `snippet` becomes `prompt`. MCP and NFS servers are runtime views over a workspace, not versioned artifacts |
 | **Name** (globally unique per type) | **Line name**, inside a **line id** `<kind>/<name>`, unique per home | Same role: the stable handle a person uses. Scoping is per home, and extracted tools are scoped under their skill (`pdf/fill_fillable_fields`) |
-| **UUID** (assigned; one per object; addresses non-HEAD versions) | No equivalent. Use a **selector** (`@v2`, `@best`, `@sha256:…`) | **Identity is derived, not assigned.** Re-importing identical bytes yields the same `content_digest` and is a no-op; today it creates new UUIDs and duplicates tools (survey M6). A UUID can also change content under `PUT`; a digest cannot (M10). Migrated snapshots keep their old UUID as the `legacy_uuid` label, for traceability only |
+| **UUID** (assigned; one per object; addresses non-HEAD versions) | No equivalent. Use a **selector** (`@v2`, `@best`, `@sha1:…`) | **Identity is derived, not assigned.** Re-importing identical bytes yields the same `content_digest` and is a no-op; today it creates new UUIDs and duplicates tools (survey M6). A UUID can also change content under `PUT`; a digest cannot (M10). Migrated snapshots keep their old UUID as the `legacy_uuid` label, for traceability only |
 | **`version`** (free string, set to `"1.0.0"` on import, `services/skills_service.py:1004`) | **Tag** (immutable version name) on a snapshot | A tag cannot move, and nothing is invented: a skill's own frontmatter `version` stays in its `SKILL.md`, untouched |
 | **`parent`** (one UUID, same name) | **Commit parents** (any number) plus cross-line **trailers** | Merges (two or more parents) and cross-line origins (extraction, fork, upstream import) become expressible |
 | **HEAD** (`name → newest UUID`) | **HEAD = promoted snapshot**, plus branches, pointers and tags | Today the newest write is HEAD. In §34, the policy decides; `on-publish` reproduces today's behaviour |
@@ -1890,7 +1888,7 @@ SQLite file, if used, is a disposable cache: deleting it costs only a rebuild.
 
 - a layout validator;
 - extraction rules;
-- a default `digest_ignore` scope;
+- a default ignore set (scratch paths excluded at publish);
 - a schema for its derived labels.
 
 | Class | Kind | Snapshot content | Stored in |
@@ -1939,7 +1937,7 @@ two parts:
 ├── content/            ← the snapshot's OWN files only
 └── .sbs/               ← immutable records written with the snapshot
     ├── members.json    ← aggregates: one record per member snapshot, with its mount (below)
-    └── identity.json   ← the served tree's content_digest, git tree hash and harbor_digest
+    └── identity.json   ← the served tree's content_digest (its git tree hash), and derived keys (harbor_digest)
 ```
 
 **Aggregates point at member snapshots, never into them.**
@@ -2013,17 +2011,26 @@ two parts:
 
 | Question | Identifier | Definition | Verified |
 |---|---|---|---|
-| Is this the same content? (snapshot primary key; evidence subject) | `content_digest` | `sha256` over the **served tree's** entries, sorted by path bytes. Each entry is `path\0mode\0bytes\0`, with `mode ∈ {100644, 100755}`. The same rule applies to every kind, aggregates included. It is recorded in `.sbs/identity.json` at publish | T2, T3 |
-| Is this the same capability, ignoring scratch files? (evaluation cache) | `capability_digest[<scope>]` | `content_digest` after removing the paths in a **registered** ignore scope. The scope id is part of the value (`cap:<scope>:sha256:…`), so two clients' scopes never collide (I13) | T14 |
-| Is this the same as an upstream directory? (provenance) | git tree hash of the served tree (indexed, in `identity.json`) | for a verbatim import it **equals** `git rev-parse <upstream-commit>:<path>` | T1, **T13 and T24: 81/81 corpus skills** |
-| Which Harbor lock entry is this? | `harbor_digest` | re-implementation of Harbor's `compute_skill_digest` | **T10b: equal for every skill** |
+| Is this the same content? (the snapshot identity; evidence subject; cache and dedup key) | `content_digest` | `<format>:<tree>`, where `<tree>` is the git tree hash of the **served tree** and `<format>` is the home repo's object format (`git rev-parse --show-object-format`: `sha1` or `sha256`). It covers paths, bytes and the exec bit (`100644`/`100755`), and no metadata or history. The same rule applies to every kind, aggregates included (for them it is computed over the assembled tree). Recorded in `.sbs/identity.json` at publish | T2, T3, T27 |
+| Is this the same as an upstream directory? (provenance) | `content_digest` | for a verbatim import it **equals** `git rev-parse <upstream-commit>:<path>` | T1, **T13 and T24: 81/81 corpus skills** |
+| Is it the same capability, ignoring scratch? (evaluation cache) | `content_digest` | scratch never enters a snapshot: the kind's **ignore set** is applied at publish, and the excluded files go to the run's evidence (I13) | T14 |
+| Which Harbor lock entry is this? | lock's `git_commit_id` + source path; or the derived `harbor_digest` | mirror-sourced runs: resolve `(mirror commit, skills/<name>)` to `content_digest` (T28). Local-path runs: match Harbor's own digest, which SBS derives from the served tree. It ignores modes, so one value may match several snapshots | **T28: 6/6**; **T10b** |
+| Which `npx skills` archive is this? | derived archive `sha256` | the v0.2.0 index requires the SHA-256 of the exact archive bytes (`docs/design/npx.md:116`). Computed when the deterministic archive is built, cached per `content_digest` | — |
 | Which version event? | commit SHA | git commit | T2 (differs for equal content) |
 | Which artifact? (stable handle) | line id | `<kind>/<name>`, or `<home>:<kind>/<name>` when a deployment has several homes. Snapshots within it are addressed by `@<tag \| pointer \| branch \| content_digest>`. There are no UUIDs | — |
 
-**Object format (I24).** Home repos use git's SHA-1 object format, the format git hosts accept
-for mirrors. Evidence and caches are keyed by the SHA-256 `content_digest`, which is independent of
-git's object format. So git's SHA-1 → SHA-256 transition never touches evidence keys. (Resolves §33
-question 1.)
+**One identity (I1).** No consumer requires SBS to hold any other digest as identity:
+
+- Harbor, cap-evolve, GEPA, SkillOpt and Arbor compute their own hashes on their own side.
+- CORAL uses commit SHAs.
+- The `npx` archive digest is a property of a derived archive.
+
+So `content_digest` is the git tree hash, and every other digest is a derived value (I13).
+
+**Object format (I24).** Each home records git's object format (`git rev-parse
+--show-object-format`), and every `content_digest` carries it as a prefix. Keys therefore stay
+unambiguous if homes ever use different formats. Git hosts accept SHA-1 repos for mirrors, so homes
+default to `sha1`. (Resolves §33 question 1.)
 
 ### 34.6 Physical layout
 
@@ -2081,7 +2088,7 @@ fails, those objects are pruned after the gc grace window (I4).
 
 | Operation | Steps | Commit point | On conflict or failure |
 |---|---|---|---|
-| **Import** (folder, zip, or git URL `repo@ref:path`) | 1. read bytes; 2. validate (§34.13); 3. secret-scan; 4. write blobs with no filters (T15); 5. compute the bundle's digests; 6. if `content_digest` equals HEAD, no-op (fixes M6); 7. split the bundle into own files and extracted tools and prompts (§34.8); 8. one commit per changed extracted line, then the skill commit with member records and `identity.json`, all with `Sbs-Origin`; 9. check that assembly reproduces the bundle exactly (T24); 10. labels-at-create as metadata commits | one ref transaction: the skill line, every changed extracted line, the members' keep-refs, and the metadata refs (T6a) | any stale ref → nothing moves (T6b), `409` with current heads |
+| **Import** (folder, zip, or git URL `repo@ref:path`) | 1. read bytes; 2. validate (§34.13); 3. secret-scan; 4. write blobs with no filters (T15); 5. apply the kind's ignore set (scratch goes to the run's evidence), then compute the served tree's `content_digest` and the derived `harbor_digest`; 6. if `content_digest` equals HEAD, no-op (fixes M6); 7. split the bundle into own files and extracted tools and prompts (§34.8); 8. one commit per changed extracted line, then the skill commit with member records and `identity.json`, all with `Sbs-Origin`; 9. check that assembly reproduces the bundle exactly (T24); 10. labels-at-create as metadata commits | one ref transaction: the skill line, every changed extracted line, the members' keep-refs, and the metadata refs (T6a) | any stale ref → nothing moves (T6b), `409` with current heads |
 | **Publish candidate** | as import, onto `heads/cand/<id>` | ref transaction | `409` |
 | **Promote** | move `heads/main` from the expected old commit: fast-forward, or a merge commit if diverged and the policy allows | compare-and-set (T7: one winner of 8 racing) | `409` with current HEAD |
 | **Tag** | create `tags/<v>` | create-only | `409` if it exists |
@@ -2119,7 +2126,7 @@ only the files that were not extracted: `SKILL.md`, `LICENSE.txt`, references, a
 `.sbs/members.json` holds one record per extracted artifact, for example:
 
 ```json
-{"target": "scripts/fill.py", "kind": "tool", "line": "pdf/fill", "content_digest": "sha256:…", "commit": "…", "source": "fill.py"}
+{"target": "scripts/fill.py", "kind": "tool", "line": "pdf/fill", "content_digest": "sha1:…", "commit": "…", "source": "fill.py"}
 ```
 
 - The records are written **once, in the same ref transaction** that creates or advances the
@@ -2276,8 +2283,8 @@ bindings:
   - the dataset version and split;
   - for repo-scoped artifacts, the **external target commit** (S1).
 - **The evaluation cache (`seen`)** is keyed by
-  `capability_digest[scope] + task + dataset + split + hash(context)`, with split mandatory (survey
-  C24).
+  `content_digest + task + dataset + split + hash(context)`, with split mandatory (survey C24).
+  Scratch files cannot cause misses, because the ignore set keeps them out of snapshots.
 - **Every subject a record cites gets a keep-ref before the record is written** (§34.7). A
   measurement therefore can never outlive its subject.
 - **Paired and counterfactual records** (`control_of`, broke/fixed) reference two subjects. Both are
@@ -2374,8 +2381,8 @@ This consolidates survey §3 and §9 with §18, §31 and S1–S3.
 
 | Project | Seam on their side | Store features used | Value: survey + combined + S | First demonstration |
 |---|---|---|---|---|
-| **cap-evolve** | `store: command` wrapper (0 LOC), later the SDK `:apply` | skill line with candidate branches; frozen primitives as shared tool lines pinned `immutable`; one lock composition per candidate; cache by `capability_digest[cap-evolve]`; retention `all`; `best` pointer | atomic apply, parallel candidates, cross-run cache, broke/fixed; primitives in the cache key; per-tool lineage | `spa_env.py` workaround ~325 LOC → 0; orphans 18 → 0; parallel candidates 1 → K |
-| **Harbor** | none (mirror URL); `jobs:import` | mirrors, `harbor_digest`, `TrialLock` → lock composition | skill-keyed and group-keyed trial queries; SBS-native skills runnable with no external mirror | `harbor run --skill <sbs-mirror>/tree/<ns>-r1/skills` (T10, file transport) |
+| **cap-evolve** | `store: command` wrapper (0 LOC), later the SDK `:apply` | skill line with candidate branches; frozen primitives as shared tool lines pinned `immutable`; one lock composition per candidate; cap-evolve's ignore set applied at publish, so the cache key is the candidate's `content_digest`; retention `all`; `best` pointer | atomic apply, parallel candidates, cross-run cache, broke/fixed; primitives in the cache key; per-tool lineage | `spa_env.py` workaround ~325 LOC → 0; orphans 18 → 0; parallel candidates 1 → K |
+| **Harbor** | none (mirror URL); `jobs:import` | mirrors; lock join by mirror commit and path (T28), or by derived `harbor_digest` for local-path runs; `TrialLock` → lock composition | skill-keyed and group-keyed trial queries; SBS-native skills runnable with no external mirror | `harbor run --skill <sbs-mirror>/tree/<ns>-r1/skills` (T10, file transport) |
 | **GEPA** | `optimize_anything` callback | one prompt line per component; candidates as compositions with roles = component names; merges as compositions with two parents | cross-run cache, safe typed state, frontier queries; per-component lineage | frontier members with queryable per-component lineage |
 | **gskill** | publish step after a run | skill line per target; external line for the target repo (S1); forks per agent (S3) | catalogue plus transfer matrix; target-staleness detection | catalogue skills with a recorded target commit, 0 → all |
 | **SkillOpt** | Sleep's staging target = a proposal branch | skill line, proposals, compare-and-set promote, forks (S3), object store for `evidence.jsonl` | live transfer matrix; proposals across users; retention; fork/upstream | Sleep proposals indexed across users |
@@ -2402,14 +2409,14 @@ The prototype and its checks are committed at
 - git 2.39.5, Python 3.11.2, one host.
 - Corpus commits: `anthropics/skills` `dbd4588`, cap-evolve `c2a4aa6`, Arbor `7cdaf1f`, Harbor
   `15da91c`, `obra/superpowers` `bb92a77`.
-- **Result: 39/39 pass** (`test_design.py`), plus **6/6** (`test_nodb.py`).
+- **Result: 41/41 pass** (`test_design.py`), plus **6/6** (`test_nodb.py`).
 
 | Check | Claim | Result |
 |---|---|---|
 | T1 | verbatim import of 6 Anthropic skills (incl. 54 fonts, a tarball, exec scripts) gives exactly the upstream tree hash | pass |
 | **T13** | the same for **every** `SKILL.md` directory in the survey's five-repo corpus (files compared are those upstream tracks; the clones were clean) | **81/81** |
-| T2 | identical content: same tree, different commit SHAs. `content_digest` is order-independent | pass |
-| T3 | the exec bit changes both the tree hash and `content_digest` | pass |
+| T2 | identical content: same tree hash (`content_digest`), different commit SHAs; the tree hash is independent of input order | pass |
+| T3 | the exec bit changes the tree hash, and so the `content_digest` | pass |
 | T4 | 54 `.ttf` fonts and a `.tar.gz` round-trip byte-exact | pass |
 | T15 | CRLF and a missing final newline are stored byte-exact (no filters) | pass |
 | T5 | an extracted tool's script blob is the same object as in the skill | pass |
@@ -2424,13 +2431,15 @@ The prototype and its checks are committed at
 | T18 | Harbor parses one path segment as the ref (`tree/ws/runA/skills` → ref `ws`) | pass |
 | T11 | 20k lines: list 24 ms; 10-ref transaction 4 ms | pass |
 | — | 200k refs (manual run): compare-and-set 2.9 ms, lookup 2.6 ms, 10-ref transaction 4.0 ms, delete 110 ms, `pack-refs` 31.5 s, `packed-refs` 13.8 MB | measured |
-| T14 | `capability_digest` equal under a declared ignore scope; `content_digest` differs | pass |
+| T14 | with the ignore set applied at publish, candidates differing only in scratch files get the same `content_digest` | pass |
 | T16 | a cross-home pin (object copy) resolves after the source repo is deleted | pass |
 | T17, T17b | an upstream edit merges cleanly into a diverged fork; a conflicting edit is detected, not auto-resolved | pass |
 | T19 | `git bundle --all` backup restores every ref, incl. `refs/artifacts` and `refs/keep`, identically | pass |
 | **T24** | every corpus skill stored as own files + extracted tool snapshots (member records) assembles to exactly the upstream tree | **81/81**, 177 extracted tools |
 | T25, T25b | a skill group holding only member records assembles to exactly the six upstream skill trees; it holds no member objects | pass |
 | T26a, T26b | with publish-time keep-refs a group's whole closure survives gc and re-assembles identically; a member referenced only inside a record is pruned | pass |
+| T27 | the same skill imported into two homes gets the same `content_digest`; the object format is read from `git rev-parse --show-object-format` | pass |
+| **T28** | every Harbor lock entry resolves to its snapshot through the lock's mirror commit and source path, with no Harbor digest | **6/6** |
 | T20–T23 | mutable state without a database: concurrent metadata compare-and-set, label write latency, content-addressed cache lookup, per-subject and cross-subject scans, locked counters (`test_nodb.py`, 6/6) | pass; numbers in §34.20 |
 
 **Not tested here:**
@@ -2448,7 +2457,7 @@ These are implementation-phase checks (§34.17).
 | Phase | Content | Exit criteria |
 |---|---|---|
 | **0 = survey T0**, in the **existing** release | delete the licence heuristic; read bytes; correct-or-`409` delete; lenient parse; atomic plugin label merge. Users who stay on existing releases need these fixes, and they make the migration tool's reconstruction path (§34.14 step 2) less lossy | survey T0 measures |
-| **1 — store core** | home repo; verbatim import; the four digests; lines and refs; aggregates with member records (skills, groups, compositions) and exact assembly; namespace memberships; keep-refs and the mark phase; gc policy; the unversioned API with heads-only listing; the migration tool | App. B fidelity **0/12 → 12/12**; T13 and T24 **81/81** in CI; M6 re-import **3 → 3** tools; T6b, T7, T8, T12 as regression tests |
+| **1 — store core** | home repo; verbatim import; tree-hash identity with derived Harbor and `npx` digests; ignore sets; lines and refs; aggregates with member records (skills, groups, compositions) and exact assembly; namespace memberships; keep-refs and the mark phase; gc policy; the unversioned API with heads-only listing; the migration tool | App. B fidelity **0/12 → 12/12**; T13 and T24 **81/81** in CI; M6 re-import **3 → 3** tools; T6b, T7, T8, T12 as regression tests |
 | **2 — consistency and git surface** | metadata refs with ETag/If-Match; atomic file writes everywhere (I29); reconciler; mirror service; `npx` archives of verbatim trees | lost update → `412`; reconciler rebuilds every index from repos and evidence alone; Harbor resolves from an SBS mirror over HTTPS |
 | **3 — workspaces** | pins, `:apply` with lock compositions, candidate branches, pointers, promotion policies; cap-evolve seam | `spa_env.py` workaround LOC → 0; parallel candidates 1 → K |
 | **4 — evidence (survey T4)** | measurements bound to `content_digest` and lock compositions; keep-ref-before-insert; cache | reproduce cap-evolve's published numbers from store queries; report rollouts avoided × cost |
@@ -2459,7 +2468,7 @@ These are implementation-phase checks (§34.17).
 
 | # | Issue | Resolution | Grounds |
 |---|---|---|---|
-| I1 | Which hash identifies a snapshot? | `content_digest` is primary. The tree hash is indexed. The commit is the version event. | A2; T2 |
+| I1 | Which hash identifies a snapshot? | Only `content_digest`, defined as the served tree's git tree hash with an object-format prefix. The commit is the version event. No consumer needs another identity | A2; T2, T27, T28 |
 | I2 | Physical or logical repo per artifact? | Logical: one ref prefix per line (`refs/artifacts/<kind>/<name>/…`), in one bare repo per home (one home by default) | A1; §28 |
 | I3 | Internal objects are fetchable by SHA under protocol v2 despite `hideRefs` | Never serve internal repos. Mirrors are separate and push-populated | **T9b–d** |
 | I4 | gc with `--prune=now` deleted a not-yet-committed publish | Default grace window (2 weeks). `--prune=now` only for Redact, under a maintenance lock | **T8c, T12** |
@@ -2471,7 +2480,7 @@ These are implementation-phase checks (§34.17).
 | I10 | Tool classification (§33 Q2) | Declared files, plus conservatively detected ones labelled `detected`. `_`-private names excluded | §34.8; survey M5 |
 | I11 | Canonical layouts for standalone tools and prompts (§33 Q3) | `tool.json` + `src/`; `prompt.md` + `prompt.json`. SBS canonicalises only its own JSON | §34.8 |
 | I12 | Physical layout under scale (§33 Q4) | One home by default. Cross-home pins copy objects. Split a home by moving lines | **T16**; measured envelope |
-| I13 | `capability_digest` scope: store policy or client-declared (survey §11 Q1)? | Registered scope ids. A kind's default scope, or a client-registered scope, named inside the digest value | **T14** |
+| I13 | Digest scope for the evaluation cache (survey §11 Q1), and the other digests | No scoped digest. Each kind's ignore set is applied at publish, so scratch never enters a snapshot. `harbor_digest` and the `npx` archive digest are derived values, not identities | **T14**, T28 |
 | I14 | Workspaces vs homes and namespaces (survey §11 Q2) | A separate axis. A workspace belongs to one home and may pin across homes via I12 | §34.6 |
 | I15 | Consistency between authoritative stores and indexes | Content, pointers and metadata share one ref transaction. Evidence follows its keep-refs. Indexes are derived, watermarked and rebuildable | §34.10 |
 | I16 | Producers need moving names (`best`) but tags must be immutable | `pointers/` refs moved by compare-and-set; tags create-only | §34.4 |
@@ -2482,7 +2491,7 @@ These are implementation-phase checks (§34.17).
 | I21 | Moving data from existing releases | An offline migration tool: verbatim re-import where `extra.origin` allows, otherwise reconstruction labelled as such. Old UUIDs kept as `legacy_uuid` labels for traceability, never as addresses | §34.14 |
 | I22 | Line name vs frontmatter `name` | The line name is the identity. A mismatch is labelled, not rejected | §34.4 |
 | I23 | cap-evolve audits rejected candidates; default gc would prune them | Per-producer retention policy `all` or `cited` | §34.10; `store.py:12-13` |
-| I24 | Git object format | SHA-1 repos for host compatibility. Evidence keys are SHA-256 `content_digest` | §34.5 |
+| I24 | Git object format | Read per home with `git rev-parse --show-object-format` and prefixed onto every `content_digest`. Default `sha1`, for host compatibility | §34.5; T27 |
 | I25 | Ref names consumers can use | Restricted charset; mirror refs are a single segment | **T18** |
 | I26 | Access to evidence payloads | Only via the API. On an object store, short-lived signed URLs | §34.6 |
 | I27 | Writers on several hosts | One leader per home takes every write for that home, including budget counters. Read replicas. Untested here | §34.10; Phase 6 |
