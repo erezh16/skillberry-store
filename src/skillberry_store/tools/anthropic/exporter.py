@@ -335,6 +335,10 @@ def _build_file_structure(
     ``file:`` tag normalisation keep using the stored SBS name, so a caller
     that strips the prefix (``strip_skill_prefix``) is unaffected by it.
     """
+    from skillberry_store.tools.anthropic.contributions import (
+        add_contributed_files,
+        collect_export_contributions,
+    )
     from skillberry_store.tools.anthropic.mcp_proxy import (
         apply_mcp_proxies,
         render_tools_section,
@@ -347,11 +351,17 @@ def _build_file_structure(
     # byte-identical to what it was before proxies existed.
     tool_modules, proxy_tools = apply_mcp_proxies(tools, tool_modules)
 
+    # Plugin contributions (extra files, frontmatter metadata, a SKILL.md
+    # section). None are active in a store without such plugins.
+    contributions = collect_export_contributions(skill, tools, snippets)
+    metadata = frontmatter_metadata_for_export(skill, metadata, contributions)
+
     snippet_files = build_file_structure_from_snippets(snippets, skill_name)
     tool_files = build_file_structure_from_tools(tools, skill_name, tool_modules)
     script_files = export_tools_to_scripts(tools, skill_name, tool_modules)
 
     all_files = merge_file_structures(snippet_files, tool_files, script_files)
+    add_contributed_files(all_files, contributions)
 
     has_file_structure = len(all_files) > 0
     skill_md_content = generate_skill_md(
@@ -386,7 +396,13 @@ def _build_file_structure(
         tools_section = render_tools_section(
             proxy_tools, tool_script_paths(proxy_tools, skill_name)
         )
+    for contribution, _slug in contributions:
+        if contribution.skill_md_section.strip():
+            tools_section = (
+                tools_section.rstrip("\n") + "\n\n" if tools_section else ""
+            ) + contribution.skill_md_section.strip("\n") + "\n"
     if tools_section:
+        tools_section = wrap_generated(tools_section)
         placement = (skill.get("extra") or {}).get("tools_section", "append")
         if placement == "prepend":
             body = all_files[skill_md_path]
@@ -420,6 +436,55 @@ def tool_script_paths(
         else:
             paths[tool["name"]] = f"scripts/{tool['name']}{get_tool_extension(tool)}"
     return paths
+
+
+# Generated SKILL.md content sits between these markers so an import can drop
+# it: it is re-generated on every export, and keeping it would duplicate it.
+GENERATED_BEGIN = "<!-- skillberry:generated:begin -->"
+GENERATED_END = "<!-- skillberry:generated:end -->"
+
+
+def wrap_generated(text: str) -> str:
+    return f"{GENERATED_BEGIN}\n{text.strip(chr(10))}\n{GENERATED_END}\n"
+
+
+def strip_generated(text: str) -> str:
+    """Remove every generated block (and the blank lines around it)."""
+    import re
+
+    pattern = re.compile(
+        r"\n*" + re.escape(GENERATED_BEGIN) + r".*?" + re.escape(GENERATED_END) + r"\n?",
+        re.S,
+    )
+    stripped = pattern.sub("\n", text)
+    return stripped.strip("\n") + ("\n" if text.endswith("\n") else "")
+
+
+def frontmatter_metadata_for_export(
+    skill: Dict[str, Any],
+    metadata: Optional[Dict[str, Any]],
+    contributions: List[Any],
+) -> Optional[Dict[str, Any]]:
+    """The frontmatter ``metadata`` mapping for an export.
+
+    Lowest precedence first: metadata kept from the imported package
+    (``extra.frontmatter_metadata``), then the caller's (e.g. npx's
+    ``sbs_name``), then plugin contributions. A contribution may not collide
+    with the caller's keys or another contribution's; it may replace a key that
+    only came from a previous import, since it regenerates that value.
+    """
+    from skillberry_store.tools.anthropic.contributions import (
+        merge_contributed_metadata,
+    )
+
+    kept = (skill.get("extra") or {}).get("frontmatter_metadata")
+    base: Dict[str, Any] = dict(kept) if isinstance(kept, dict) else {}
+    contributed_keys = {k for c, _ in contributions for k in c.metadata}
+    for key in contributed_keys:
+        base.pop(key, None)
+    merged_caller = merge_contributed_metadata(metadata, contributions) or {}
+    out = {**base, **merged_caller}
+    return out or None
 
 
 def _frontmatter_end(text: str) -> int:

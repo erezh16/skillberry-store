@@ -92,6 +92,27 @@ class PluginBase(ABC):
     def tool_providers(self) -> List[Any]:
         """Tool providers this plugin declared via ``register_tool_provider``."""
         return list(getattr(self, "_tool_providers", []))
+
+    def register_export_contributor(self, contributor: Any) -> None:
+        """Declare an export contributor (``tools/anthropic/contributions``)."""
+        self._declared("export_contributors").append(contributor)
+
+    def register_import_claimer(self, claimer: Any) -> None:
+        """Declare an import claimer (``tools/anthropic/contributions``)."""
+        self._declared("import_claimers").append(claimer)
+
+    def register_computed_field(
+        self, object_type: str, name: str, compute: Any
+    ) -> None:
+        """Declare an opt-in computed field (``services/field_selection``)."""
+        self._declared("computed_fields").append((object_type, name, compute))
+
+    def declared_extensions(self, kind: str) -> List[Any]:
+        """What this plugin declared for ``kind`` (read by the loader)."""
+        return list(self.__dict__.get("_extensions", {}).get(kind, []))
+
+    def _declared(self, kind: str) -> List[Any]:
+        return self.__dict__.setdefault("_extensions", {}).setdefault(kind, [])
     
     @property
     @abstractmethod
