@@ -335,7 +335,17 @@ def _build_file_structure(
     ``file:`` tag normalisation keep using the stored SBS name, so a caller
     that strips the prefix (``strip_skill_prefix``) is unaffected by it.
     """
+    from skillberry_store.tools.anthropic.mcp_proxy import (
+        apply_mcp_proxies,
+        render_tools_section,
+    )
+
     skill_name = skill["name"]
+
+    # Provider-backed MCP tools export as runnable proxy CLIs instead of stubs.
+    # With none of them in the skill, this is a no-op and the export is
+    # byte-identical to what it was before proxies existed.
+    tool_modules, proxy_tools = apply_mcp_proxies(tools, tool_modules)
 
     snippet_files = build_file_structure_from_snippets(snippets, skill_name)
     tool_files = build_file_structure_from_tools(tools, skill_name, tool_modules)
@@ -361,13 +371,30 @@ def _build_file_structure(
         for path in all_files.keys()
     )
 
+    skill_md_path = "SKILL.md"
     if not has_skill_md_in_files:
         all_files["SKILL.md"] = skill_md_content
     else:
         for path in list(all_files.keys()):
             if path.upper() == "SKILL.MD" or path.upper().endswith("/SKILL.MD"):
                 all_files[path] = skill_md_content + all_files[path]
+                skill_md_path = path
                 break
+
+    tools_section = ""
+    if proxy_tools:
+        tools_section = render_tools_section(
+            proxy_tools, tool_script_paths(proxy_tools, skill_name)
+        )
+    if tools_section:
+        placement = (skill.get("extra") or {}).get("tools_section", "append")
+        if placement == "prepend":
+            body = all_files[skill_md_path]
+            end = _frontmatter_end(body)
+            all_files[skill_md_path] = body[:end] + tools_section + "\n" + body[end:]
+        elif placement != "omit":
+            body = all_files[skill_md_path].rstrip("\n")
+            all_files[skill_md_path] = body + "\n\n" + tools_section
 
     result: Dict[str, bytes] = {}
     for file_path, content in all_files.items():
@@ -375,6 +402,37 @@ def _build_file_structure(
         result[f"{skill_name}/{file_path}"] = normalized.encode("utf-8")
 
     return result
+
+
+def tool_script_paths(
+    tools: List[Dict[str, Any]], skill_name: str
+) -> Dict[str, str]:
+    """Where each tool's module lands in the package, relative to the skill root.
+
+    Mirrors :func:`build_file_structure_from_tools` (a ``file:`` tag wins) and
+    :func:`export_tools_to_scripts` (``scripts/<name><ext>`` otherwise).
+    """
+    paths: Dict[str, str] = {}
+    for tool in tools:
+        file_path = extract_file_path_from_tags(tool.get("tags"))
+        if file_path:
+            paths[tool["name"]] = normalize_file_path(file_path, skill_name)
+        else:
+            paths[tool["name"]] = f"scripts/{tool['name']}{get_tool_extension(tool)}"
+    return paths
+
+
+def _frontmatter_end(text: str) -> int:
+    """Offset just past a leading ``---`` frontmatter block (and blank line)."""
+    if not text.startswith("---\n"):
+        return 0
+    close = text.find("\n---\n", 3)
+    if close < 0:
+        return 0
+    end = close + len("\n---\n")
+    while text.startswith("\n", end):
+        end += 1
+    return end
 
 
 # Fixed epoch for every entry. The ZIP format's own minimum (1980-01-01) rather

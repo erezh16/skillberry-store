@@ -44,6 +44,7 @@ from skillberry_store.tools.anthropic.exporter import (
     strip_skill_prefix,
     unsafe_archive_paths,
 )
+from skillberry_store.tools.anthropic.mcp_proxy import MCP_PROXY_GENERATOR_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -470,7 +471,24 @@ def cache_key(
         str(skill.get("modified_at")),
         tuple(sorted(str(t.get("modified_at")) for t in tools)),
         tuple(sorted(str(s.get("modified_at")) for s in snippets)),
+        # Proxy scripts for provider-backed tools are generated text: their
+        # bytes change with the generator, and with which providers are active
+        # (that decides the resolution steps), without any modified_at moving.
+        MCP_PROXY_GENERATOR_VERSION,
+        _active_proxy_providers(tools),
     )
+
+
+def _active_proxy_providers(tools: List[Dict[str, Any]]) -> Tuple[str, ...]:
+    """Sorted names of active providers backing any of ``tools``."""
+    from skillberry_store.modules import tool_providers
+
+    names = set()
+    for tool in tools:
+        endpoint = tool_providers.endpoint_of(tool)
+        if endpoint and tool_providers.get_provider(endpoint.get("provider")):
+            names.add(str(endpoint.get("provider")))
+    return tuple(sorted(names))
 
 
 class ArtifactCache:
