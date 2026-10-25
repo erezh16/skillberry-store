@@ -1,0 +1,148 @@
+
+[1m== 1. Tools: weather-tool and reservation-tool (rossoctl/examples)[0m
+team1: weather-tool, reservation-tool; team2: weather-tool only (Deployments Available)
+
+[1m== 2. rossoctl backend (from source) with toolSkills on, auth off[0m
+features: {'skills': True, 'externalSkills': True, 'toolSkills': True}
+
+[1m== 3. skillberry-store (from source) with the rossoctl-tools plugin active[0m
+plugin rossoctl-tools enabled - Ready
+
+[1m== 4. Demo step 1: import the tools into the store, with the skill[0m
+{
+ "tools": [
+  "get_weather",
+  "search_restaurants",
+  "check_availability",
+  "place_reservation",
+  "cancel_reservation",
+  "list_reservations"
+ ],
+ "skill_uuid": "51061919-6222-4d09-903d-c47dfc63ef34",
+ "errors": []
+}
+
+[1m== 5. Demo step 2: store-side execution goes store → rossoctl /invoke → tool[0m
+search_restaurants → ['Trattoria di Mare']
+backend /invoke calls: 1
+
+[1m== 6. Demo step 3: rossoctl autosync creates the skill with its required tools[0m
+team1 ConfigMap night-out-planner rossoctl.io/required-tools = ["reservation-tool", "weather-tool"]
+[
+    {
+        "tool": "reservation-tool",
+        "present": true,
+        "ready": true,
+        "url": "http://reservation-tool.localtest.me:8080/mcp"
+    },
+    {
+        "tool": "weather-tool",
+        "present": true,
+        "ready": true,
+        "url": "http://weather-tool.localtest.me:8080/mcp"
+    }
+]
+
+[1m== 7. Demo step 4: create the agent (claude_agent image, skill only, no MCP tool)[0m
+{
+    "success": true,
+    "name": "night-out",
+    "namespace": "team1",
+    "message": "Agent 'night-out' deployed as deployment successfully.",
+    "warnings": []
+}
+--- Deployment env (rossoctl-injected) ---
+  SKILL_FOLDERS = /app/skills/night-out-planner
+  ROSSOCTL_TOOL_RESERVATION_TOOL_URL = http://reservation-tool.localtest.me:8080/mcp
+  ROSSOCTL_TOOL_WEATHER_TOOL_URL = http://weather-tool.localtest.me:8080/mcp
+  ROSSOCTL_NAMESPACE = team1
+  annotation rossoctl.io/required-tools = ["reservation-tool", "weather-tool"]
+  init containers: ['fetch-skill-0']
+
+[1m== 8. The agent pod: fetch the skill like the init container, run its scripts with the injected env[0m
+/tmp/demo/run/agent-pod/app/skills/night-out-planner:
+rossoctl-tools.json
+scripts
+SKILL.md
+
+/tmp/demo/run/agent-pod/app/skills/night-out-planner/scripts:
+cancel_reservation.py
+check_availability.py
+get_weather.py
+list_reservations.py
+place_reservation.py
+search_restaurants.py
+  ROSSOCTL_TOOL_RESERVATION_TOOL_URL=http://reservation-tool.localtest.me:8080/mcp
+  ROSSOCTL_NAMESPACE=team1
+  ROSSOCTL_TOOL_WEATHER_TOOL_URL=http://weather-tool.localtest.me:8080/mcp
+$ python3 scripts/search_restaurants.py --city Boston --cuisine Italian
+[
+  {
+    "id": "rest_001",
+    "name": "Trattoria di Mare",
+    "cuisine": "Italian",
+    "price_tier": 3,
+    "rating": 4.5,
+    "location": {
+      "latitude": 42.3656,
+      "longitude": -71.0534,
+      "address": "123 Hanover St",
+      "city": "Boston",
+      "state": "MA",
+      "postal_code": "02113",
+      "country": "USA"
+    },
+    "phone": "(617) 555-0101",
+    "description": "Authentic Italian seafood in the North End",
+    "accepts_reservations": true
+  }
+]
+  (exit 0)
+
+$ python3 scripts/get_weather.py --city Boston
+{"time": "2026-10-25T14:15", "interval": 900, "temperature": 47.2, "windspeed": 3.1, "winddirection": 307, "is_day": 1, "weathercode": 0}
+  (exit 0)
+$ python3 scripts/check_availability.py --restaurant_id rest_001 --date_time 2026-10-26T19:00:00 --party_size 4
+  19:00 available: [False] | free dinner slots: ['17:00', '17:30', '18:30', '19:30', '20:00', '20:30']
+$ python3 scripts/place_reservation.py --restaurant_id rest_001 --date_time 2026-10-26T19:30:00 --party_size 4 --name Ada Lovelace --phone 555-0100 --email ada@example.com
+{
+  "id": "reservation_61e0d19f75d1",
+  "restaurant_id": "rest_001",
+  "restaurant_name": "Trattoria di Mare",
+  "date_time": "2026-10-26T19:30:00",
+  "party_size": 4,
+  "guest_name": "Ada Lovelace",
+  "guest_phone": "555-0100",
+  "guest_email": "ada@example.com",
+  "notes": null,
+  "status": "confirmed",
+  "confirmation_code": "RES001000",
+  "created_at": "2026-10-25T14:28:03.831613+00:00"
+}
+  (exit 0)
+$ python3 scripts/list_reservations.py --user_id ada@example.com
+[
+  {
+    "id": "reservation_61e0d19f75d1",
+    "restaurant_id": "rest_001",
+    "restaurant_name": "Trattoria di Mare",
+    "date_time": "2026-10-26T19:30:00",
+    "party_size": 4,
+    "guest_name": "Ada Lovelace",
+    "guest_phone": "555-0100",
+    "guest_email": "ada@example.com",
+    "notes": null,
+    "status": "confirmed",
+    
+
+[1m== 9. Negative and portability cases[0m
+--- team2 (no reservation-tool): warn ---
+success: True warnings: ["Skill(s) night-out-planner require tool 'reservation-tool', not found in team2"]
+--- the same skill's proxy in team2 for the missing tool: exit 3 ---
+unreachable: cannot reach http://reservation-tool-mcp.team2.svc.cluster.local:18002/mcp: [Errno -2] Name or service not known
+  (exit 3)
+--- deploy reservation-tool in team2: the unchanged skill now resolves there ---
+success: True warnings: []
+["reservation-tool", "weather-tool"]
+
+[1m== Demo complete. Logs: /tmp/demo/run/logs[0m
