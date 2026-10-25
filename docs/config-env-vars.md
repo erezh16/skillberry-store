@@ -132,6 +132,18 @@ This table lists MCP (Model Context Protocol) configuration used by SBS service,
 |------------------------|--------------------------------|--------------------------------|------------------------------------------|
 | MCP server URL         | "http://localhost:8080/sse"    | `MCP_SERVER_URL`               | MCP server URL for SSE connections       |
 | VMCP servers start port| 10000                          | `VMCP_SERVERS_START_PORT`      | Starting port for virtual MCP servers    |
+| MCP proxy export       | true                           | `SBS_MCP_PROXY_EXPORT`         | When a skill is exported, each provider-backed `mcp` tool (`packaging_params.endpoint`) becomes a runnable, standard-library-only proxy CLI in `scripts/<tool>.py`, and SKILL.md gets a generated "Tools" section. `false` exports the old bodiless stubs instead. Tools with only an SSE `mcp_url` always export as stubs |
+
+The exported proxy CLI reads these at **run time**, in whatever environment runs the skill (not the store):
+
+| Variable | Meaning |
+|----------|---------|
+| `MCP_PROXY_<TOOL>_URL` | The tool's streamable-HTTP MCP URL, when no plugin provides resolution steps. `<TOOL>` is the MCP tool name upper-cased, with every non-alphanumeric character replaced by `_` |
+| `MCP_PROXY_AUTH_HEADER` | Optional. `Bearer …` (sent as `Authorization`) or `Name: value`. Nothing is ever embedded in the script |
+| `MCP_PROXY_TIMEOUT` | Seconds per HTTP call (default 60) |
+| `TRACEPARENT`, `TRACESTATE` | Forwarded as W3C trace headers when set |
+
+Exit codes: `0` success, `1` the tool reported an error, `2` usage, `3` endpoint not resolvable or unreachable, `4` input-schema drift (`--check`).
 
 > You can override the default values by setting the corresponding environment variables in your deployment configuration.
 

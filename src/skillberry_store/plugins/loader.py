@@ -138,6 +138,7 @@ class PluginLoader:
         """
         for provider in plugin.tool_providers:
             tool_providers.register_provider(provider, slug)
+        contributions.unregister_owner(slug)
         for contributor in plugin.declared_extensions("export_contributors"):
             contributions.register_export_contributor(contributor, slug)
         for claimer in plugin.declared_extensions("import_claimers"):

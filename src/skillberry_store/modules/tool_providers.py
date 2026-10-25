@@ -89,6 +89,8 @@ def register_provider(provider: ToolProvider, owner_slug: str) -> None:
         raise ValueError(f"Invalid tool provider name: {name!r}")
     previous = _owner_by_name.get(name)
     if previous is not None and previous != owner_slug:
+        # Two plugins may not claim the same provider name; the same plugin
+        # registering again (a new loader instance) replaces its provider.
         raise ValueError(
             f"Tool provider '{name}' is already registered by plugin '{previous}'"
         )

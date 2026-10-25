@@ -75,6 +75,12 @@ def register_import_claimer(claimer: ImportClaimer, owner_slug: str) -> None:
     _claimers.append((claimer, owner_slug))
 
 
+def unregister_owner(owner_slug: str) -> None:
+    """Drop everything ``owner_slug`` registered (a reloaded plugin re-registers)."""
+    _contributors[:] = [(c, s) for c, s in _contributors if s != owner_slug]
+    _claimers[:] = [(c, s) for c, s in _claimers if s != owner_slug]
+
+
 def unregister(obj: Any) -> None:
     """Remove a contributor or claimer (used by tests)."""
     _contributors[:] = [(c, s) for c, s in _contributors if c is not obj]

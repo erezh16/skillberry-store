@@ -264,7 +264,10 @@ class ToolsService:
             duration = time.time() - start_time
             if isinstance(result, dict) and "error" in result:
                 error_message = result.get("error", "Unknown Error")
-                if "not found" in error_message.lower():
+                # The "not found" heuristic maps executor errors about a
+                # missing tool/function to 404. A provider's error text is the
+                # remote tool's own output ("City X not found"), not that.
+                if not provider_backed and "not found" in error_message.lower():
                     raise KeyError(error_message)
                 raise RuntimeError(error_message)
             execute_successfully_tool_counter.labels(name=tool_uuid).inc()
