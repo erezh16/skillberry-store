@@ -71,7 +71,7 @@ class ToolSchema(ManifestSchema):
     )
     packaging_params: Optional[Dict[str, Any]] = Field(
         default=None,
-        description="Parameters specific to the packaging format. For 'mcp' format, should contain 'mcp_url' and 'mcp_tool_name'. Can be provided as a JSON string or dict."
+        description="Parameters specific to the packaging format. For 'mcp' format, should contain 'mcp_tool_name' and one of 'mcp_url' or 'endpoint' (a provider-backed tool). Can be provided as a JSON string or dict."
     )
     
     @field_validator('packaging_params', mode='before')
@@ -116,33 +116,22 @@ class ToolSchema(ManifestSchema):
     @model_validator(mode='after')
     def validate_packaging_params(self) -> 'ToolSchema':
         """Validate packaging_params based on packaging_format.
-        
-        For MCP packaging format, ensures that packaging_params contains
-        the required 'mcp_url' and 'mcp_tool_name' fields.
-        
+
+        For MCP packaging format, ``mcp_tool_name`` is required, plus one of
+        ``mcp_url`` (the store's own SSE path) or an ``endpoint`` block naming
+        a tool provider. See ``validate_mcp_packaging``.
+
         Returns:
             ToolSchema: The validated schema instance
-            
+
         Raises:
-            ValueError: If packaging_params is missing or incomplete for MCP format
+            ValueError: If packaging_params is missing or invalid for MCP format
         """
-        if self.packaging_format == "mcp":
-            if not self.packaging_params:
-                raise ValueError(
-                    "packaging_params is required when packaging_format is 'mcp'. "
-                    "It should contain 'mcp_url' and 'mcp_tool_name'."
-                )
-            
-            required_keys = {"mcp_url", "mcp_tool_name"}
-            missing_keys = required_keys - set(self.packaging_params.keys())
-            if missing_keys:
-                raise ValueError(
-                    f"MCP packaging requires these params in packaging_params: {missing_keys}. "
-                    f"Expected: {required_keys}"
-                )
-        
+        from skillberry_store.modules.tool_providers import validate_mcp_packaging
+
+        validate_mcp_packaging(self.packaging_format, self.packaging_params)
         return self
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert the tool schema to a dictionary."""
         return self.model_dump(exclude_none=False)

@@ -1,7 +1,7 @@
 """Base classes for Skillberry Store plugins."""
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, TYPE_CHECKING
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
 from pydantic import BaseModel, Field
 from enum import Enum
 
@@ -78,6 +78,20 @@ class PluginBase(ABC):
     
     def __init__(self):
         self._store_api: Optional[Any] = None
+        self._tool_providers: List[Any] = []
+
+    def register_tool_provider(self, provider: Any) -> None:
+        """Declare a tool provider (``modules/tool_providers.ToolProvider``).
+
+        The loader registers it under this plugin's slug after loading, so it
+        is consulted only while this plugin is active.
+        """
+        self._tool_providers.append(provider)
+
+    @property
+    def tool_providers(self) -> List[Any]:
+        """Tool providers this plugin declared via ``register_tool_provider``."""
+        return list(getattr(self, "_tool_providers", []))
     
     @property
     @abstractmethod

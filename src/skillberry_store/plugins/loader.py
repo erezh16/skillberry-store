@@ -11,6 +11,7 @@ from skillberry_store.plugins.base import PluginBase
 from skillberry_store.plugins.store_api import StoreAPI
 from skillberry_store.plugins.config import PluginConfigStore
 from skillberry_store.plugins import events as plugin_events
+from skillberry_store.modules import tool_providers
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,9 @@ class PluginLoader:
         # dispatch, not captured here: plugins register their handlers inside
         # __init__, before any tenant, session or config reload exists (§5.2).
         plugin_events.set_owner_resolver(self.owner_subject)
+        # Tool providers (provider-backed tools) are visible only while their
+        # owning plugin is active, so they follow full effective enablement.
+        tool_providers.set_active_resolver(self.is_active)
     
     def discover_plugins(self) -> List[str]:
         """Discover and load all available plugins.
@@ -98,6 +102,9 @@ class PluginLoader:
                 # enforcement point 2 attribute an outcome to a plugin and
                 # resolve *whose* owner tenant applies (§2.4).
                 plugin.set_store_api(self.store_api.for_plugin(entry_point.name))
+
+                for provider in plugin.tool_providers:
+                    tool_providers.register_provider(provider, entry_point.name)
 
                 # Store the plugin
                 self.plugins[entry_point.name] = plugin

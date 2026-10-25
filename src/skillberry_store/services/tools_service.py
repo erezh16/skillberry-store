@@ -12,6 +12,7 @@ from prometheus_client import Counter, Histogram
 
 from skillberry_store.modules.object_handler import ObjectHandler
 from skillberry_store.modules.file_executor import detect_tool_dependencies
+from skillberry_store.modules.tool_providers import validate_mcp_packaging
 from skillberry_store.plugins.events import (
     emit_content_added,
     emit_content_deleted,
@@ -176,6 +177,7 @@ class ToolsService:
         uuid_or_name: str,
         parameters: Optional[Dict[str, Any]] = None,
         env_id: Optional[str] = None,
+        bearer: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute a tool by UUID or name.
 
@@ -188,6 +190,8 @@ class ToolsService:
             parameters: Dictionary of parameters to pass to the tool. Defaults
                 to an empty dictionary if ``None``.
             env_id: Optional environment ID for tool execution isolation.
+            bearer: The caller's bearer token, handed to a tool provider for
+                provider-backed tools (``packaging_params.endpoint``).
 
         Returns:
             Dict[str, Any]: Tool execution output.
@@ -196,16 +200,22 @@ class ToolsService:
             KeyError: If the tool is not found, or the executor reports a
                 "not found" style error.
             RuntimeError: If the executor reports any other error.
+            ToolProviderUnavailable: If the tool is provider-backed and no
+                active plugin provides its provider.
         """
         from skillberry_store.fast_api.server_utils import mcp_content_from_manifest
         from skillberry_store.modules.file_executor import FileExecutor
+        from skillberry_store.modules import tool_providers
 
         uuid = self._resolve_uuid(uuid_or_name)
         with self.handler.read_lock(uuid):
             tool_dict = self._safe_read(uuid, uuid_or_name)
             tool_uuid = tool_dict["uuid"]
             tool_name = tool_dict.get("name", uuid_or_name)
-            if tool_dict.get("packaging_format") == "mcp":
+            provider_backed = tool_providers.is_provider_backed(tool_dict)
+            if provider_backed:
+                module_content = None
+            elif tool_dict.get("packaging_format") == "mcp":
                 module_content = mcp_content_from_manifest(tool_dict)
             else:
                 module_name = tool_dict.get("module_name")
@@ -216,27 +226,41 @@ class ToolsService:
                     raise RuntimeError(
                         f"Invalid module content type for tool '{uuid_or_name}'"
                     )
-            dep_uuids = self.find_dependencies(
-                tool_dict.get("dependencies", []), tool_uuid
-            )
-            dep_dicts = self.handler.read_dicts(list(dep_uuids))
-            dep_files = [
-                self.handler.read_file(m["uuid"], m["module_name"], raw_content=True)
-                for m in dep_dicts
-            ]
+            if provider_backed:
+                dep_dicts, dep_files = [], []
+            else:
+                dep_uuids = self.find_dependencies(
+                    tool_dict.get("dependencies", []), tool_uuid
+                )
+                dep_dicts = self.handler.read_dicts(list(dep_uuids))
+                dep_files = [
+                    self.handler.read_file(
+                        m["uuid"], m["module_name"], raw_content=True
+                    )
+                    for m in dep_dicts
+                ]
         execute_tool_counter.labels(name=tool_uuid).inc()
         try:
-            file_executor = FileExecutor(
-                name=tool_name,
-                file_content=module_content,
-                file_manifest=tool_dict,
-                dependent_file_contents=dep_files,
-                dependent_tools_as_dict=dep_dicts,
-            )
             start_time = time.time()
-            result = await file_executor.execute_file(
-                parameters=parameters or {}, env_id=env_id
-            )
+            if provider_backed:
+                # A plugin-provided provider reaches the tool; the store never
+                # guesses a URL for it.
+                result = await tool_providers.execute_via_provider(
+                    tool_dict,
+                    parameters or {},
+                    tool_providers.ProviderContext(env_id=env_id, bearer=bearer),
+                )
+            else:
+                file_executor = FileExecutor(
+                    name=tool_name,
+                    file_content=module_content,
+                    file_manifest=tool_dict,
+                    dependent_file_contents=dep_files,
+                    dependent_tools_as_dict=dep_dicts,
+                )
+                result = await file_executor.execute_file(
+                    parameters=parameters or {}, env_id=env_id
+                )
             duration = time.time() - start_time
             if isinstance(result, dict) and "error" in result:
                 error_message = result.get("error", "Unknown Error")
@@ -289,6 +313,7 @@ class ToolsService:
             ObjectAlreadyExistsError: If tool with the same UUID already exists.
         """
         create_tool_counter.inc()
+        validate_mcp_packaging(data.get("packaging_format"), data.get("packaging_params"))
         try:
             data["uuid"] = generate_or_validate_uuid(data.get("uuid"))
             if self.handler.object_exists(data["uuid"]):
@@ -666,6 +691,9 @@ class ToolsService:
                 if new_name:
                     data["parent"] = self.handler.get_cache_parent_for_head(uuid, new_name)
                 merged = {**existing, **data}
+                validate_mcp_packaging(
+                    merged.get("packaging_format"), merged.get("packaging_params")
+                )
                 merged["uuid"] = existing.get("uuid", uuid)
                 merged["created_at"] = existing.get("created_at")
                 merged["modified_at"] = datetime.now(timezone.utc).isoformat()
