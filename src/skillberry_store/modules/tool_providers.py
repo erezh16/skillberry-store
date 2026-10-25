@@ -177,9 +177,7 @@ def validate_mcp_packaging(
     if not isinstance(endpoint, dict):
         raise ValueError("packaging_params.endpoint must be a JSON object")
     provider_name = endpoint.get("provider")
-    if not isinstance(provider_name, str) or not PROVIDER_NAME_RE.match(
-        provider_name
-    ):
+    if not isinstance(provider_name, str) or not PROVIDER_NAME_RE.match(provider_name):
         raise ValueError(
             f"packaging_params.endpoint.provider must match {PROVIDER_NAME_RE.pattern}"
         )

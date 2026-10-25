@@ -399,8 +399,10 @@ def _build_file_structure(
     for contribution, _slug in contributions:
         if contribution.skill_md_section.strip():
             tools_section = (
-                tools_section.rstrip("\n") + "\n\n" if tools_section else ""
-            ) + contribution.skill_md_section.strip("\n") + "\n"
+                (tools_section.rstrip("\n") + "\n\n" if tools_section else "")
+                + contribution.skill_md_section.strip("\n")
+                + "\n"
+            )
     if tools_section:
         tools_section = wrap_generated(tools_section)
         placement = (skill.get("extra") or {}).get("tools_section", "append")
@@ -420,9 +422,7 @@ def _build_file_structure(
     return result
 
 
-def tool_script_paths(
-    tools: List[Dict[str, Any]], skill_name: str
-) -> Dict[str, str]:
+def tool_script_paths(tools: List[Dict[str, Any]], skill_name: str) -> Dict[str, str]:
     """Where each tool's module lands in the package, relative to the skill root.
 
     Mirrors :func:`build_file_structure_from_tools` (a ``file:`` tag wins) and
@@ -453,7 +453,11 @@ def strip_generated(text: str) -> str:
     import re
 
     pattern = re.compile(
-        r"\n*" + re.escape(GENERATED_BEGIN) + r".*?" + re.escape(GENERATED_END) + r"\n?",
+        r"\n*"
+        + re.escape(GENERATED_BEGIN)
+        + r".*?"
+        + re.escape(GENERATED_END)
+        + r"\n?",
         re.S,
     )
     stripped = pattern.sub("\n", text)

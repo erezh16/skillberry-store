@@ -228,7 +228,9 @@ def _usage_line(tool: Dict[str, Any], script_path: str) -> str:
     return " ".join(parts)
 
 
-def render_tools_section(tools: List[Dict[str, Any]], script_paths: Dict[str, str]) -> str:
+def render_tools_section(
+    tools: List[Dict[str, Any]], script_paths: Dict[str, str]
+) -> str:
     """The generic SKILL.md "Tools" section for proxy-exported tools.
 
     Args:

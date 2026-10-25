@@ -26,7 +26,6 @@ from skillberry_store.schemas.skill_schema import SkillSchema
 from skillberry_store.services.exceptions import ObjectInUseError
 from skillberry_store.services.skills_service import SkillsService
 
-
 _COMPUTED_IDENTITY_FIELDS = {"uuid", "tool_uuids"}
 
 

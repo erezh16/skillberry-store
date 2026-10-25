@@ -67,7 +67,9 @@ _claimers: List[Tuple[ImportClaimer, str]] = []
 _active_resolver: Optional[Callable[[str], bool]] = None
 
 
-def register_export_contributor(contributor: ExportContributor, owner_slug: str) -> None:
+def register_export_contributor(
+    contributor: ExportContributor, owner_slug: str
+) -> None:
     _contributors.append((contributor, owner_slug))
 
 
@@ -121,7 +123,9 @@ def collect_export_contributions(
         try:
             contribution = contributor.contribute(skill, tools, snippets)
         except Exception as e:
-            logger.error(f"Export contributor of plugin '{slug}' raised: {e}", exc_info=True)
+            logger.error(
+                f"Export contributor of plugin '{slug}' raised: {e}", exc_info=True
+            )
             raise ContributionError(slug, str(e)) from e
         if contribution is not None:
             out.append((contribution, slug))
@@ -151,11 +155,15 @@ def add_contributed_files(
     for contribution, slug in contributions:
         for path, content in contribution.files.items():
             if path in files or path.upper() == "SKILL.MD":
-                raise ContributionError(slug, f"file '{path}' already exists in the package")
+                raise ContributionError(
+                    slug, f"file '{path}' already exists in the package"
+                )
             files[path] = content
 
 
-def claim_import_files(files: Dict[str, str]) -> Tuple[List[Tuple[ImportClaim, str]], Set[str]]:
+def claim_import_files(
+    files: Dict[str, str],
+) -> Tuple[List[Tuple[ImportClaim, str]], Set[str]]:
     """Offer the package to every active claimer.
 
     Returns the claims and the union of claimed paths. A path claimed by an
@@ -168,7 +176,9 @@ def claim_import_files(files: Dict[str, str]) -> Tuple[List[Tuple[ImportClaim, s
         try:
             claim = claimer.claim(remaining)
         except Exception as e:
-            logger.error(f"Import claimer of plugin '{slug}' raised: {e}", exc_info=True)
+            logger.error(
+                f"Import claimer of plugin '{slug}' raised: {e}", exc_info=True
+            )
             raise ContributionError(slug, str(e)) from e
         if claim is None:
             continue
