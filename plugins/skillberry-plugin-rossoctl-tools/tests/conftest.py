@@ -6,7 +6,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from fake_backend import BACKEND, TOKEN_URL, FakeRossoctl  # noqa: E402
+from rossoctl_fake_backend import BACKEND, TOKEN_URL, FakeRossoctl  # noqa: E402
 
 
 @pytest.fixture
@@ -52,6 +52,17 @@ def store_client(fake, backend, tmp_path, monkeypatch):
     plugin_cfg = tmp_path / "plugins.json"
     plugin_cfg.write_text(json.dumps({"disabled": [], "owners": {}}))
     monkeypatch.setenv("SKILLBERRY_PLUGIN_CONFIG", str(plugin_cfg))
+    # The registries are process-global and may already back a session-wide
+    # server (the root conftest's ``run_sbs``); snapshot and restore them so
+    # this in-process store does not leave that server without services.
+    saved = (
+        dict(object_handler._object_handlers),
+        object_handler._initialized,
+        dict(registry._services),
+        registry._initialized,
+        acl_config._config_cache,
+        acl_config._config_path_loaded,
+    )
     acl_config.reset_config_cache()
     object_handler.clear_object_handlers()
     registry.clear_services()
@@ -65,4 +76,8 @@ def store_client(fake, backend, tmp_path, monkeypatch):
     yield client
     object_handler.clear_object_handlers()
     registry.clear_services()
-    acl_config.reset_config_cache()
+    object_handler._object_handlers.update(saved[0])
+    object_handler._initialized = saved[1]
+    registry._services.update(saved[2])
+    registry._initialized = saved[3]
+    acl_config._config_cache, acl_config._config_path_loaded = saved[4], saved[5]

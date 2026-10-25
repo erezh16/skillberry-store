@@ -90,6 +90,6 @@ source .venv/bin/activate
 pytest plugins/skillberry-plugin-rossoctl-tools/tests
 ```
 
-The tests run against a fake rossoctl backend (`tests/fake_backend.py`) through
+The tests run against a fake rossoctl backend (`tests/rossoctl_fake_backend.py`) through
 `httpx` transports, with no network. The e2e tests run the exported scripts
 against a FastMCP streamable-HTTP server that stands in for the tool pods.

@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from fake_backend import BACKEND, FakeRossoctl
+from rossoctl_fake_backend import BACKEND, FakeRossoctl
 from skillberry_plugin_rossoctl_tools.backend import (
     RossoctlBackend,
     RossoctlForbidden,

@@ -11,7 +11,7 @@ import zipfile
 
 from skillberry_store.tools.anthropic.mcp_proxy import canonical_schema_sha256, extract_spec
 
-from fake_backend import SEARCH_SCHEMA, WEATHER_SCHEMA
+from rossoctl_fake_backend import SEARCH_SCHEMA, WEATHER_SCHEMA
 
 SKILL = {
     "name": "night-out-planner",
