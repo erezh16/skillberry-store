@@ -1,10 +1,14 @@
 # Skills that use rossoctl tools — Design
 
-Status: **Proposal (revision 6)**
+Status: **Proposal (revision 7)**
 Owner: skillberry-store (the `rossoctl-tools` plugin). rossoctl is unchanged.
 Scope: Stage 5 of [rossoctl-integration.md](../rossoctl-integration.md#staged-improvement), "Skills that use rossoctl tools", extended to store tools that *become* rossoctl tools. The integration doc's sketch is the section [Stage 1: store skills that include rossoctl tools through proxy scripts](../rossoctl-integration.md#stage-1-store-skills-that-include-rossoctl-tools-through-proxy-scripts).
 
 Revision notes:
+* **r7 — Checked against how rossoctl agents use skills today (§5.0).**
+  - **No rossoctl agent on `main` executes skill scripts.** Agents get the files, but none runs them, whether the tools are local scripts or proxies. So an agent-side change (§5.3) is a prerequisite for *any* skill with tools, and this feature does not add it.
+  - **The established pattern for a skill that reaches a remote service is a local CLI script** that the skill's SKILL.md tells the model to run. Examples: `eventing/skills/eventbridge`, and the `wiki-*-cli` skills next to their `-mcp` twins in `rossoctl/examples`. The proxy now follows that pattern. To the agent it is an ordinary local script, and MCP is only how it talks to the tool (§4.2.4).
+  - The proxy still speaks MCP over streamable HTTP. That is the **only** interface rossoctl tools expose (`weather_tool.py`, `reservation_tool.py`), so there is nothing simpler to call. The protocol is internal to the script; nothing MCP-specific is exposed to the agent.
 * **r6 — Each rossoctl tool becomes an ordinary store *code* tool, whose module is the proxy script.** The store executes it as any code tool, and exports it verbatim. As a result:
   - **C2 (tool-provider hook) is dropped.** Nothing in core needs to know a tool is remote.
   - **C3 (package contribution hooks) is dropped.** The dependency file and the generated Tools section are snippets that the plugin creates and keeps current (§4.2.5), and a proxy script re-imports as a working code tool with no claimer.
@@ -80,7 +84,7 @@ On the rossoctl side, an agent gets one MCP tool through `mcpToolName` → `MCP_
 ### Goals
 
 - **G0. rossoctl unchanged; no store core change for this feature.** The principles of §0.1.
-- **G1. Runnable tool proxies in skills.** A skill that aggregates rossoctl tools exports one self-contained, standard-library-only CLI per MCP tool.
+- **G1. Runnable tool proxies in skills.** A skill that aggregates rossoctl tools exports one self-contained, standard-library-only CLI per MCP tool. To an agent, it is an ordinary local script (§5.0).
 - **G2. Late binding.** The same skill works in every namespace that runs the tools. The endpoint is resolved in the agent's pod at run time, and is never baked into the export.
 - **G3. Declared dependencies.** The package declares the rossoctl tools it needs, for people (SKILL.md) and for programs (frontmatter `metadata` and `rossoctl-tools.json`).
 - **G4. Pre-flight checks from the store.** Before an agent is created, the store can report, per namespace, which of a skill's tools are deployed, ready and on the recorded port (`/check`). This replaces r4's rossoctl-side agent-create validation.
@@ -261,7 +265,9 @@ Step 3 is the normal path, and it is what makes the skill portable across namesp
 
 Agent pods do not set `ROSSOCTL_BACKEND_URL`, so they never take the store path. Setting it there would make the agent call rossoctl's backend instead of the tool, which needs an operator credential in the pod and is not supported.
 
-#### 4.2.4 The proxy CLI (plugin)
+#### 4.2.4 The proxy script
+
+**To the agent, it is a plain local script**, the same kind as any store code tool exported to `scripts/` and the same pattern as rossoctl's own CLI skills (§5.0). The agent runs `python3 scripts/<tool>.py --<arg> …` and reads stdout. It needs no MCP client, no MCP configuration and no tool registration. How the script reaches the tool is its own business: it speaks MCP to the tool's Service, because that is the only interface rossoctl tools have.
 
 **As a function** (store-side): `search_restaurants(city="Boston", cuisine="Italian")` returns the tool's text result, decoded as JSON when it is JSON. A tool error, or an unreachable tool, raises an exception, which core's executor reports as an execution error (HTTP 500 at `/tools/{id}/execute`, an error result over vMCP).
 
@@ -280,7 +286,7 @@ Agent pods do not set `ROSSOCTL_BACKEND_URL`, so they never take the store path.
 
 The store's executor generates a wrapper that calls the function and prints its result (`generate_wrapper_any_types`, `modules/file_executor.py`), and in local mode it `pip install`s any module the code imports that is missing. The proxy imports only the standard library, so nothing is installed.
 
-**Protocol:** streamable HTTP, revisions 2025-03-26 and 2025-06-18.
+**Protocol to the tool** (internal to the script): MCP over streamable HTTP, revisions 2025-03-26 and 2025-06-18. A rossoctl tool serves only this (`mcp.http_app()` / `mcp.run(transport="streamable-http")` in the example tools), so a plain-HTTP call is not available. The client is about 150 lines of standard-library code.
 1. `initialize`, accepting a JSON or an SSE response.
 2. `notifications/initialized`.
 3. `tools/call`. Server-initiated requests get the JSON-RPC error `-32601`.
@@ -385,6 +391,44 @@ See §6. No chart change is needed.
 
 ## 5. rossoctl and agents
 
+### 5.0 How rossoctl agents use skills today (evidence)
+
+Checked at `rossoctl/rossoctl` `1cac9f3f` and `rossoctl/examples` `f1fc5df2`.
+
+**Delivery works, unchanged.** A store skill linked to an agent is fetched by the init container as the store's `export-anthropic` zip and unpacked to `/app/skills/<name>`; `SKILL_FOLDERS` lists the folders (`routers/agents_skills.py`). Every file, including `scripts/*.py`, reaches the pod.
+
+**Execution: no rossoctl agent runs skill scripts.**
+
+| Agent | What it does with a skill | Runs scripts? |
+|---|---|---|
+| `generic_agent` (`graph.py:86-226`) | Reads SKILL.md, every `*.py` and every `*.md` under each `SKILL_FOLDERS` entry and **pastes them into the system prompt** (100 KB cap). Its only tools are MCP tools from `MCP_URLS`. | No |
+| `claude_agent` (`runner.py`) | Runs Claude Code in a per-session `/workspace/<uuid>` with `HOME=/home/agent`. It does not read `SKILL_FOLDERS`, and nothing links the skills into `~/.claude/skills`. Claude Code *could* run a script it was told about, but it is never told. | Not by itself |
+| Sandbox agent (`deployments/sandbox/agent_server.py`, `skills_loader.py`) | Loads `.claude/skills/` from its own workspace into the prompt, and calls the model with no tools. | No |
+| OpenShell agents | Hard-coded A2A "skills" (card metadata only) | No |
+| Others (`weather_service`, `reservation_service`, …) | "Skills" is A2A card metadata | No |
+
+So the premise "the current rossoctl agent can use store skills whose tools are local scripts" does not hold today. A store code tool exported to `scripts/x.py` reaches the pod and is shown to `generic_agent`'s model as text, but **no agent can execute it**. The only exception would be a model that recreates the script's logic in its answer.
+
+**The pattern for skills that call services is a local CLI.** The skills in the examples repo that use a remote service ship a CLI script and tell the model to run it:
+
+| Skill | Script | Reaches |
+|---|---|---|
+| `eventing/skills/eventbridge` | `eventbridge-cli.py` (standard-library `urllib`) | the EventBridge HTTP API (`--base-url`, `$EVENTBRIDGE_URL`) |
+| `mcp/wiki_memory_tool/skills/wiki-*-cli` | `wiki_cli.py` (`httpx`) | the wiki service's REST API |
+| `mcp/wiki_memory_tool/skills/wiki-*-mcp` | none: the model calls MCP tools directly | the same service, registered as an MCP server |
+| `skills/summarizer` | `scripts/*.py`, imported as a Python module, offline | nothing |
+
+These skills are written for script-capable hosts such as Claude Code, which is how the repo's own `.claude/skills` are used. Inside rossoctl they need an agent that executes scripts, the same gap as above.
+
+**Consequences for the design:**
+1. **The proxy follows the CLI-skill pattern** (eventbridge is the closest match): a standard-library script with `--<arg>` flags, configured by environment, printing the result. To the agent it is indistinguishable from any local script tool.
+2. **MCP stays, internal to the script.** rossoctl tools expose only MCP over streamable HTTP. The alternatives were rejected:
+   - calling rossoctl's `/invoke` from the agent would need an operator credential in every agent pod;
+   - a REST facade on each tool would be a rossoctl or tool change (P-1).
+3. **Usable without agent changes, today:** delivery, and the model *reading* the skill and the scripts (`generic_agent`).
+   **Not usable without an agent change:** running any script, whether a proxy or a local code tool. §5.3 is therefore required for tools in skills in general. This feature adds no requirement of its own beyond it.
+4. **Nothing MCP-specific is needed on the agent side.** The agent needs no `MCP_URL`, no `MCP_URLS` and no MCP client; one script runner covers proxies and local scripts alike.
+
 ### 5.1 rossoctl
 
 No changes. What the feature relies on:
@@ -401,10 +445,12 @@ No changes. What the feature relies on:
 
 ### 5.3 Agents that run skill scripts (`rossoctl/examples`)
 
-The feature needs an agent that **runs** skill scripts. This is the one change outside skillberry-store. It is in the separate examples repository, not the rossoctl platform, and any agent image that can run `python3` scripts from its skill folders works without it.
+As §5.0 shows, no rossoctl example agent runs skill scripts today. So **any** store skill with tools, local or proxy, needs an agent that does. This is the one change outside skillberry-store. It is in the separate examples repository, not the rossoctl platform. It is generic, with nothing about proxies or rossoctl tools in it, and any agent image that can run `python3` scripts from its skill folders works without it.
 
 1. **`claude_agent`** (the primary demo agent): at startup, symlink each `SKILL_FOLDERS` entry that has a `SKILL.md` to `~/.claude/skills/<name>`, so Claude Code discovers the skills. Put `python3` on `PATH` in the image.
-2. **`generic_agent`** (secondary): an opt-in `run_skill_script(skill, script, arguments)` tool, enabled with `SKILL_SCRIPTS_ENABLED=true`. Scripts are resolved strictly under `<skill>/scripts/` with a realpath check, and run with no shell, a timeout and an output cap.
+2. **`generic_agent`** (secondary): an opt-in `run_skill_script(skill, script, arguments)` tool, enabled with `SKILL_SCRIPTS_ENABLED=true`. Scripts are resolved strictly under `<skill>/scripts/` with a realpath check, and run with no shell, a timeout and an output cap. It already pastes the scripts into the prompt, so the model knows their command lines.
+
+Both changes make *all* skill scripts runnable: the summarizer's helpers, eventbridge's CLI and the proxies. The proxies need no specific support.
 
 If the examples maintainers do not accept these changes, the store repo publishes the same two agents as its own example images. No other component changes.
 
@@ -624,7 +670,7 @@ The user guide is [`docs/demos/rossoctl-night-out-planner.md`](../demos/rossoctl
 |---|---|---|
 | 1.M1 Core | C1 (independent), the no-rossoctl guard, the no-plugin CI job | Golden exports unchanged; the core-only suite green |
 | 1.M2 Plugin | S1, S2 | Against the fake backend: import, check (drift, pre-flight, port), resync, refresh, Execute (local mode through `/invoke`; Docker mode direct), vMCP, export, re-import and adopt work, with the bearer refreshed and no other host contacted. The §4.3 behaviors hold with the plugin disabled. |
-| 1.M3 Agents | The examples change (§5.3), or store-published agent images | `claude_agent` runs a skill script in a pod |
+| 1.M3 Agents | The examples change (§5.3), or store-published agent images. It is a prerequisite for any skill with tools in rossoctl, not specific to this feature. | `claude_agent` and `generic_agent` (opt-in) run a skill script in a pod: a local code tool and a proxy |
 | 1.M4 End to end | The local cluster e2e with **rossoctl `main`**; a Kind run of §9.4 | Demo steps 1–8 pass, with no rossoctl diff |
 
 ### Stage 2: promote store code tools
