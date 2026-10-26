@@ -1,10 +1,15 @@
 # Skills that use rossoctl tools — Design
 
-Status: **Proposal (revision 5)**
+Status: **Proposal (revision 6)**
 Owner: skillberry-store (the `rossoctl-tools` plugin). rossoctl is unchanged.
 Scope: Stage 5 of [rossoctl-integration.md](../rossoctl-integration.md#staged-improvement), "Skills that use rossoctl tools", extended to store tools that *become* rossoctl tools. The integration doc's sketch is the section [Stage 1: store skills that include rossoctl tools through proxy scripts](../rossoctl-integration.md#stage-1-store-skills-that-include-rossoctl-tools-through-proxy-scripts).
 
 Revision notes:
+* **r6 — Each rossoctl tool becomes an ordinary store *code* tool, whose module is the proxy script.** The store executes it as any code tool, and exports it verbatim. As a result:
+  - **C2 (tool-provider hook) is dropped.** Nothing in core needs to know a tool is remote.
+  - **C3 (package contribution hooks) is dropped.** The dependency file and the generated Tools section are snippets that the plugin creates and keeps current (§4.2.5), and a proxy script re-imports as a working code tool with no claimer.
+  - **Core is C1 only,** the `isError` fix, which this feature does not depend on.
+  - Store-side calls go through rossoctl's `/invoke` when the script runs in the store process, with the credential read from the store's environment, never embedded (§4.2.3). In Docker execution mode the script cannot see that environment, and calls the tool directly instead (D7).
 * **r5 — Core design principles (§0.1) applied to the whole design.**
   - **rossoctl gets no changes.** Every rossoctl change of r4 (R1–R10: flag, required-tools annotation, agent-create validation and URL injection, UI, Helm, installer, `/connect` annotations) is dropped; §4.6 gives the store-side replacement for each.
   - **Stage 3 no longer needs a rossoctl runner or endpoint.** It is renumbered **stage 2**. The plugin deploys promoted tools through rossoctl's *existing* `POST /api/v1/tools`, with a runner image owned by skillberry-store.
@@ -28,14 +33,14 @@ Applying P-1 and P-2 gives this split:
 |---|---|---|
 | rossoctl | Nothing. The store uses rossoctl's existing REST API, Kubernetes objects and Helm values. | — |
 | rossoctl/examples (a separate repo) | An agent that can run skill scripts (§5.3). This is the one piece outside the store. It is an example-agent change, not a platform change, and users can bring their own agent image instead. | S |
-| skillberry-store core | C1 `isError` fix, C2 tool-provider hook, C3 package contribution hooks (§4.1) | S–M |
-| `rossoctl-tools` plugin | Everything else: backend client, provider, proxy generator, package contents, import, check, resync, promotion, the stage 2 runner image | L |
+| skillberry-store core | C1 `isError` fix (§4.1). It is a bug fix in core's SSE path; this feature does not depend on it. | S |
+| `rossoctl-tools` plugin | Everything else: backend client, proxy generator, the proxy code tools it creates, the skill snippets it maintains, import, check, resync, promotion, the stage 2 runner image | L |
 
 ### 0.2 Stages
 
 | Stage | What a user gets | skillberry-store | rossoctl | Sections |
 |---|---|---|---|---|
-| **1. Skills from existing rossoctl tools** | In the store, compose a skill from tools already deployed in rossoctl. Agents get the tools through the skill as runnable proxy scripts. The store can execute the tools for testing and evaluation. | Core C1–C3. The plugin: backend client, provider, proxy generator, package contents, `/tools`, `/import`, `/check`, `/resync`. | **None.** Deployed with existing chart values (§6). | §1–§9 |
+| **1. Skills from existing rossoctl tools** | In the store, compose a skill from tools already deployed in rossoctl. Agents get the tools through the skill as runnable proxy scripts. The store can execute the tools for testing and evaluation. | **No core change** (C1 is an independent fix). The plugin: backend client, proxy generator, proxy code tools, skill snippets, `/tools`, `/import`, `/check`, `/resync`. | **None.** Deployed with existing chart values (§6). | §1–§9 |
 | **2. Promote store code tools to rossoctl tools** | Write code tools in the store, then promote them. rossoctl runs them as a native tool, with AuthBridge, policy, the catalog and sharing across agents, and the skill switches to proxies of it. | Plugin: `/promote` and the runner image. **No core change.** | **None.** Uses `POST /api/v1/tools`. | §13 |
 | *Deferred: rossoctl-side enhancements* | Agent-create validation, URL injection, console cards. | — | Each would need its own justification under P-1. None is planned. | §12 |
 
@@ -63,7 +68,7 @@ In rossoctl, backend paths are relative to `rossoctl/backend/app/`, UI paths to 
 
 Today a skillberry-store skill cannot use a rossoctl tool, for four reasons:
 
-1. **Exported proxies are not runnable.** For a `packaging_format: "mcp"` tool, `export-anthropic` writes a bodiless stub (`mcp_content_from_manifest`, `fast_api/server_utils.py:54-95`) to `scripts/<tool>.py`. An agent that receives it cannot call anything.
+1. **Exported proxies are not runnable.** For a `packaging_format: "mcp"` tool, `export-anthropic` writes a bodiless stub (`mcp_content_from_manifest`, `fast_api/server_utils.py:54-95`) to `scripts/<tool>.py`. An agent that receives it cannot call anything. A **code** tool, by contrast, exports its module verbatim, and the store executes it; r6 builds on that.
 2. **No way to reach the tools.** The store's MCP client is SSE-only (`modules/file_executor.py`). rossoctl tools serve streamable HTTP at `http://<tool>-mcp.<ns>.svc.cluster.local:<port>/mcp`. rossoctl's backend, however, already lists and invokes any tool (`POST /tools/{ns}/{name}/connect`, `/invoke`), so the store can work through it instead of adding a transport.
 3. **Location is per namespace.** One fixed `packaging_params.mcp_url` cannot serve a skill shared across namespaces.
 4. **No declared dependency.** Nothing in a skill package says "I need tool X".
@@ -74,19 +79,19 @@ On the rossoctl side, an agent gets one MCP tool through `mcpToolName` → `MCP_
 
 ### Goals
 
-- **G0. rossoctl unchanged; store core minimal.** The principles of §0.1.
+- **G0. rossoctl unchanged; no store core change for this feature.** The principles of §0.1.
 - **G1. Runnable tool proxies in skills.** A skill that aggregates rossoctl tools exports one self-contained, standard-library-only CLI per MCP tool.
 - **G2. Late binding.** The same skill works in every namespace that runs the tools. The endpoint is resolved in the agent's pod at run time, and is never baked into the export.
 - **G3. Declared dependencies.** The package declares the rossoctl tools it needs, for people (SKILL.md) and for programs (frontmatter `metadata` and `rossoctl-tools.json`).
 - **G4. Pre-flight checks from the store.** Before an agent is created, the store can report, per namespace, which of a skill's tools are deployed, ready and on the recorded port (`/check`). This replaces r4's rossoctl-side agent-create validation.
 - **G5. Import.** The plugin creates proxy tools, and optionally a skill skeleton, from live rossoctl tools, through rossoctl's backend API.
-- **G6. Store-side execution.** The store executes these tools (`/tools/{id}/execute`, vMCP) for testing, evaluation and dreaming. rossoctl performs the call (`/invoke`); the store never connects to tool pods.
+- **G6. Store-side execution.** The store executes these tools (`/tools/{id}/execute`, vMCP) for testing, evaluation and dreaming, as it executes any code tool. In the store's local execution mode the proxy calls rossoctl's `/invoke`, so rossoctl makes the call under its authorization and audit, and the store never connects to tool pods. In Docker mode it calls the tool directly (D7).
 - **G7. No credentials in the proxy.** Authentication on the agent's egress is AuthBridge's job.
 
 ### Non-goals
 
 - **N0. Any change to rossoctl,** including its backend, UI, chart, installer, operator and docs. §12 keeps a list of candidates for the record. None is planned.
-- **N1. Any MCP transport work in store core.** The proxy speaks streamable HTTP, but it is generated text from the plugin that runs in agent pods.
+- **N1. Any change to store core for this feature,** including MCP transport work. The proxy speaks streamable HTTP, but it is generated text from the plugin, stored as an ordinary code tool's module.
 - **N2. Store ACL enforcement.** The store is assumed to run in `disabled` mode (§8 covers `delegated`).
 - **N3. Changing how other `mcp` tools export.** Tools with only an SSE `mcp_url` keep today's stub.
 
@@ -99,9 +104,9 @@ On the rossoctl side, an agent gets one MCP tool through `mcpToolName` → `MCP_
  │  rossoctl-tools plugin ─────┼─ stage 2: POST /tools) ─────▶│  (unchanged)         │          │ reservation-tool-mcp │
  │  · import tools as proxies  │◀──── tool schemas ───────────│                      │          └──────────▲───────────┘
  │  · /check per namespace     │                              │  existing autosync ──┼──┐                  │ tools/call
- │  · export: proxies,         │◀── GET /skills/ (as today) ──│  + skill fetch       │  │       ┌──────────┴───────────┐
- │    rossoctl-tools.json,     │                              └──────────────────────┘  └─────▶ │ agent pod            │
- │    SKILL.md Tools section   │──── zip (existing skill-fetcher init container) ──────────────▶│  scripts/*.py proxy  │
+ │  · proxy = code tool module │◀── GET /skills/ (as today) ──│  + skill fetch       │  │       ┌──────────┴───────────┐
+ │  · snippets: Tools section, │                              └──────────────────────┘  └─────▶ │ agent pod            │
+ │    rossoctl-tools.json      │──── zip (existing skill-fetcher init container) ──────────────▶│  scripts/*.py proxy  │
  └─────────────────────────────┘                                                                │  AuthBridge (egress) │
                                                                                                 └──────────────────────┘
 ```
@@ -112,7 +117,7 @@ Every arrow into or out of rossoctl uses an endpoint or mechanism that exists to
 - **The external-skill fetch:** `routers/agents_skills.py`, the `fetch-skill-*` init container, `GET {store}/skills/{name}/export-anthropic`.
 
 How the pieces compose:
-- **Store without the plugin:** no change to anything a user sees, except the `isError` fix (C1).
+- **Store without the plugin:** no change to anything a user sees, except the independent `isError` fix (C1). Tools and skills the plugin created earlier keep working: they are ordinary code tools and snippets.
 - **Store with the plugin:** stage 1 in full. Agents that can run scripts use the skills. rossoctl does not know the feature exists.
 - **The example agent change (§5.3):** gives rossoctl's example agents the ability to run skill scripts.
 
@@ -122,19 +127,22 @@ How the pieces compose:
 
 ### 4.0 The split
 
-All rossoctl knowledge lives in the plugin. Core code never contains the strings `rossoctl` or `svc.cluster.local` outside tests; a test enforces this (§14.6). The plugin depends on core's extension points, and core never names the plugin.
+All rossoctl knowledge lives in the plugin. Core code never contains the strings `rossoctl` or `svc.cluster.local` outside tests; a test enforces this (§14.6).
 
-| Concern | Core (generic) | `rossoctl-tools` plugin |
-|---|---|---|
-| Error results | C1: `isError` reported as an error | — |
-| Executing a remote tool | C2: a tool whose `packaging_params.endpoint.provider` names a provider is executed by that provider | Provider `rossoctl`: calls `/invoke` |
-| Exporting a remote tool | C2: the provider may supply the tool's exported module | The streamable-HTTP proxy generator, with rossoctl resolution steps |
-| Extra package content | C3: contributors add files, frontmatter `metadata` and a SKILL.md section; claimers take files on import | `rossoctl-tools.json`, `metadata.rossoctl-requires-tools`, the generated Tools section |
-| Everything that talks to rossoctl | — | backend client, credential, `/tools`, `/import`, `/check`, `/resync`, `/promote`, the runner image |
+The plugin uses only interfaces core already offers to plugins: routes, UI actions, and the `StoreAPI` (`create_tool`, `create_snippet`, `create_skill`, `get_*`, `update_*`). Everything it creates is an ordinary store object:
 
-### 4.1 Core changes, each with its standalone justification
+| Concern | How it works, with no core change |
+|---|---|
+| A rossoctl tool in the store | One **code** tool per MCP tool (`packaging_format: "code"`, `programming_language: "python"`). Its module is the generated proxy script; its `params` come from the tool's live input schema. |
+| Store-side execution | Core's code-tool executor calls the script's function. The function calls rossoctl's `/invoke` (local mode) or the tool directly (Docker mode), §4.2.3. |
+| Export to agents | Core exports a code tool's module verbatim as `scripts/<tool>.py`. That file is the agent's CLI. |
+| The dependency declaration and the usage text | Two plugin-maintained snippets: `file:rossoctl-tools.json`, and a `file:SKILL.md` snippet with the generated Tools section (§4.2.5) |
+| Re-import of an exported package | Core's importer turns each script back into a working code tool (one top-level function); `rossoctl-tools.json` and the Tools section come back as snippets |
+| Talking to rossoctl | The plugin's backend client and routes |
 
-#### C1. Correct error results (bug fix)
+### 4.1 Core changes
+
+#### C1. Correct error results (independent bug fix)
 
 **Standalone value.** `execute_mcp_tool` returns `content[0].text` and ignores `isError`, so a failing remote tool looks successful to every store user with an SSE `mcp` tool.
 
@@ -143,74 +151,18 @@ All rossoctl knowledge lives in the plugin. Core code never contains the strings
 - all text items are joined with newlines;
 - `structuredContent` is returned as `"structured"`.
 
-**Why it is not in the plugin:** it is a bug in core's own MCP path.
-
 This changes behavior: an error result is now HTTP 500 at `/tools/{id}/execute`. It is noted in `CHANGELOG.md`.
 
-#### C2. Tool-provider hook
+**Relation to this feature: none.** The feature uses code tools, not core's MCP path. C1 is kept because it was found and fixed during this work. It can land as its own pull request.
 
-**Standalone value.** It lets a plugin own how a remote tool is reached and packaged, instead of the store connecting to a fixed SSE `mcp_url`. Any plugin can use it: a corporate tool gateway, an authenticated MCP endpoint, a tool catalog with its own invocation API. Core ships no provider.
+#### Not in core (r6)
 
-**Why it is not in the plugin:** tool execution (`ToolsService.execute`, vMCP) and export (`gather_export_inputs`) are core code paths. A plugin has no extension point there today. The alternatives were judged worse:
-- *Have the plugin serve its own SSE MCP endpoint and point each tool's `mcp_url` at it.* This adds a long-lived server inside the plugin, a loopback hop on every call, and a store-internal URL inside tool manifests, which would leak into exports and backups.
-- *Import rossoctl tools as `code` tools whose module calls rossoctl.* The module would need the store's rossoctl credential at execution time, and it would be exported to agents.
-
-**Shape.** `packaging_params` gains an optional, opaque `endpoint` block:
-
-```jsonc
-"packaging_format": "mcp",
-"packaging_params": {
-  "mcp_tool_name": "get_weather",   // required
-  "mcp_url": "http://…/sse",        // optional when "endpoint" is present
-  "endpoint": {"provider": "<name>", "...": "provider-specific, opaque to core"},
-  "input_schema_sha256": "…"        // optional
-}
-```
-
-Validation is shared by the schema and by `ToolsService.create`/`update`:
-- `mcp_tool_name` matches `^[A-Za-z0-9_.\-]{1,128}$`;
-- `mcp_url` or `endpoint` is present;
-- `endpoint.provider` matches `^[a-z][a-z0-9-]{0,31}$`;
-- `endpoint` is at most 4 KiB.
-
-The active provider's own `validate` also runs. Core never interprets the rest of the block.
-
-**Provider protocol** (`modules/tool_providers.py`):
-
-```python
-class ToolProvider(Protocol):
-    name: str
-    export_version: str                                   # changes when export_module output changes
-    def validate(self, endpoint: dict) -> None: ...       # raise ValueError
-    async def call_tool(self, packaging_params: dict, arguments: dict, ctx: ProviderContext) -> CallResult: ...
-    def export_module(self, tool: dict) -> Optional[str]: ...   # None = core's default stub
-```
-
-- **Registry:** a provider is registered by its plugin (`PluginBase.register_tool_provider`). It is visible only while that plugin is active (`PluginLoader.is_active`).
-- **Execution:** a tool with `endpoint` is executed by its active provider. Without an active provider, `/tools/{id}/execute` returns **422** *"Tool 'X' needs provider 'Y', which is not available in this store"*. vMCP returns that as an error result. Core never guesses a URL.
-- **Export:** in `SkillsService.gather_export_inputs`, the module of a tool with `endpoint` is `provider.export_module(tool)` when it returns text. Otherwise it is today's stub. **Without an active provider, exports are exactly today's.** The npx artifact cache key includes `(provider.name, provider.export_version)` for each active provider that backs a tool of the skill.
-- **Removed from r4:**
-  - `list_tools` and `proxy_resolution` in the protocol: core never calls them.
-  - The core proxy generator, the `MCP_PROXY_*` default step and `SBS_MCP_PROXY_EXPORT`: all moved to the plugin (§4.2.4).
-
-#### C3. Package contribution hooks
-
-**Standalone value.** General extension points for any plugin that adds metadata to skill packages. Examples: a provenance plugin attaching an attestation file, a policy plugin adding a manifest, a docs plugin adding a generated usage section.
-
-**Why it is not in the plugin:** the exporter and importer are core.
-- An exporter `ExportContributor` may return new files, frontmatter `metadata` entries and a SKILL.md section. A path or key collision fails the export, naming the plugin.
-- An importer `ImportClaimer` may claim files and return the tools to create for them. Unclaimed files follow today's path.
-- Contributed SKILL.md sections are wrapped in `<!-- skillberry:generated:begin/end -->` markers. The importer drops marked blocks, so a re-import does not duplicate them.
-- `parse_skill_metadata` keeps the frontmatter `metadata` mapping (`extra.frontmatter_metadata`) instead of dropping it, and the exporter writes it back. This is a standalone fix: round trips become lossless for any metadata.
-- Hooks are consulted only while their plugin is active. With none active, output is byte-identical to today's.
-
-#### Dropped from core in r5
-
-| r4 core item | Why it is dropped |
+| r4/r5 core item | Why it is not needed |
 |---|---|
-| Opt-in computed skill fields (`_rossoctl_required_tools`) | Its only consumer was rossoctl's autosync (r4 R2), which is not being changed. The dependency is still declared in the package (G3). |
-| Core proxy generator (`tools/anthropic/mcp_proxy.py`) and the core "Tools" SKILL.md section | Provider-specific. C2's `export_module` and C3's SKILL.md section give the plugin everything it needs. |
-| `SBS_MCP_PROXY_EXPORT` | Becomes the plugin setting `ROSSOCTL_PROXY_EXPORT`. |
+| C2 tool-provider hook (`packaging_params.endpoint`, provider registry, execute dispatch, 422, `export_module`, npx cache key) | A proxy code tool is executed and exported by core's existing code-tool paths. Nothing in core needs to know the tool is remote. |
+| C3 export contributor and import claimer, the generated-section markers | The plugin writes its additions as real snippets (§4.2.5). Core's importer re-creates the proxy as a code tool without help. |
+| C3 kept frontmatter `metadata` | Not needed by the feature: the dependency is declared in `rossoctl-tools.json` and the Tools section. It is a reasonable standalone fix, which can be proposed on its own merits. |
+| Opt-in computed skill fields | Already dropped in r5 |
 
 ### 4.2 The `rossoctl-tools` plugin
 
@@ -219,7 +171,9 @@ class ToolProvider(Protocol):
 - optional extra `plugin-rossoctl-tools`, included in `plugins-all`;
 - dependency `httpx` only. The stage 2 runner has its own extra (§13.4).
 
-It is active when `ROSSOCTL_BACKEND_URL` is set and the store's plugin config does not disable it. It makes no network calls until a route is invoked or a provider-backed tool is executed.
+The *generated proxy scripts* depend on nothing: they use only the standard library, so they run in any agent image, and core's local executor installs nothing for them.
+
+It is active when `ROSSOCTL_BACKEND_URL` is set and the store's plugin config does not disable it. It makes no network calls until a route is invoked. The proxy tools it created make calls when they are executed, with or without the plugin active.
 
 #### 4.2.1 Talking to rossoctl
 
@@ -247,37 +201,55 @@ All calls go to rossoctl's backend REST API, `{ROSSOCTL_BACKEND_URL}/api/v1`, wh
 | `ROSSOCTL_CLIENT_ID`, `ROSSOCTL_CLIENT_SECRET`, `ROSSOCTL_TOKEN_ENDPOINT` | unset | client-credentials grant; omit when rossoctl runs without auth |
 | `ROSSOCTL_ALLOWED_NAMESPACES` | `""` (any) | comma-separated list of namespaces the plugin may target |
 | `ROSSOCTL_TIMEOUT` | `30` | seconds per backend call |
-| `ROSSOCTL_PROXY_EXPORT` | `true` | `false` exports today's stubs instead of proxies |
 | `ROSSOCTL_FORWARD_CALLER_TOKEN` | `false` | delegated mode (§8) |
 | `ROSSOCTL_RUNNER_IMAGE`, `ROSSOCTL_STORE_URL` | see §13 | stage 2 |
 
 **SSRF.** The only outbound destinations are `ROSSOCTL_BACKEND_URL` and the token endpoint. Tool and namespace names are validated as DNS-1123 labels and used only in URL paths.
 
-#### 4.2.2 Provider `rossoctl`
+#### 4.2.2 The proxy code tool
 
-The `endpoint` block it owns:
+`/import` creates one store tool per MCP tool of each selected rossoctl tool:
 
 ```jsonc
-"endpoint": {
-  "provider": "rossoctl",
-  "tool": "weather-tool",        // rossoctl tool (workload) name
-  "namespace": "team1",          // namespace imported from; target of store-side execution
-  "port": 8000,                  // Service port at import (GET /tools/{ns}/{name})
-  "path": "/mcp",
-  "gateway_prefix": "weather_",  // optional
-  "promoted_from": "<uuid>",     // stage 2 only
-  "bundle_digest": "sha256:…"    // stage 2 only
+{
+  "name": "search_restaurants",              // the MCP tool name; on a collision, <tool>__<name>
+  "description": "…",                        // from /connect
+  "packaging_format": "code",
+  "programming_language": "python",
+  "module_name": "search_restaurants.py",
+  "params": {…},                             // the live input schema, as ToolParamsSchema
+  "tags": ["mcp", "rossoctl-proxy", "rossoctl-tool:reservation-tool", "namespace:team1"],
+  "extra": {
+    "rossoctl": {                            // plugin-owned metadata; core stores it opaquely
+      "tool": "reservation-tool", "namespace": "team1", "port": 8000, "path": "/mcp",
+      "mcp_tool_name": "search_restaurants",
+      "input_schema_sha256": "…",
+      "read_only": true,
+      "generator_version": "1",
+      "promoted_from": "<uuid>",             // stage 2 only
+      "bundle_digest": "sha256:…"            // stage 2 only
+    }
+  }
 }
 ```
 
-- `validate`: `tool` and `namespace` are DNS-1123 labels, `port` is in 1..65535, `path` starts with `/`.
-- `call_tool`: `POST /tools/{ns}/{tool}/invoke`. `result.content` and `result.isError` map to core's `CallResult`, and 502/504 to a transport error.
-- `export_module`: the proxy CLI (§4.2.4), unless `ROSSOCTL_PROXY_EXPORT=false`.
-- `export_version`: the proxy generator version.
+**The module** is the generated script (§4.2.4). It holds a single top-level function, named like the store tool, with one keyword parameter per schema property. Its body runs a module-level `_main(...)`, which is defined *inside* the function's body (as a nested function) or after a `__main__` guard, so that:
+- core's executor finds and calls the one function;
+- core's importer finds exactly one tool in it on re-import (`extract_python_functions` takes top-level functions only);
+- auto-detection of dependencies finds nothing to link (`detect_tool_dependencies` matches calls to other store tools by name, and the script calls none).
 
-#### 4.2.3 Agent-side endpoint resolution
+`extra.rossoctl` is the plugin's source of truth for `/check`, `/resync` and regeneration. The same values are embedded in the script, so the script never reads the store.
 
-The proxy runs in the agent's pod. Because rossoctl injects nothing, it resolves the endpoint itself, in this order:
+#### 4.2.3 Endpoint resolution
+
+The script runs in two places and chooses its path at run time.
+
+**In the store (store-side execution).** If `ROSSOCTL_BACKEND_URL` is in the process environment, the script calls `POST {ROSSOCTL_BACKEND_URL}/api/v1/tools/{ns}/{tool}/invoke` with `{tool_name, arguments}`. It gets a token from `ROSSOCTL_TOKEN_ENDPOINT` with `ROSSOCTL_CLIENT_ID`/`ROSSOCTL_CLIENT_SECRET` when those are set. `ns` is the import namespace.
+- **Local execution** (`EXECUTE_PYTHON_LOCALLY=true`): core runs the code with `exec` in the store process, so the script sees the store's environment. Calls go through rossoctl, under its authorization and audit, and the store never connects to tool pods.
+- **Docker execution** (core's default): core starts the container with only `PYTHONUNBUFFERED` set, so the backend variables are absent. The script falls through to the agent order below, which works only when the container can reach the tool's cluster address (D7).
+- The credential is **never in the script**. It comes only from the environment of the process that runs it.
+
+**In an agent pod.** rossoctl injects nothing, so the script resolves the tool itself, in this order:
 
 1. **`ROSSOCTL_TOOL_<TOOL>_URL`**, if set. This is an override the user can set through the agent's existing `envVars`. `<TOOL>` is the tool name upper-cased, with every non-alphanumeric character replaced by `_`.
 2. **`ROSSOCTL_MCP_GATEWAY_URL`**, only for tools imported with a `gateway_prefix`. The call then uses `<prefix><mcp_tool_name>`.
@@ -287,9 +259,13 @@ The proxy runs in the agent's pod. Because rossoctl injects nothing, it resolves
 
 Step 3 is the normal path, and it is what makes the skill portable across namespaces (G2). Its one weakness is a tool redeployed on a different port. `/check` detects that, and `/resync` fixes it (§4.2.6).
 
+Agent pods do not set `ROSSOCTL_BACKEND_URL`, so they never take the store path. Setting it there would make the agent call rossoctl's backend instead of the tool, which needs an operator credential in the pod and is not supported.
+
 #### 4.2.4 The proxy CLI (plugin)
 
-`python3 scripts/<tool>.py --<prop> …`, with these options:
+**As a function** (store-side): `search_restaurants(city="Boston", cuisine="Italian")` returns the tool's text result, decoded as JSON when it is JSON. A tool error, or an unreachable tool, raises an exception, which core's executor reports as an execution error (HTTP 500 at `/tools/{id}/execute`, an error result over vMCP).
+
+**As a CLI** (agents): `python3 scripts/<tool>.py --<prop> …`, with these options:
 - `--json '{…}'`, or `-` to read the arguments from stdin;
 - `--describe`, `--check` (schema hash), `--raw`, `-v`.
 
@@ -302,6 +278,8 @@ Step 3 is the normal path, and it is what makes the skill portable across namesp
 
 **Runtime.** Standard library only, Python ≥ 3.8. No credentials are embedded; `MCP_PROXY_AUTH_HEADER` is read from the environment when set, and `TRACEPARENT`/`TRACESTATE` are forwarded.
 
+The store's executor generates a wrapper that calls the function and prints its result (`generate_wrapper_any_types`, `modules/file_executor.py`), and in local mode it `pip install`s any module the code imports that is missing. The proxy imports only the standard library, so nothing is installed.
+
 **Protocol:** streamable HTTP, revisions 2025-03-26 and 2025-06-18.
 1. `initialize`, accepting a JSON or an SSE response.
 2. `notifications/initialized`.
@@ -310,61 +288,78 @@ Step 3 is the normal path, and it is what makes the skill portable across namesp
 
 **Generation safety.** Manifest values are never interpolated into code. The spec is embedded as JSON (`ensure_ascii`, `'` escaped) in a raw literal, and the docstring uses only `mcp_tool_name`. Keys named `headers`, `auth*`, `token*` or `*secret*` are refused.
 
-#### 4.2.5 Package contents (contributor and claimer)
+#### 4.2.5 Skill contents: plugin-maintained snippets
 
-These are added only to skills that contain a rossoctl-backed tool:
+When `/import` creates a skill, or when `/resync` updates one, the plugin also writes two snippets and links them to the skill (`snippet_uuids`). Core's exporter already turns a `file:<path>` snippet into that file, and appends a second `file:SKILL.md` snippet to the first:
 
-- **Frontmatter:** `metadata.rossoctl-requires-tools: "reservation-tool,weather-tool"`.
-- **`rossoctl-tools.json`:**
+| Snippet | Tag | Exported as | Content |
+|---|---|---|---|
+| `<skill>-rossoctl-tools` | `file:rossoctl-tools.json`, `rossoctl-generated` | `rossoctl-tools.json` | the dependency declaration, below |
+| `<skill>-rossoctl-tools-usage` | `file:SKILL.md`, `rossoctl-generated` | appended to SKILL.md, after the author's instructions | the generated "Tools" section |
 
-  ```json
-  {"schema": "skillberry.ai/rossoctl-tools/v1",
-   "tools": [{"tool": "weather-tool", "port": 8000, "path": "/mcp",
-              "mcp_tools": [{"name": "get_weather", "script": "scripts/get_weather.py",
-                             "schema_sha256": "…", "read_only": true}]}]}
-  ```
+`rossoctl-tools.json`:
 
-- **SKILL.md section "Tools":**
-  - per tool, a usage line generated from the schema;
-  - a read-only marker, or "may change state: confirm with the user first";
-  - the exit-code legend;
-  - a rossoctl note: tools resolve in the agent's namespace, and exit 3 means the tool is not deployed there.
-- **Import claimer:** it claims `rossoctl-tools.json` and the scripts it lists, and rebuilds the provider tools from the JSON and each script's embedded spec. "Export → edit in git → re-import" is therefore lossless.
+```json
+{"schema": "skillberry.ai/rossoctl-tools/v1",
+ "tools": [{"tool": "weather-tool", "port": 8000, "path": "/mcp",
+            "mcp_tools": [{"name": "get_weather", "script": "scripts/get_weather.py",
+                           "schema_sha256": "…", "read_only": true}]}]}
+```
+
+The Tools section contains:
+- per tool, a usage line generated from the schema;
+- a read-only marker, or "may change state: confirm with the user first";
+- the exit-code legend;
+- a rossoctl note: tools resolve in the agent's namespace, and exit 3 means the tool is not deployed there.
+
+**Ordering.** The author's instructions snippet comes first in `snippet_uuids`, and the usage snippet last, so the generated section follows the instructions.
+
+**Keeping them current.** The snippets are derived data. `/resync` regenerates them. So does `POST /plugins/rossoctl-tools/refresh {skill}`, which a user runs after adding or removing proxy tools by hand. Each refresh creates a new snippet version and a new skill version, like any edit. A user can delete the usage snippet to drop the generated section.
+
+**Frontmatter.** r5's frontmatter key `metadata.rossoctl-requires-tools` is dropped: core generates SKILL.md's frontmatter, and the dependency is already declared in `rossoctl-tools.json` and the Tools section.
+
+**Re-import** (`POST /skills/import-anthropic` of an exported package) needs nothing from the plugin:
+- each proxy script becomes a working code tool again: one top-level function, its parameters, its docstring;
+- `rossoctl-tools.json` comes back as a `file:rossoctl-tools.json` snippet;
+- the SKILL.md body, including the Tools section, comes back as the `file:SKILL.md` snippet.
+
+What is lost on re-import is the tools' `extra.rossoctl` metadata and their `rossoctl-*` tags. `POST /plugins/rossoctl-tools/adopt {skill}` restores them from the scripts' embedded spec and the JSON snippet, so `/check` and `/resync` work again. Without adopt, the tools still run.
 
 **Read-only marking.** rossoctl's `/connect` does not return MCP annotations (`MCPToolSchema`, `routers/tools.py:328-333`), and r5 does not change that. The tools are therefore treated as writes unless told otherwise:
 - `/import` accepts `read_only: ["get_weather", …]` per tool reference;
-- the marking is stored as `extra.mcp_annotations.readOnlyHint` and can be edited on the store tool.
+- the marking is stored in `extra.rossoctl.read_only` and can be changed with `/refresh`.
 
 #### 4.2.6 Routes
 
 | Route | Permission | Behavior |
 |---|---|---|
 | `GET /plugins/rossoctl-tools/tools?namespace=` | `tools:list` | Pass-through of rossoctl's `GET /tools`, for a picker in the store UI |
-| `POST /plugins/rossoctl-tools/import` | `tools:create` | `{namespace, tools: [{name, gateway_prefix?, read_only?: [str]}], skill?: {name, description, instructions?, tags?}, tags?}`. For each rossoctl tool: `GET /tools/{ns}/{name}` (existence and port), then `/connect`. Creates one store tool per MCP tool. On a name collision with a tool of another rossoctl tool, the new tool is named `<tool>__<name>`. Optionally creates the skill, with `instructions` as a `file:SKILL.md` snippet. |
+| `POST /plugins/rossoctl-tools/import` | `tools:create` | `{namespace, tools: [{name, gateway_prefix?, read_only?: [str]}], skill?: {name, description, instructions?, tags?}, tags?}`. For each rossoctl tool: `GET /tools/{ns}/{name}` (existence and port), then `/connect`. Creates one proxy **code** tool per MCP tool (§4.2.2). On a name collision with a tool of another rossoctl tool, the new tool is named `<tool>__<name>`. Optionally creates the skill, with `instructions` as the first `file:SKILL.md` snippet, then the two generated snippets (§4.2.5). |
 | `POST /plugins/rossoctl-tools/check` | `tools:list` | `{skill? , tool_uuids?, namespaces?: [str]}`. **Schema drift** via `/connect`. **Pre-flight (G4)** for each namespace (default: the import namespace) and each rossoctl tool: `present`, `ready` (`readyStatus`), `port` and `port_matches`. No writes. |
-| `POST /plugins/rossoctl-tools/resync` | `tools:create` | A new tool version (same name, new uuid) for each tool whose schema drifted or whose import-namespace port changed, plus a new skill version. |
+| `POST /plugins/rossoctl-tools/resync` | `tools:create` | A new tool version (same name, new uuid, regenerated module) for each tool whose schema drifted, whose import-namespace port changed, or whose `generator_version` is old; regenerated snippets; a new skill version. |
+| `POST /plugins/rossoctl-tools/refresh` | `skills:create` | `{skill, read_only?: [str]}`. Regenerates the two snippets from the skill's current proxy tools; a new skill version. |
+| `POST /plugins/rossoctl-tools/adopt` | `tools:update` | `{skill}`. Restores `extra.rossoctl` and the tags of re-imported proxy tools from their embedded spec. |
 | `POST /plugins/rossoctl-tools/promote`, `GET …/promote/{id}`, `GET …/bundles/{digest}`, `POST …/promote/gc` | see §13 | stage 2 |
 
 ### 4.3 Behavior without the plugin
 
+Everything the plugin created is an ordinary store object, so a store without the plugin keeps working with it:
+
 | Situation | Behavior without `rossoctl-tools` installed or active |
 |---|---|
 | Store start, APIs, UI | Unchanged |
-| Export of any skill | Byte-identical to today's, including skills with rossoctl-backed tools: those get today's stub |
-| Execute or vMCP on a rossoctl-backed tool | 422 naming the missing provider |
-| Create or update such a tool | Accepted, with the generic shape check only |
-| Import of a package that contains `rossoctl-tools.json` | Today's rules: the JSON becomes a document snippet and the scripts become code tools |
-| `/plugins/rossoctl-tools/*` | 404 |
+| Export of a skill with proxy tools | Unchanged: the proxies and the two snippets are exported, and agents use them as before |
+| Execute or vMCP on a proxy tool | Works, as a code tool. With `ROSSOCTL_BACKEND_URL` still in the store's environment (local mode) it goes through `/invoke`; otherwise it calls the tool directly. |
+| Import of a package that contains proxies | Core's normal import: working code tools and snippets |
+| `/plugins/rossoctl-tools/*` (import, check, resync, refresh, adopt, promote) | 404 |
 
 ### 4.4 Store work summary
 
 | # | Item | Layer | Size |
 |---|---|---|---|
-| C1 | `isError` fix | core | S |
-| C2 | Provider hook: shape validation, registry, execute dispatch, 422, `export_module`, npx cache key | core | M |
-| C3 | Contribution and claim hooks, generated-section markers, kept frontmatter `metadata` | core | S |
-| S1 | Plugin: backend client and credential, provider, proxy generator, package contents, claimer, `/tools`, `/import`, `/check` (drift and pre-flight), `/resync` | plugin | M |
-| S2 | Docs: plugin README, the demo guide, the core env var doc (none new in core) | plugin and docs | S |
+| C1 | `isError` fix (independent) | core | S |
+| S1 | Plugin: backend client and credential, proxy generator (function + CLI, store and agent paths), proxy code tools, the two snippets, `/tools`, `/import`, `/check` (drift and pre-flight), `/resync`, `/refresh`, `/adopt` | plugin | M |
+| S2 | Docs: plugin README, the demo guide | plugin and docs | S |
 | S3 | Stage 2: `/promote`, bundle route, GC, runner image (§13) | plugin | M |
 
 ### 4.5 Deployment of the store in rossoctl, with existing chart values
@@ -376,7 +371,7 @@ See §6. No chart change is needed.
 | r4 item (dropped) | What it gave | r5 replacement (no rossoctl change) | What is lost |
 |---|---|---|---|
 | R1 `toolSkills` flag | A gate for R2–R5 | Not needed. The plugin is gated by `ROSSOCTL_BACKEND_URL` and the store's plugin config. | — |
-| R2 `rossoctl.io/required-tools` on skill ConfigMaps | rossoctl knew a skill's tools | The dependency lives in the package (frontmatter, `rossoctl-tools.json`) and is queried through the plugin's `/check` | rossoctl itself cannot show or act on it |
+| R2 `rossoctl.io/required-tools` on skill ConfigMaps | rossoctl knew a skill's tools | The dependency lives in the package (`rossoctl-tools.json`, the Tools section) and is queried through the plugin's `/check` | rossoctl itself cannot show or act on it |
 | R3 agent-create validation and warnings | A warning, or a 422, for a missing tool | `/check` with `namespaces` before creating the agent; exit code 3 at run time, naming the tool | No automatic check inside rossoctl's agent create |
 | R3 URL injection | The real Service port in the pod | Resolution step 3, the import port, plus `/check`'s `port_matches` and `/resync`; or a manual `ROSSOCTL_TOOL_<TOOL>_URL` in the agent's `envVars` | A port change needs a resync before agents pick it up |
 | R4 automatic AuthBridge routes | Per-agent outbound routes | The existing `outboundRoutes` field at agent create, when tools need token exchange; the default passthrough needs none | Manual |
@@ -384,7 +379,7 @@ See §6. No chart change is needed.
 | R6 Helm plugin config and store credential | Automatic setup | Existing values: `skillberryStore.image`, `skillberryStore.extraEnv`, `apiOAuthSecret` (§6.2) | One values file to write |
 | R7 installer flag, reservation-tool script | Demo convenience | The console's existing Reservation Tool preset (`ImportToolPage.tsx:64`), or `kubectl apply` | — |
 | R9 rossoctl docs and e2e | — | The demo guide and the e2e live in the store repo | — |
-| R10 `/connect` annotations | Read-only tools detected automatically | The `read_only` option on `/import` (§4.2.5) | A manual list |
+| R10 `/connect` annotations | Read-only tools detected automatically | The `read_only` option on `/import` and `/refresh` (§4.2.5) | A manual list |
 
 ---
 
@@ -449,6 +444,8 @@ skillberryStore:
       value: http://rossoctl-backend.rossoctl-system.svc.cluster.local:8000
     - name: ROSSOCTL_ALLOWED_NAMESPACES
       value: "team1,team2"
+    - name: EXECUTE_PYTHON_LOCALLY        # store-side calls through rossoctl /invoke (D7)
+      value: "true"
     # Only with ui.auth.enabled=true. Reuses the existing api-oauth-secret job's
     # client (rossoctl-api, realm role rossoctl-operator):
     - {name: ROSSOCTL_CLIENT_ID,      valueFrom: {secretKeyRef: {name: rossoctl-api-oauth-secret, key: CLIENT_ID}}}
@@ -464,6 +461,7 @@ apiOAuthSecret:
 - **Plugin enablement.** The chart sets no `SKILLBERRY_PLUGIN_CONFIG`, so every installed plugin is enabled (`plugins/config.py`), and `rossoctl-tools` activates because `ROSSOCTL_BACKEND_URL` is set. To disable other plugins, mount a plugin config through the same `extraEnv` (as a ConfigMap reference), or build an image with fewer plugin extras.
 - **The credential.** The `apiOAuthSecret` job writes its Secret to the release namespace (`templates/api-oauth-secret-job.yaml`, `TARGET_NAMESPACE`), which is the store's namespace. To use a separate identity, an administrator creates another client-credentials client in Keycloak and a Secret by hand. The values above then name that Secret instead.
 - **Store image.** Publishing a `-full` image (`make docker-build-full`) is part of the store's release checklist.
+- **Execution mode.** For store-side calls to go through rossoctl, add `EXECUTE_PYTHON_LOCALLY: "true"` to `extraEnv` (D7). Without it the store runs code tools in Docker, and proxy tools call the tool directly, which needs Docker in the store pod and network access to the tool namespaces.
 
 ### 6.3 Kind
 
@@ -488,12 +486,14 @@ The same values apply. The store pod runs under the restricted SCC with no chang
 - **The store holds an operator credential.**
   - It lives in a Secret mounted only into the store pod, is never written to store objects or exports, and the token is cached in memory only.
   - Reusing `rossoctl-api` gives the store the same rights as the API client. A dedicated client limits blast radius and audit confusion; §11 Q3.
-- **The exported zip holds no secrets.** The generator refuses credential-like keys.
+- **The exported zip holds no secrets.** The generator refuses credential-like keys, and the script reads the store's credential only from the environment of the process that runs it (§4.2.3).
+- **Local execution runs proxy code in the store process.** This is core's existing local mode, which runs every code tool with the store's privileges; proxy tools are no different. The proxy is plugin-generated, but it is an editable code tool: anyone with `tools:update` can change what it does with the store's credential. In `disabled` ACL mode that is anyone who can call the store, the same exposure every code tool already has in local mode.
+- **Automatic tool runners.** Store plugins that execute code tools on their own (the evaluator, DAST with `DAST_LIVE=1`) would call live rossoctl tools, including writes. The plugin tags proxies `rossoctl-proxy`; operators should exclude that tag from automatic runs, or keep those plugins off in clusters where tools have side effects.
 - **Write tools.**
   - The Tools section asks the model to confirm before running a tool that is not read-only.
   - This is guidance. Enforcement belongs to AuthBridge (`ibac`, `opa`) or to the tool.
 - **Plugin SSRF.** Only the configured backend and token endpoint are contacted, and only with validated names.
-- **Store-side execution goes through rossoctl.**
+- **Store-side execution goes through rossoctl** (local mode).
   - In `disabled` store mode, anyone who can call the store can execute a rossoctl tool with the store's identity.
   - Keep `ROSSOCTL_ALLOWED_NAMESPACES` tight. §8 closes this.
 - **Stage 2 bundles are code.**
@@ -513,34 +513,29 @@ The example tools emit OTEL spans, so Phoenix shows `execute_tool` spans for pro
 
 ### 7.4 Testing
 
-**Store core** (`make test`, plus a CI job with no plugins installed):
-- the C1 error mapping;
-- the C2 validator matrix, registry gating, the 422, `export_module` dispatch and the npx cache key;
-- the C3 hooks: collisions, failure naming the plugin, marker stripping, metadata round trip;
-- a guard that core contains no `rossoctl` or `svc.cluster.local`;
-- golden exports byte-identical with no provider active.
+**Store core:** C1's error mapping, and a guard that core contains no `rossoctl` or `svc.cluster.local`. Core needs no other test for this feature; existing golden export tests must stay unchanged.
 
 **Plugin unit tests:**
 - the backend client against a fake rossoctl backend (`httpx` transport): bearer token, refresh on 401, only the backend host contacted;
-- the provider;
 - generator safety (hostile input through `ast.parse` and execution);
-- argument parsing for every JSON type;
-- JSON and SSE response frames;
-- resolution order;
-- `rossoctl-tools.json`, the Tools section, the claimer round trip;
-- `/check`: drift and pre-flight per namespace, including port mismatch;
-- `/resync`.
+- the generated module as **core sees it**:
+  - core's `extract_function_and_imports` finds one function with the schema's parameters;
+  - `generate_wrapper_any_types` wraps and runs it;
+  - `extract_python_functions` (re-import) finds exactly one tool;
+  - `detect_tool_dependencies` finds none;
+- argument parsing for every JSON type, JSON and SSE response frames, resolution order (store path first when `ROSSOCTL_BACKEND_URL` is set);
+- the two snippets: content, ordering in the exported SKILL.md, refresh;
+- `/check` (drift and pre-flight per namespace, including port mismatch), `/resync`, `/adopt`.
 
 **Plugin e2e** (marker `integration`):
-- (a) Generated proxies run with `python3 -I` against a FastMCP `streamable-http` fixture, asserting exit codes 0, 1, 2 and 3.
-- (b) The full store with the plugin against the fake backend: `/import`, Execute, export, re-import.
-- (c) The **local cluster e2e** (`plugins/skillberry-plugin-rossoctl-tools/tests/cluster/run-local-demo.sh`): rossoctl from `main` (unchanged) on a kwok control plane, the example tools, and the store from source. It runs every step of §9 that does not need an LLM.
+- (a) Generated proxies run as CLIs with `python3 -I` against a FastMCP `streamable-http` fixture, asserting exit codes 0, 1, 2 and 3.
+- (b) The full store with the plugin, against the fake backend, **in local execution mode**: `/import`, then `POST /tools/{id}/execute` goes through the fake `/invoke`; export, re-import, `/adopt`.
+- (c) The same store **in Docker mode**, or with `ROSSOCTL_BACKEND_URL` unset in the execution environment: Execute calls the FastMCP fixture directly.
+- (d) The **local cluster e2e** (`plugins/skillberry-plugin-rossoctl-tools/tests/cluster/run-local-demo.sh`): rossoctl from `main` (unchanged) on a kwok control plane, the example tools, and the store from source. It runs every step of §9 that does not need an LLM.
 
 **Kind e2e** (manual or nightly, in the store repo): §9 without an LLM, with `kubectl exec` into the agent pod to run a proxy.
 
 **rossoctl: none.**
-
----
 
 ## 8. Future: store ACL in `delegated` mode
 
@@ -548,7 +543,8 @@ The agent-side proxy path is unchanged: it never talks to the store.
 
 - **Placement.** Imported tools and the skill are tagged `namespace:<ns>`. Sharing a skill to another namespace is a guarded tag write. `/check` warns when a skill's namespaces are not covered by its tools' namespaces.
 - **Identity toward rossoctl.**
-  - User-initiated plugin calls (`/import`, `/check`, `/resync`, `/promote`, Execute) forward the caller's Keycloak bearer (`ROSSOCTL_FORWARD_CALLER_TOKEN=true`). rossoctl then authorizes and audits the user. **rossoctl needs no change:** it already validates Keycloak JWTs.
+  - User-initiated plugin routes (`/import`, `/check`, `/resync`, `/promote`) forward the caller's Keycloak bearer (`ROSSOCTL_FORWARD_CALLER_TOKEN=true`). rossoctl then authorizes and audits the user. **rossoctl needs no change:** it already validates Keycloak JWTs.
+  - Store-side Execute of a proxy tool runs inside core's executor, which does not hand the caller's token to the code. It therefore uses the service credential. Forwarding the caller's identity to code tools would be a generic core feature (useful to any code tool that calls an API), and needs its own P-2 justification when delegated mode is implemented.
   - Autonomous runs (evaluator, dreaming) use the plugin owner's identity, which is the service credential.
 - **Store-side execution** requires `execute` on the tool, scoped to its namespace.
 - **Stage 2 bundle fetch.** The runner fetches the bundle with the pod's ServiceAccount token, once the store verifies Kubernetes tokens (integration doc, stage 3). Until then, the bundle URL is digest-addressed (§13.3).
@@ -580,13 +576,13 @@ The agent-side proxy path is unchanged: it never talks to the store.
 
 ### 9.3 The skill
 
-Six store tools, all with `endpoint.provider: rossoctl`, plus one instructions snippet tagged `file:SKILL.md`, and the skill `night-out-planner`, tagged `rossoctl-approved`. The import marks `get_weather`, `search_restaurants`, `check_availability` and `list_reservations` read-only.
+Six proxy code tools; three snippets (the author's instructions and the generated Tools section, both tagged `file:SKILL.md`, and `file:rossoctl-tools.json`); and the skill `night-out-planner`, tagged `rossoctl-approved`. The import marks `get_weather`, `search_restaurants`, `check_availability` and `list_reservations` read-only.
 
 The exported package:
 
 ```
 night-out-planner/
-  SKILL.md                  # frontmatter (rossoctl-requires-tools) + instructions + generated Tools section
+  SKILL.md                  # frontmatter + instructions + the generated Tools section (a snippet)
   rossoctl-tools.json
   scripts/{get_weather,search_restaurants,check_availability,place_reservation,cancel_reservation,list_reservations}.py
 ```
@@ -598,7 +594,7 @@ The instructions are in [`docs/demos/rossoctl-night-out-planner/instructions.md`
 Setup: rossoctl from `main`, unchanged, installed with the values of §6.2 and `--with-examples`; plus `reservation-tool` in `team1`.
 
 1. **Import.** `POST /plugins/rossoctl-tools/import` with `team1`, both tools, the read-only list and the skill. You get six tools.
-2. **Store-side check.** Execute `search_restaurants {"city": "Boston", "cuisine": "Italian"}`. It returns Trattoria di Mare. The backend log shows `/invoke`.
+2. **Store-side check.** Execute `search_restaurants {"city": "Boston", "cuisine": "Italian"}`. It returns Trattoria di Mare. The store runs it as a code tool, and the backend log shows the `/invoke` it made (local execution mode).
 3. **Pre-flight.** `POST /plugins/rossoctl-tools/check {"skill": "night-out-planner", "namespaces": ["team1", "team2"]}`:
    - `team1`: both tools present, ready, ports match;
    - `team2`: `reservation-tool` is missing.
@@ -626,8 +622,8 @@ The user guide is [`docs/demos/rossoctl-night-out-planner.md`](../demos/rossoctl
 
 | Milestone | Contents | Exit criterion |
 |---|---|---|
-| 1.M1 Core | C1–C3 and the no-plugin CI job | Golden exports unchanged with no provider; the core-only suite green; no MCP runtime dependency added; the no-rossoctl guard passes |
-| 1.M2 Plugin | S1, S2 | Against the fake backend: import, check (drift, pre-flight, port), resync, Execute, vMCP, export and re-import work, with the bearer refreshed and no other host contacted. The §4.3 behaviors hold with the plugin disabled. |
+| 1.M1 Core | C1 (independent), the no-rossoctl guard, the no-plugin CI job | Golden exports unchanged; the core-only suite green |
+| 1.M2 Plugin | S1, S2 | Against the fake backend: import, check (drift, pre-flight, port), resync, refresh, Execute (local mode through `/invoke`; Docker mode direct), vMCP, export, re-import and adopt work, with the bearer refreshed and no other host contacted. The §4.3 behaviors hold with the plugin disabled. |
 | 1.M3 Agents | The examples change (§5.3), or store-published agent images | `claude_agent` runs a skill script in a pod |
 | 1.M4 End to end | The local cluster e2e with **rossoctl `main`**; a Kind run of §9.4 | Demo steps 1–8 pass, with no rossoctl diff |
 
@@ -642,7 +638,9 @@ The user guide is [`docs/demos/rossoctl-night-out-planner.md`](../demos/rossoctl
 ## 11. Open questions
 
 1. **Name collisions.** The proposal is to prefix on collision only (`<tool>__<name>`). The alternative is always to prefix.
-2. **Read-only marking without `/connect` annotations.** The proposal is the explicit `read_only` list on import. The alternative is a name heuristic (`get_`, `list_`, `search_`, `check_`) as a default the user confirms.
+2. **Read-only marking without `/connect` annotations.** The proposal is the explicit `read_only` list on import and refresh. The alternative is a name heuristic (`get_`, `list_`, `search_`, `check_`) as a default the user confirms.
+8. **Docker execution mode** (D7). Proxies in Docker mode call the tool directly, bypassing rossoctl's `/invoke`. The proposal is to document local mode as the supported mode for store-side execution of proxies. A generic core option to pass selected environment variables into the execution container would close the gap, and needs its own P-2 justification.
+9. **Automatic runners.** Should the evaluator and DAST skip `rossoctl-proxy` tools by default? That is a change to those plugins, not to core.
 3. **Store credential.** Reuse `rossoctl-api` (zero setup), or an administrator-created dedicated client (better audit)? The proposal is the dedicated client for production and reuse for demos.
 4. **`generic_agent` exec tool.** Is an in-pod script runner acceptable in the generic example?
 5. **Runner dependencies (stage 2).** Store tools declare no Python package requirements (`ToolSchema.dependencies` lists other *tools*). The runner offers the standard library plus a fixed, documented set of packages. Should the store add a requirements field? That would be a core change, and it needs its own P-2 justification.
@@ -711,7 +709,7 @@ r4 put the runner and a new `POST /tools/from-store` endpoint in rossoctl. That 
 }
 ```
 
-- **Code tools only.** `mcp` tools are skipped.
+- **Code tools only, excluding proxies.** `mcp` tools, and proxy code tools (tag `rossoctl-proxy`, or `extra.rossoctl` set), are skipped: they already run in rossoctl.
 - **Pinned.** The bundle is uuid-pinned, and its digest is the URL. Later edits in the store produce a new bundle.
 - **Limit:** 900 KiB.
 - **Execution semantics**, the store's own:
@@ -747,8 +745,8 @@ r4 put the runner and a new `POST /tools/from-store` endpoint in rossoctl. That 
 
    If the tool already exists (409) with the same digest, continue; the call is idempotent.
 3. Poll `GET /tools/{ns}/<name>-<d8>` until `readyStatus` is `Ready`, or abort on `Failed` or a timeout (`ROSSOCTL_PROMOTE_TIMEOUT`, default 300 s).
-4. Run `/import` on the new tool, with `promoted_from` and `bundle_digest` recorded in each endpoint.
-5. Create a new skill version in which each promoted code tool is replaced by its proxy.
+4. Run `/import` on the new tool, with `promoted_from` and `bundle_digest` recorded in each proxy's `extra.rossoctl`.
+5. Create a new skill version in which each promoted code tool is replaced by its proxy code tool, and regenerate the two snippets.
 
 `GET …/promote/{id}` reports `{state: bundling|deploying|waiting|importing|done|failed, detail, tool?, skill_uuid?}`. The state is kept in memory, and the operation is idempotent to re-run.
 
@@ -785,7 +783,9 @@ Where §1–§13 and this section differ, this section wins. Both yield to §0.1
 | # | Decision |
 |---|---|
 | D1 | rossoctl is not changed in any stage (P-1). Any rossoctl change needs a written P-1 justification and the owner's approval first. |
-| D2 | Core changes are exactly C1–C3 (P-2). Anything else goes in the plugin. A new core change needs a written P-2 justification first. |
+| D2 | This feature needs no core change (P-2). C1 is an independent bug fix. Anything a new requirement would add to core needs a written P-2 justification and approval first. |
+| D7 | Store-side execution of proxy tools is supported in core's **local** execution mode (`EXECUTE_PYTHON_LOCALLY=true`), where calls go through `/invoke`. In Docker mode the proxy calls the tool directly; that is documented, not prevented. |
+| D8 | A rossoctl tool is stored as a **code** tool whose module is the proxy. Plugin metadata lives in `extra.rossoctl`; nothing else in the tool is special. |
 | D3 | Core never contains `rossoctl` or `svc.cluster.local` outside tests (enforced by a test). |
 | D4 | The store ACL is assumed `disabled`. Write the plugin so that `delegated` only changes which token is sent. |
 | D5 | Stage 2 deploys only through rossoctl's existing `POST /api/v1/tools`, with the store-owned runner image. |
@@ -805,58 +805,23 @@ Store rules:
 - finish with `make lint`, and apply what it recommends;
 - commit at each significant step.
 
-### 14.3 Core interfaces
+### 14.3 Core
 
-**C1** — `modules/file_executor.py`: `mcp_call_result_to_dict(result)` → `{"error": text}` when `isError`, else `{"return value": joined_text, "structured"?: …}`.
+**C1** — `modules/file_executor.py`: `mcp_call_result_to_dict(result)` → `{"error": text}` when `isError`, else `{"return value": joined_text, "structured"?: …}`. Independent of the feature.
 
-**C2** — `modules/tool_providers.py`:
+**Guard** — `tests/test_core_has_no_rossoctl.py`.
 
-```python
-@dataclass
-class CallResult: text: str; is_error: bool = False; structured: Any = None
-@dataclass
-class ProviderContext: env_id: Optional[str] = None; bearer: Optional[str] = None
-
-class ToolProvider(Protocol):
-    name: str
-    export_version: str
-    def validate(self, endpoint: dict) -> None: ...
-    async def call_tool(self, packaging_params: dict, arguments: dict, ctx: ProviderContext) -> CallResult: ...
-    def export_module(self, tool: dict) -> Optional[str]: ...
-
-def register_provider(provider, owner_slug) -> None
-def get_provider(name) -> Optional[ToolProvider]          # None if unknown or owner inactive
-def set_active_resolver(resolver) -> None                 # injected by PluginLoader
-def validate_mcp_packaging(packaging_format, packaging_params) -> None
-async def execute_via_provider(tool, parameters, ctx) -> dict   # FileExecutor-shaped result
-def export_module_for(tool) -> Optional[str]              # provider.export_module, or None
-def export_cache_token(tools) -> tuple                    # sorted (name, export_version) of active backing providers
-```
-
-Wiring:
-- **Execution:** `ToolsService.execute` and vMCP `_HandlerToolSource.execute` dispatch tools that have `endpoint`. `ToolProviderUnavailable` maps to 422.
-- **Validation:** schema and `ToolsService.create`/`update` call `validate_mcp_packaging`.
-- **Export:** `SkillsService.gather_export_inputs` replaces the module with `export_module_for(tool)` when that returns text.
-- **npx:** `tools/publish.py` `cache_key` appends `export_cache_token(tools)`.
-- **Plugins:** `PluginBase.register_tool_provider`; `PluginLoader` registers providers and injects the resolver.
-
-**C3** — `tools/anthropic/contributions.py`:
-- `ExportContribution(files, metadata, skill_md_section)`, `ExportContributor`;
-- `ImportClaim(claimed_paths, tools)`, `ImportClaimer`;
-- registration through `PluginBase.register_export_contributor` and `register_import_claimer`;
-- `ContributionError` naming the plugin.
-
-The exporter merges contributions after core content; the importer offers files to claimers first (`extras=` on `import_from_anthropic_skill`). Contributed sections are wrapped in the generated markers. `extra.frontmatter_metadata` is kept.
+Nothing else. The plugin uses existing `PluginBase` and `StoreAPI` methods only.
 
 ### 14.4 Plugin interfaces
 
 ```
 plugins/skillberry-plugin-rossoctl-tools/
   src/skillberry_plugin_rossoctl_tools/
-    plugin.py       backend.py     provider.py
-    proxy.py        # the streamable-HTTP proxy generator (moved from core r4 mcp_proxy.py)
-    export.py       # contributor: frontmatter, rossoctl-tools.json, Tools section
-    importer.py     # claimer
+    plugin.py       backend.py
+    proxy.py        # the generator: one function per tool, CLI runtime, store and agent paths
+    tools.py        # create/regenerate proxy code tools (extra.rossoctl), adopt
+    snippets.py     # rossoctl-tools.json and the Tools section snippets
     check.py        # drift and per-namespace pre-flight
     promote.py      bundle.py      # stage 2
   runner/           # stage 2: Dockerfile + skillberry_tool_runner
@@ -865,8 +830,9 @@ plugins/skillberry-plugin-rossoctl-tools/
   tests/  (unit, e2e, cluster/run-local-demo.sh)
 ```
 
-- **Provider:** `RossoctlProvider.export_module(tool)` returns `proxy.render(tool, steps(pp))`, unless `ROSSOCTL_PROXY_EXPORT=false`. `export_version = proxy.GENERATOR_VERSION`.
-- **Contributor:** for skills with rossoctl tools, it returns `rossoctl-tools.json`, `metadata.rossoctl-requires-tools`, and a SKILL.md section built from `proxy.render_tools_section(tools)` plus the rossoctl note.
+- **Proxy:** `proxy.render(meta, schema, description) -> str` produces the module. `proxy.extract_spec(source)` reads the embedded spec without executing it (for `/adopt`).
+- **Tools:** `create_proxy_tool(...)` calls `store.create_tool(data, module_content, module_filename)`; regeneration creates a new version (same name, new uuid).
+- **Snippets:** `render_tools_json(tools)` and `render_tools_section(tools)`; `ensure_snippets(skill)` creates or replaces them and returns the new `snippet_uuids` order.
 - **Routes:** as in §4.2.6. `/check` returns:
 
   ```json
@@ -874,7 +840,7 @@ plugins/skillberry-plugin-rossoctl-tools/
    "namespaces": {"team1": [{"tool", "present", "ready", "port", "port_matches"}]}}
   ```
 
-- **`/import`:** accepts `read_only` per tool reference, which sets `extra.mcp_annotations.readOnlyHint` for the named MCP tools.
+- **`/import`:** accepts `read_only` per tool reference, which sets `extra.rossoctl.read_only` for the named MCP tools.
 
 ### 14.5 rossoctl
 
@@ -883,15 +849,8 @@ Nothing to implement. The local cluster e2e runs rossoctl's backend from `main`.
 ### 14.6 Tests that define "done"
 
 **Stage 1:**
-- **Core, with no plugins installed:**
-  - `tests/modules/test_tool_providers.py`: validator matrix, gating, 422, vMCP error, `export_module` dispatch, cache token;
-  - `tests/tools/test_contributions.py`;
-  - `tests/test_core_has_no_rossoctl.py`;
-  - golden export tests unchanged.
-- **Plugin:**
-  - unit tests (backend, provider, proxy, export, claimer, check, resync);
-  - e2e (a) and (b) of §7.4;
-  - the cluster e2e (c) against rossoctl `main`.
+- **Core:** C1's tests; `tests/test_core_has_no_rossoctl.py`; golden export tests unchanged; the suite green with no plugins installed.
+- **Plugin:** the unit tests and e2e (a)–(c) of §7.4; the cluster e2e (d) against rossoctl `main`.
 - **Examples:** unit tests for skill linking and `run_skill_script`.
 
 **Stage 2:**
@@ -904,8 +863,8 @@ Nothing to implement. The local cluster e2e runs rossoctl's backend from `main`.
 
 ### 14.7 Order of work
 
-1. Core C1–C3 and the no-plugin CI job (§15 lists what to change from r4).
-2. Plugin: proxy generator, provider `export_module`, contributor (with the Tools section), claimer, `/check` with pre-flight, `/import` with `read_only`.
+1. Core: revert everything except C1 and the guard; keep the no-plugin CI job (§15).
+2. Plugin: the proxy generator (function + CLI), proxy code tools, snippets, `/import` with `read_only`, `/check` with pre-flight, `/resync`, `/refresh`, `/adopt`.
 3. The examples change (§5.3).
 4. The cluster e2e and the demo guide against rossoctl `main`. Then `make test` and `make lint`.
 5. Stage 2: the bundle, the runner, `/promote`, GC, the demo extension.
@@ -926,31 +885,31 @@ The branches built for r4 change as follows.
 
 Reset the branch to `main`, or delete it. Nothing replaces these in rossoctl.
 
-**skillberry-store, core:**
+**skillberry-store, core:** revert to `main` except C1 and the guard.
 
-| r4 code | r5 action |
+| r4 code | r6 action |
 |---|---|
-| `modules/file_executor.py` (C1) | Keep |
-| `modules/tool_providers.py` | Keep the registry, validator, dispatch and 422. Remove `list_tools`/`proxy_resolution` from the protocol. Add `export_version`, `export_module`, `export_module_for` and `export_cache_token`. |
-| `tools/anthropic/mcp_proxy.py` | **Move to the plugin** as `proxy.py`. Core keeps no generator. |
-| `tools/anthropic/exporter.py` (proxy wiring, Tools section, placement) | Replace `apply_mcp_proxies` with `export_module_for`. Remove the core Tools section and `extra.tools_section`; the plugin's contribution supplies the section. Keep the contribution and generated-marker code (C3). |
-| `services/skills_service.py` | `gather_export_inputs` uses `export_module_for`. Keep the claimer wiring and `frontmatter_metadata`. |
-| `tools/publish.py` | Replace `MCP_PROXY_GENERATOR_VERSION` and `_active_proxy_providers` with `export_cache_token`. |
-| `services/field_selection.py`, `fast_api/skills_api.py` (computed fields) | **Remove** |
-| `docs/config-env-vars.md` (`SBS_MCP_PROXY_EXPORT`, `MCP_PROXY_*`) | Move to the plugin README as `ROSSOCTL_PROXY_EXPORT`, and the proxy's run-time variables |
-| `tests/tools/test_mcp_proxy.py`, `tests/e2e/test_mcp_proxy_export.py` | Move to the plugin's tests. Core keeps a test that a provider's `export_module` is used. |
-| `tests/services/test_computed_fields.py` | Remove |
-| `CHANGELOG.md` | Keep C1. Add C2 and C3 entries. |
+| `modules/file_executor.py` (C1), `CHANGELOG.md` C1 entry | Keep (independent fix) |
+| `tests/test_core_has_no_rossoctl.py`, the no-plugin CI job | Keep |
+| `modules/tool_providers.py`, `services/exceptions.py` (`ToolProviderUnavailable`), provider wiring in `schemas/tool_schema.py`, `services/tools_service.py`, `fast_api/tools_api.py`, `modules/vmcp_server.py`, `plugins/base.py`, `plugins/loader.py` | **Revert** |
+| `tools/anthropic/mcp_proxy.py` and its core tests | **Move to the plugin** as `proxy.py`, reworked to emit one top-level function plus the CLI runtime |
+| `tools/anthropic/contributions.py`, exporter and importer hook wiring, generated markers, `frontmatter_metadata` | **Revert** (the frontmatter fix may be proposed separately) |
+| `tools/publish.py` cache-key change | **Revert** |
+| `services/field_selection.py`, `fast_api/skills_api.py` (computed fields) and their tests | **Revert** |
+| `docs/config-env-vars.md` proxy variables | Move to the plugin README |
 
 **skillberry-store, plugin:**
-- add `proxy.py`, the provider's `export_module` and `export_version`, and the Tools section in the contributor;
-- add `/check` pre-flight and `port_matches`;
-- extend `/resync` to port changes;
+- the importer creates **code** tools whose module is the proxy, with `extra.rossoctl`;
+- the provider, contributor, claimer and computed field are removed;
+- `snippets.py` creates and refreshes the JSON and Tools-section snippets;
+- add `/check` pre-flight and `port_matches`, the port case of `/resync`, `/refresh`, `/adopt`;
 - add `read_only` on `/import`;
-- remove the computed-field registration;
 - add `deploy/reservation-tool.yaml`;
 - move the demo harness to `tests/cluster/`, running rossoctl `main`.
 
-**Demo guide (`docs/demos/rossoctl-night-out-planner.md`):** rewrite to use the values of §6.2, with no rossoctl branch. Remove the steps that showed rossoctl's flag, annotations, cards and injected env; add the `/check` pre-flight step.
+**Demo guide (`docs/demos/rossoctl-night-out-planner.md`):**
+- rewrite it to use the values of §6.2, including `EXECUTE_PYTHON_LOCALLY`, with no rossoctl branch;
+- remove the steps that showed rossoctl's flag, annotations, cards and injected env;
+- add the `/check` pre-flight step.
 
 **rossoctl/examples:** unchanged from r4 (§5.3).
