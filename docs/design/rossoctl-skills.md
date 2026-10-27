@@ -196,6 +196,369 @@ apiOAuthSecret: {enabled: true}
 
 User guide: [docs/demos/rossoctl-night-out-planner.md](../demos/rossoctl-night-out-planner.md).
 
+## 9A. Runbook: the demo end to end on a laptop with Kind (for an agent to execute)
+
+This section is written to be executed step by step by a coding agent, or by a person, on a laptop
+where this branch is checked out. Every step names its **command**, its **check**, and what to do if
+the check fails. The agent should stop at the first check it cannot make pass, and report.
+
+### R0. Ground rules for the executing agent
+
+- Work from the root of this repository (`skillberry-store`, branch `rossoctl-skills`).
+- **Do not modify rossoctl.** Clone it at `main` and use its installer as is. The demo's purpose is to
+  show that unmodified rossoctl works (D1).
+- Create everything under `~/rossoctl-demo/` (`$DEMO`). Delete nothing outside it, and nothing outside
+  the Kind cluster named `rossoctl`.
+- Redirect long command output to `$DEMO/logs/<step>.log` and print only the result line. Read a log
+  only when a check fails.
+- Never print or commit an API key. Keys go into Kubernetes Secrets only.
+- Ask the user before:
+  - deleting an existing Kind cluster named `rossoctl`;
+  - stopping a process that holds port 8080.
+
+### R1. Prerequisites
+
+| Tool | Check | Notes |
+|---|---|---|
+| Docker (or Podman) | `docker info >/dev/null && echo ok` | 8 GB RAM and 4 CPUs for the Docker VM |
+| Kind ≥ 0.20 | `kind version` | |
+| kubectl, Helm ≥ 3.12 | `kubectl version --client; helm version --short` | |
+| Python 3.11+, `uv`, `jq`, `git`, `curl` | `python3 --version; uv --version; jq --version` | |
+| Port 8080 free | `! lsof -iTCP:8080 -sTCP:LISTEN` | rossoctl's gateway listens there |
+| An LLM for the agent | see R6 | Ollama on the laptop, or an OpenAI-compatible key |
+
+```bash
+export DEMO=~/rossoctl-demo; mkdir -p $DEMO/logs
+export STORE_REPO=$(git rev-parse --show-toplevel)       # this checkout
+git -C $STORE_REPO rev-parse --abbrev-ref HEAD            # expect: rossoctl-skills
+```
+
+### R2. Build a store image with the plugin
+
+```bash
+cd $STORE_REPO
+python3 -m venv .venv && source .venv/bin/activate
+make docker-build-full CUSTOM_TAG=rossoctl-tools > $DEMO/logs/r2-build.log 2>&1; echo "exit $?"
+docker images --format '{{.Repository}}:{{.Tag}}' | grep 'skillberry-store:rossoctl-tools'
+```
+
+**Check:** one line, `ghcr.io/skillberry-ai/skillberry-store:rossoctl-tools`.
+
+**If it fails:** the log ends with the failing build step.
+- An SSH or git-subtree error in `skillberry-common` means the make wrapper needs `git` access to `github.com`; run `ssh -T git@github.com` first.
+- If `make` itself is the problem, build directly:
+
+  ```bash
+  docker build --build-arg PLUGIN_EXTRAS=plugins-all -t ghcr.io/skillberry-ai/skillberry-store:rossoctl-tools .
+  ```
+
+Confirm the image contains the plugin:
+
+```bash
+docker run --rm --entrypoint sh ghcr.io/skillberry-ai/skillberry-store:rossoctl-tools -c \
+  '.venv/bin/python -c "import skillberry_plugin_rossoctl_tools.plugin as p; print(p.SLUG)"'
+```
+
+**Check:** prints `rossoctl-tools`.
+
+### R3. Get rossoctl `main` and rossoctl/examples
+
+```bash
+git clone --depth 1 https://github.com/rossoctl/rossoctl.git $DEMO/rossoctl
+git clone --depth 1 https://github.com/rossoctl/examples.git $DEMO/rossoctl-examples
+git -C $DEMO/rossoctl log -1 --oneline
+```
+
+**Check:** both clones exist. Record the rossoctl commit for the report.
+
+### R4. Values for the store (existing chart keys only)
+
+```bash
+cat > $DEMO/store-values.yaml <<'EOF'
+skillberryStore:
+  image:
+    repository: ghcr.io/skillberry-ai/skillberry-store
+    tag: rossoctl-tools
+    pullPolicy: IfNotPresent
+  extraEnv:
+    - {name: ROSSOCTL_BACKEND_URL, value: "http://rossoctl-backend.rossoctl-system.svc.cluster.local:8000"}
+    - {name: ROSSOCTL_ALLOWED_NAMESPACES, value: "team1,team2"}
+    - {name: EXECUTE_PYTHON_LOCALLY, value: "true"}
+  autosync:
+    allowedTags: "rossoctl-approved"
+EOF
+```
+
+This install has no SPIRE, so UI auth and the backend's `ENABLE_AUTH` are off, and the plugin needs no
+credential. To run with auth (`--with-spire` / `--with-all`), add the three
+`ROSSOCTL_CLIENT_*`/`TOKEN_ENDPOINT` entries and `apiOAuthSecret: {enabled: true}` from §6.
+
+### R5. Create the cluster and install rossoctl
+
+```bash
+cd $DEMO/rossoctl
+kind get clusters | grep -qx rossoctl && echo "EXISTS - ask the user before deleting it"
+kind create cluster --name rossoctl > $DEMO/logs/r5-kind.log 2>&1; echo "kind exit $?"
+kind load docker-image ghcr.io/skillberry-ai/skillberry-store:rossoctl-tools --name rossoctl
+scripts/kind/setup-rossoctl.sh --skip-cluster --with-skills --with-examples \
+  --rossoctl-values $DEMO/store-values.yaml > $DEMO/logs/r5-install.log 2>&1; echo "install exit $?"
+```
+
+The installer takes about 10–15 minutes.
+- `--with-skills` deploys the store and turns on skill autosync. It also turns on the backend and the UI.
+- `--with-examples` deploys `weather-tool` (and the `weather-service` agent) in `team1`.
+
+**Checks:**
+
+```bash
+kubectl -n rossoctl-system rollout status deploy/rossoctl-backend --timeout=300s
+kubectl -n rossoctl-system rollout status deploy/skillberry-store --timeout=600s
+kubectl -n team1 rollout status deploy/weather-tool --timeout=300s
+kubectl -n rossoctl-system get deploy skillberry-store -o jsonpath='{.spec.template.spec.containers[0].image}'; echo
+curl -s http://rossoctl-ui.localtest.me:8080/api/v1/config/features | jq '{skills, externalSkills}'
+```
+
+Expect all three rollouts complete, the image `…:rossoctl-tools`, and `skills: true, externalSkills: true`.
+
+**If the store pod restarts:** run `kubectl -n rossoctl-system logs deploy/skillberry-store --tail=50`.
+- The first start can take minutes while the embedding model is downloaded.
+- A `ModuleNotFoundError` for the plugin means R2 built the wrong image.
+
+### R6. LLM for the agent
+
+Choose one and record it for the report.
+
+**Ollama** (no key):
+
+```bash
+ollama pull qwen2.5:7b          # a 7B+ model follows the tool procedure much better than 3B
+OLLAMA_HOST=0.0.0.0 ollama serve &     # leave running
+export LLM_API_BASE=http://host.docker.internal:11434/v1 LLM_MODEL=qwen2.5:7b LLM_KEY_SECRET=
+```
+
+On Linux without Docker Desktop, use `http://$(docker network inspect kind -f '{{(index .IPAM.Config 0).Gateway}}'):11434/v1`.
+
+**OpenAI-compatible:**
+
+```bash
+read -rs OPENAI_KEY && kubectl -n team1 create secret generic openai-secret --from-literal=apikey="$OPENAI_KEY"
+kubectl -n team2 create secret generic openai-secret --from-literal=apikey="$OPENAI_KEY"; unset OPENAI_KEY
+export LLM_API_BASE=https://api.openai.com/v1 LLM_MODEL=gpt-4o-mini LLM_KEY_SECRET=openai-secret
+```
+
+### R7. Deploy the reservation tool in `team1`
+
+```bash
+kubectl apply -n team1 -f $STORE_REPO/plugins/skillberry-plugin-rossoctl-tools/deploy/reservation-tool.yaml
+kubectl -n team1 rollout status deploy/reservation-tool --timeout=300s
+kubectl -n team1 get svc weather-tool-mcp reservation-tool-mcp
+```
+
+**Check:** both Services exist. The console's **Tools → Import Tool → Reservation Tool** preset is an
+equivalent alternative.
+
+### R8. Reach the store API
+
+```bash
+kubectl -n rossoctl-system port-forward svc/skillberry-store 18000:8000 > $DEMO/logs/r8-pf.log 2>&1 &
+export STORE=http://localhost:18000 ROSSOCTL=http://rossoctl-ui.localtest.me:8080
+sleep 3; curl -s $STORE/plugins/ | jq -r '.[] | select(.slug=="rossoctl-tools") | "\(.slug): \(.status)"'
+```
+
+**Check:** prints `rossoctl-tools: Ready`. If it prints nothing, the image lacks the plugin (go back
+to R2). If it prints `Disabled: set ROSSOCTL_BACKEND_URL`, R4's values were not applied: run
+`kubectl -n rossoctl-system set env deploy/skillberry-store --list`.
+
+### R9. Demo step 1: import the tools and compose the skill
+
+```bash
+jq -n --rawfile instr $STORE_REPO/docs/demos/rossoctl-night-out-planner/instructions.md '{
+  namespace: "team1",
+  tools: [{name: "weather-tool", read_only: ["get_weather"]},
+          {name: "reservation-tool", read_only: ["search_restaurants","check_availability","list_reservations"]}],
+  skill: {name: "night-out-planner",
+          description: "Plan and book a restaurant evening in a city, taking current weather into account.",
+          instructions: $instr, tags: ["rossoctl-approved"]}}' |
+curl -s -X POST $STORE/plugins/rossoctl-tools/import -H 'content-type: application/json' -d @- \
+  | tee $DEMO/logs/r9-import.json | jq '{tools: [.tools[].name], skill_uuid, errors}'
+```
+
+**Check:**
+- `tools` lists `get_weather`, `search_restaurants`, `check_availability`, `place_reservation`, `cancel_reservation` and `list_reservations`;
+- `skill_uuid` is set;
+- `errors` is `[]`.
+
+A 502 error for a tool means rossoctl's backend cannot reach that tool's MCP server; check that its pod is
+Ready.
+
+### R10. Demo step 2: store-side execution through rossoctl
+
+```bash
+curl -s -X POST $STORE/tools/search_restaurants/execute -H 'content-type: application/json' \
+  -d '{"city":"Boston","cuisine":"Italian"}' | jq -r '."return value"' | jq -r '.[].name'
+kubectl -n rossoctl-system logs deploy/rossoctl-backend --since=2m | grep -c 'reservation-tool/invoke'
+```
+
+**Check:** prints `Trattoria di Mare`, and the count is ≥ 1. The call went store → rossoctl `/invoke` →
+tool.
+
+If the error mentions `svc.cluster.local` or "unreachable", the store runs code in Docker mode:
+`EXECUTE_PYTHON_LOCALLY` is missing (R4).
+
+### R11. Demo step 3: the deployment recipe and pre-flight
+
+```bash
+curl -s -X POST $STORE/plugins/rossoctl-tools/recipe -H 'content-type: application/json' \
+  -d '{"skill":"night-out-planner","namespace":"team1","agent":{"name":"night-out"}}' > $DEMO/recipe-team1.json
+jq '{ok, missing, preflight: [.preflight[] | {tool, ready, port}], env: .request.envVars, skills: .request.skills}' $DEMO/recipe-team1.json
+```
+
+**Check:**
+- `ok: true` and `missing: []`;
+- both tools are ready, on port 8000;
+- `MCP_URLS` lists `reservation-tool-mcp.team1…` and `weather-tool-mcp.team1…`;
+- `skills: ["night-out-planner"]`.
+
+### R12. Demo step 4: rossoctl autosync picks the skill up
+
+```bash
+for i in $(seq 1 30); do kubectl -n team1 get cm night-out-planner >/dev/null 2>&1 && break; sleep 5; done
+kubectl -n team1 get cm night-out-planner -o jsonpath='{.metadata.labels.rossoctl\.io/source} {.metadata.labels.rossoctl\.io/auto-sync}'; echo
+```
+
+**Check:** prints `external true`. In the console, **Skills** lists `night-out-planner`.
+
+**If it never appears**, autosync is not running against the store:
+
+```bash
+kubectl -n rossoctl-system get cm rossoctl-skill-autosync-config -o yaml   # enabled: "true", registry-url, allowed-tags
+kubectl -n rossoctl-system logs deploy/rossoctl-backend | grep -i auto-sync | tail
+```
+
+The skill needs the tag `rossoctl-approved`; R9 sets it.
+
+### R13. Demo step 5: create the agent from the recipe
+
+Add the model settings to the recipe's request, then send it to rossoctl's existing agent API:
+
+```bash
+jq --arg base "$LLM_API_BASE" --arg model "$LLM_MODEL" --arg sec "$LLM_KEY_SECRET" '
+  .request
+  | .envVars += [{name:"LLM_API_BASE", value:$base}, {name:"LLM_MODEL", value:$model}]
+  | .envVars += (if $sec == "" then [{name:"LLM_API_KEY", value:"dummy"}]
+                 else [{name:"LLM_API_KEY", valueFrom:{secretKeyRef:{name:$sec, key:"apikey"}}}] end)' \
+  $DEMO/recipe-team1.json > $DEMO/agent-team1.json
+curl -s -X POST $ROSSOCTL/api/v1/agents -H 'content-type: application/json' -d @$DEMO/agent-team1.json | jq -r .message
+kubectl -n team1 rollout status deploy/night-out --timeout=600s
+```
+
+**Checks:**
+
+```bash
+kubectl -n team1 get deploy night-out -o json | jq -r '.spec.template.spec.initContainers[].name, (.spec.template.spec.containers[] | select(.name=="agent") | .env[] | select(.name|test("MCP_|SKILL_")) | "\(.name)=\(.value)")'
+kubectl -n team1 exec deploy/night-out -- ls /app/skills/night-out-planner /app/skills/night-out-planner/scripts
+# skills and MCP tools are loaded on the first request; R14 checks the log again
+kubectl -n team1 logs deploy/night-out -c agent --tail=50 | tail -3
+```
+
+Expect:
+- a `fetch-skill-0` init container;
+- `MCP_URLS` with both tools, `MCP_TRANSPORT=streamable_http`, and `SKILL_FOLDERS=/app/skills/night-out-planner`;
+- `SKILL.md`, `rossoctl-tools.json` and `scripts/` in the pod;
+- the agent's log shows it started. It loads the skill and the MCP tools on the first chat request (R14).
+
+**If the init container fails:**
+- `kubectl -n team1 logs deploy/night-out -c fetch-skill-0`;
+- the store URL in the skill must be reachable from `team1`, and the store must be Ready.
+
+If the agent pod is created without the init container, the skill ConfigMap did not exist yet: wait
+for R12, delete the agent (`curl -s -X DELETE $ROSSOCTL/api/v1/agents/team1/night-out`), and repeat
+R13.
+
+### R14. Demo step 6: chat
+
+In the console (`http://rossoctl-ui.localtest.me:8080`), open **Agents → night-out → Chat**, or use the API:
+
+```bash
+chat() { curl -s -X POST $ROSSOCTL/api/v1/chat/team1/night-out/send -H 'content-type: application/json' \
+  -d "$(jq -n --arg m "$1" --arg s "${SID:-}" '{message:$m} + (if $s=="" then {} else {session_id:$s} end)')"; }
+R=$(chat "Plan dinner for 4 in Boston tomorrow at 7pm, Italian, mid-range."); export SID=$(jq -r .session_id <<<"$R"); jq -r .content <<<"$R"
+jq -r .content <<<"$(chat "Book Trattoria di Mare for 4 tomorrow at 7:30pm for Ada Lovelace, phone 555-0100, email ada@example.com.")"
+jq -r .content <<<"$(chat "Yes, confirm the booking.")"
+jq -r .content <<<"$(chat "What reservations do I have under ada@example.com?")"
+```
+
+**Checks:**
+- The first answer mentions current weather and at least one Boston Italian restaurant, such as Trattoria di Mare.
+- After "Yes", the answer contains a confirmation code (`RES…`).
+- Ground truth, independent of the model's wording:
+
+  ```bash
+  kubectl -n team1 logs deploy/reservation-tool --since=15m | grep -E "search_restaurants|place_reservation|list_reservations" | tail
+  kubectl -n team1 logs deploy/weather-tool --since=15m | grep -i -E "get_weather|city" | tail -3
+  ```
+
+  Expect `search_restaurants` and `place_reservation` calls in the tool's log. Those prove the agent used the tools it got through the recipe.
+
+After the first message, the agent's log must show both loads:
+
+```bash
+kubectl -n team1 logs deploy/night-out -c agent | grep -E "Successfully loaded [0-9]+ (skill|MCP tool)"
+# expect: "Successfully loaded 1 skill(s) …" and "Successfully loaded 6 MCP tool(s)"
+```
+
+**If the agent answers without calling tools:**
+- check those two log lines; "0 MCP tool(s)" means `MCP_URLS` is unreachable from the pod;
+- use a stronger model (R6).
+
+Small models may also skip the confirmation step. That is a model-quality issue, not a wiring issue; note it in the report.
+
+### R15. Demo step 7: portability and pre-flight in another namespace
+
+```bash
+curl -s -X POST $STORE/plugins/rossoctl-tools/recipe -H 'content-type: application/json' \
+  -d '{"skill":"night-out-planner","namespace":"team2"}' | jq '{ok, missing}'
+```
+
+**Check:** `ok: false`, and `missing` lists both tools, since `team2` has neither. Then:
+
+```bash
+kubectl apply -n team2 -f $STORE_REPO/plugins/skillberry-plugin-rossoctl-tools/deploy/reservation-tool.yaml
+kubectl -n team1 get deploy weather-tool -o yaml | sed 's/namespace: team1/namespace: team2/' \
+  | grep -v -E 'resourceVersion|uid:|creationTimestamp|generation:' | kubectl apply -f - >/dev/null
+kubectl -n team1 get svc weather-tool-mcp -o yaml | sed 's/namespace: team1/namespace: team2/' \
+  | grep -v -E 'resourceVersion|uid:|creationTimestamp|clusterIP|clusterIPs' | kubectl apply -f - >/dev/null
+kubectl -n team2 rollout status deploy/reservation-tool deploy/weather-tool --timeout=300s
+curl -s -X POST $STORE/plugins/rossoctl-tools/recipe -H 'content-type: application/json' \
+  -d '{"skill":"night-out-planner","namespace":"team2"}' | jq '{ok, missing}'
+```
+
+**Check:** `ok: true`. The same skill, unchanged, is deployable in `team2`.
+
+**Optional:** repeat R13 and R14 with `team2` in place of `team1` (create the `openai-secret` there first if you use one).
+
+### R16. rossoctl is unmodified
+
+```bash
+git -C $DEMO/rossoctl status --porcelain | wc -l      # expect 0
+git -C $DEMO/rossoctl log -1 --format='%H %s'
+```
+
+### R17. Report
+
+Report each step R2–R16 as **pass**, **fail** or **skipped**, with:
+- the rossoctl commit, the store commit (`git -C $STORE_REPO rev-parse --short HEAD`) and the LLM used;
+- for each failure: the check that failed, the last 20 lines of the step's log, and what you tried;
+- the transcript of R14 and the tool-log lines that prove the calls.
+
+### R18. Clean up (only when the user asks)
+
+```bash
+kill %1 2>/dev/null            # the port-forward from R8
+kind delete cluster --name rossoctl
+rm -rf $DEMO
+```
+
 ## 10. Later rungs
 
 [The pitch](../rossoctl-skills-pitch.md) lists the next steps, cheapest first. Each one is opt-in and would get its own design:
