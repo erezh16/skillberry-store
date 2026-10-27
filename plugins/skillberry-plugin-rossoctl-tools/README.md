@@ -1,95 +1,101 @@
 # skillberry-plugin-rossoctl-tools
 
-Use [rossoctl](https://github.com/rossoctl/rossoctl) tools in Skillberry Store
-skills. Design: [docs/design/rossoctl-skills.md](../../docs/design/rossoctl-skills.md).
+Compose Skillberry Store skills from [rossoctl](https://github.com/rossoctl/rossoctl) tools, and generate
+the rossoctl agent that uses them. Design: [docs/design/rossoctl-skills.md](../../docs/design/rossoctl-skills.md)
+(revision 8, "option 0").
 
-rossoctl hosts every rossoctl tool. The store only holds *proxies* of them,
-and reaches rossoctl only through its backend REST API. It never connects to
-tool pods. With this plugin active:
+**rossoctl is not changed.** The plugin uses only rossoctl's existing `/api/v1/tools` API, and produces an
+agent-create request made of existing fields.
 
-- **Import.** `POST /plugins/rossoctl-tools/import` creates one store `mcp`
-  tool per MCP tool of each selected rossoctl tool, plus an optional skill. The
-  tools carry `packaging_params.endpoint = {provider: "rossoctl", tool,
-  namespace, port, path}`.
-- **Store-side execution.** `POST /tools/{id}/execute` and vMCP calls on these
-  tools go through rossoctl's `POST /api/v1/tools/{ns}/{tool}/invoke`, so rossoctl
-  makes the call under its own authorization. The store can then test,
-  evaluate and dream against live tools.
-- **Export.** Each tool exports as a runnable proxy CLI, `scripts/<tool>.py`.
-  The script resolves the tool's in-cluster URL in the *agent's* namespace at
-  run time, trying in order:
-  1. `ROSSOCTL_TOOL_<TOOL>_URL` (rossoctl injects it at agent creation);
-  2. `ROSSOCTL_MCP_GATEWAY_URL` (only for tools imported with a `gateway_prefix`);
-  3. `http://<tool>-mcp.<ns>.svc.cluster.local:<port>/mcp`. Here `<ns>` comes
-     from `ROSSOCTL_NAMESPACE`, else the pod's ServiceAccount namespace file,
-     else the import namespace. `<port>` comes from `ROSSOCTL_TOOL_<TOOL>_PORT`,
-     else the import port.
+## What it does
 
-  The package also gets:
-  - `rossoctl-tools.json` (`skillberry.ai/rossoctl-tools/v1`);
-  - frontmatter `metadata.rossoctl-requires-tools`;
-  - a "Tools (rossoctl)" note.
-- **Re-import.** A package that contains `rossoctl-tools.json` re-imports as the
-  same proxy tools, so "export → edit in git → `POST /skills/import-anthropic`"
-  is lossless.
-- **Dependencies for rossoctl.** The opt-in computed field
-  `_rossoctl_required_tools` is returned only when named explicitly, for example
-  `GET /skills/?fields=uuid,name,_rossoctl_required_tools`. Its value is the
-  sorted list of rossoctl tools a skill needs. rossoctl's skill autosync reads it.
-
-`<TOOL>` is the rossoctl tool name upper-cased, with every non-alphanumeric
-character replaced by `_` (`weather-tool` → `WEATHER_TOOL`). rossoctl uses the
-same rule.
-
-## Routes
-
-| Route | Permission | What it does |
+| Step | Route | Result |
 |---|---|---|
-| `GET /plugins/rossoctl-tools/tools?namespace=` | `tools:list` | rossoctl's tools in a namespace (pass-through of its `GET /tools`) |
-| `POST /plugins/rossoctl-tools/import` | `tools:create` | `{namespace, tools: [{name, gateway_prefix?}], skill?: {name, description, instructions?, tags?}, tags?}` → `{tools: [{uuid, name, rossoctl_tool}], skill_uuid, errors}` |
-| `POST /plugins/rossoctl-tools/check` | `tools:list` | `{skill?, tool_uuids?}` → per-tool input-schema drift against the live tool. No writes. |
-| `POST /plugins/rossoctl-tools/resync` | `tools:create` | A new version of each drifted tool (same name, new uuid), plus a new skill version |
+| Import | `POST /plugins/rossoctl-tools/import` | One store **code** tool per MCP tool of each selected rossoctl tool. Its module is a generated proxy. Optionally, the skill too: an instructions snippet with a generated "Tools" section, and a `rossoctl-tools.json` snippet. |
+| Test | `POST /tools/{id}/execute` (core) | The proxy runs in the store and calls rossoctl's `/invoke`. Needs `EXECUTE_PYTHON_LOCALLY=true`. |
+| Deploy | `POST /plugins/rossoctl-tools/recipe` | The rossoctl `POST /api/v1/agents` body: `skills` plus `MCP_URLS`. Also the `rossoctl agents import` command and a pre-flight check. |
+| Maintain | `POST /plugins/rossoctl-tools/check`, `/refresh` | Schema drift and per-namespace pre-flight; regenerating the skill's Tools section and `rossoctl-tools.json` |
+| Browse | `GET /plugins/rossoctl-tools/tools?namespace=` | rossoctl's tools in a namespace |
 
-On a name collision with a store tool that proxies a *different* rossoctl tool,
-the new tool is named `<rossoctl_tool>__<mcp_tool>`, with `-` replaced by `_`.
+### The recipe
+
+```bash
+curl -s -X POST $STORE/plugins/rossoctl-tools/recipe -H 'content-type: application/json' \
+  -d '{"skill": "night-out-planner", "namespace": "team1", "agent": {"name": "night-out"}}'
+```
+
+```jsonc
+{
+  "ok": true, "missing": [], "not_ready": [],
+  "preflight": [{"tool": "reservation-tool", "present": true, "ready": true, "port": 8000, "url": "http://reservation-tool-mcp.team1.svc.cluster.local:8000/mcp"}, …],
+  "request": {                                   // POST /api/v1/agents
+    "name": "night-out", "namespace": "team1", "deploymentMethod": "image",
+    "containerImage": "ghcr.io/rossoctl/examples/generic_agent:latest",
+    "skills": ["night-out-planner"],
+    "envVars": [{"name": "MCP_URLS", "value": "http://reservation-tool-mcp.team1…/mcp,http://weather-tool-mcp.team1…/mcp"},
+                {"name": "MCP_TRANSPORT", "value": "streamable_http"}], …
+  },
+  "cli": "rossoctl agents import from-image --name night-out …",
+  "todo": ["Add the model settings (LLM_API_BASE, LLM_MODEL, LLM_API_KEY …) to envVars."]
+}
+```
+
+- **Model settings and secrets.** The recipe never contains them. Add `LLM_*`, preferably as a `secretKeyRef`.
+- **`agent.mode`:**
+  - `direct` (default): one `MCP_URLS` entry per tool;
+  - `gateway`: `MCP_URL`, the MCP Gateway address. The tools must be registered with the gateway, with the prefix given at import.
+- **`agent.image`** overrides the default image. The default is `generic_agent`, the only stock agent that takes several MCP URLs and reads skills.
+
+### The proxy code tool
+
+Each imported MCP tool becomes an ordinary code tool:
+- tags `mcp`, `rossoctl-proxy`, `rossoctl-tool:<name>` and `namespace:<ns>`;
+- plugin metadata in `extra.rossoctl`.
+
+Its module has one top-level function:
+- **called by the store's executor:** it posts to rossoctl's `/invoke` when `ROSSOCTL_BACKEND_URL` is in the environment;
+- **run as a script** (`python3 scripts/<tool>.py --<arg> …`): it speaks MCP over streamable HTTP to `<tool>-mcp.<namespace>.svc.cluster.local`, resolved in the caller's namespace.
+
+It is standard-library only and embeds no credentials. Exit codes: `0` success, `1` tool error, `2` usage, `3` unreachable.
 
 ## Configuration
 
 | Env | Default | Meaning |
 |---|---|---|
-| `ROSSOCTL_BACKEND_URL` | unset; the plugin is inactive without it | for example `http://rossoctl-backend.rossoctl-system.svc.cluster.local:8000` |
-| `ROSSOCTL_CLIENT_ID`, `ROSSOCTL_CLIENT_SECRET`, `ROSSOCTL_TOKEN_ENDPOINT` | unset | Keycloak client-credentials grant for a service account with the `rossoctl-operator` role. The token is cached until 30 s before expiry and refreshed once on a 401. Leave these unset when rossoctl runs with `ENABLE_AUTH=false`. |
-| `ROSSOCTL_ALLOWED_NAMESPACES` | `""` (any namespace) | Comma-separated namespaces the plugin may target |
+| `ROSSOCTL_BACKEND_URL` | unset (plugin inactive) | e.g. `http://rossoctl-backend.rossoctl-system.svc.cluster.local:8000` |
+| `ROSSOCTL_CLIENT_ID`, `ROSSOCTL_CLIENT_SECRET`, `ROSSOCTL_TOKEN_ENDPOINT` | unset | Client-credentials grant; leave unset when rossoctl runs without auth |
+| `ROSSOCTL_ALLOWED_NAMESPACES` | `""` (any) | Comma-separated namespaces the plugin may target |
 | `ROSSOCTL_TIMEOUT` | `30` | Seconds per backend call |
-| `ROSSOCTL_DEFAULT_NAMESPACE` | `default` | Import namespace for re-imported packages whose scripts do not record one |
-| `ROSSOCTL_FORWARD_CALLER_TOKEN` | `false` | Forward the store caller's bearer to rossoctl instead of the service token. Use it for delegated ACL deployments where both trust the same Keycloak. |
+| `ROSSOCTL_AGENT_IMAGE` | `ghcr.io/rossoctl/examples/generic_agent:latest` | Default agent image in recipes |
+| `ROSSOCTL_MCP_GATEWAY_URL` | `http://mcp-gateway-istio.gateway-system.svc.cluster.local:8080/mcp` | Gateway address for `mode: gateway` |
+| `EXECUTE_PYTHON_LOCALLY` (core) | unset | `true` so store-side Execute of proxies reaches rossoctl `/invoke`. In Docker mode the proxy cannot see the store's environment. |
 
-The proxy script reads these at run time, in the agent's pod:
-- the variables listed under **Export** above;
-- `ROSSOCTL_TOOL_TIMEOUT`, in seconds (default 60);
-- core's `MCP_PROXY_AUTH_HEADER`, `TRACEPARENT` and `TRACESTATE`.
+When the proxy runs as a script, it reads `ROSSOCTL_TOOL_<TOOL>_URL` (an override), `ROSSOCTL_NAMESPACE`, `ROSSOCTL_TOOL_<TOOL>_PORT`, `ROSSOCTL_TOOL_TIMEOUT`, `ROSSOCTL_MCP_GATEWAY_URL`, `MCP_PROXY_AUTH_HEADER`, `TRACEPARENT` and `TRACESTATE`. `<TOOL>` is the tool name upper-cased, with `_` for every non-alphanumeric character.
 
-## Enabling
+## Deploying with rossoctl's chart (existing values only)
 
-- Install the plugin with the `plugin-rossoctl-tools` extra, or `plugins-all`.
-- Set `ROSSOCTL_BACKEND_URL`.
-- Make sure the deployment's plugin config does not list `rossoctl-tools` under
-  `disabled`.
+```yaml
+skillberryStore:
+  image: {tag: "<release>-full"}
+  extraEnv:
+    - {name: ROSSOCTL_BACKEND_URL, value: "http://rossoctl-backend.rossoctl-system.svc.cluster.local:8000"}
+    - {name: EXECUTE_PYTHON_LOCALLY, value: "true"}
+    - {name: ROSSOCTL_CLIENT_ID,      valueFrom: {secretKeyRef: {name: rossoctl-api-oauth-secret, key: CLIENT_ID}}}
+    - {name: ROSSOCTL_CLIENT_SECRET,  valueFrom: {secretKeyRef: {name: rossoctl-api-oauth-secret, key: CLIENT_SECRET}}}
+    - {name: ROSSOCTL_TOKEN_ENDPOINT, valueFrom: {secretKeyRef: {name: rossoctl-api-oauth-secret, key: TOKEN_ENDPOINT}}}
+apiOAuthSecret: {enabled: true}     # only with ui.auth.enabled=true
+```
 
-rossoctl's Helm chart does all of this when `featureFlags.toolSkills=true`.
+## Safety
 
-Without the plugin, the store still holds and exports these tools:
-- their proxies resolve only `MCP_PROXY_<TOOL>_URL`;
-- store-side execution returns 422 (provider unavailable);
-- `fields=_rossoctl_required_tools` returns 400.
+- Proxy tools call live tools, including writes. Exclude the `rossoctl-proxy` tag from automatic runners such as the evaluator and DAST with `DAST_LIVE=1`.
+- Store-side Execute uses the store's service identity. Keep `ROSSOCTL_ALLOWED_NAMESPACES` tight.
 
 ## Tests
 
 ```bash
 source .venv/bin/activate
-pytest plugins/skillberry-plugin-rossoctl-tools/tests
+pytest plugins/skillberry-plugin-rossoctl-tools/tests                        # unit + e2e
+ROSSOCTL_REPO=<rossoctl main> EXAMPLES_REPO=<rossoctl/examples> KUBECONFIG=<kwok> \
+  plugins/skillberry-plugin-rossoctl-tools/tests/cluster/run-local-demo.sh   # cluster demo
 ```
-
-The tests run against a fake rossoctl backend (`tests/rossoctl_fake_backend.py`) through
-`httpx` transports, with no network. The e2e tests run the exported scripts
-against a FastMCP streamable-HTTP server that stands in for the tool pods.
