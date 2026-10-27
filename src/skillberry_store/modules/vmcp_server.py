@@ -10,7 +10,6 @@ from typing import Annotated, Any, Callable, List, Optional, Protocol
 
 from mcp.server.fastmcp import FastMCP
 from skillberry_store.modules.object_handler import get_object_handler
-from skillberry_store.services.exceptions import ToolProviderUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -131,22 +130,9 @@ class _HandlerToolSource:
 
     async def execute(self, manifest: dict, parameters: dict, env_id: str) -> dict:
         from skillberry_store.modules.file_executor import FileExecutor
-        from skillberry_store.modules import tool_providers
         from skillberry_store.services.registry import get_service
 
         tool_name = manifest.get("name")
-        if tool_providers.is_provider_backed(manifest):
-            # Provider-backed tools are reached by their plugin's provider. An
-            # unavailable provider becomes an error result, which the MCP
-            # handler returns to the client like any other tool error.
-            try:
-                return await tool_providers.execute_via_provider(
-                    manifest,
-                    parameters,
-                    tool_providers.ProviderContext(env_id=env_id),
-                )
-            except ToolProviderUnavailable as e:
-                return {"error": str(e)}
         module_name = manifest.get("module_name")
         if not module_name:
             raise ValueError(

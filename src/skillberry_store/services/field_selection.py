@@ -63,8 +63,7 @@ fields it expands to.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Set
 
 # ─── field-tag tables ──────────────────────────────────────────────────
 #
@@ -235,99 +234,6 @@ def is_opt_in_only(object_type: str, field: str) -> bool:
     return field in OPT_IN_ONLY_FIELDS.get(object_type, set())
 
 
-# ─── computed fields registered by plugins ────────────────────────────
-#
-# A plugin may register an opt-in computed field (generalizing the
-# ``_npx_install`` pattern): an ``_``-prefixed name with an empty preset tag
-# set, computed only when a caller names it in an explicit ``fields=`` CSV.
-# While the owning plugin is inactive the name is rejected with 400 like any
-# unknown field, so a client learns the store lacks the capability.
-
-
-@dataclass
-class ComputedField:
-    object_type: str
-    name: str
-    compute: Callable[[Dict[str, Any], List[Dict[str, Any]]], Any]
-    owner_slug: str
-
-
-_computed_fields: Dict[Tuple[str, str], ComputedField] = {}
-_computed_active_resolver: Optional[Callable[[str], bool]] = None
-
-
-def register_computed_field(
-    object_type: str,
-    name: str,
-    compute: Callable[[Dict[str, Any], List[Dict[str, Any]]], Any],
-    owner_slug: str,
-) -> None:
-    """Register an opt-in computed field ``name`` for ``object_type``.
-
-    ``compute(item, tools)`` receives the (field-selected) item and the full
-    tool dicts it references. Only ``skill`` is supported.
-    """
-    if object_type != "skill":
-        raise ValueError("Computed fields are supported for skills only")
-    shadows = name in SKILL_FIELD_TAGS and (object_type, name) not in _computed_fields
-    if not name.startswith("_") or shadows:
-        raise ValueError(
-            f"Computed field name {name!r} must start with '_' and not shadow a "
-            "declared field"
-        )
-    _computed_fields[(object_type, name)] = ComputedField(
-        object_type, name, compute, owner_slug
-    )
-    SKILL_FIELD_TAGS[name] = set()
-    OPT_IN_ONLY_FIELDS.setdefault(object_type, set()).add(name)
-
-
-def unregister_computed_field(object_type: str, name: str) -> None:
-    """Remove a computed field (used by tests)."""
-    if _computed_fields.pop((object_type, name), None) is not None:
-        SKILL_FIELD_TAGS.pop(name, None)
-        OPT_IN_ONLY_FIELDS.get(object_type, set()).discard(name)
-
-
-def set_computed_field_active_resolver(
-    resolver: Optional[Callable[[str], bool]],
-) -> None:
-    global _computed_active_resolver
-    _computed_active_resolver = resolver
-
-
-def _computed_field_active(cf: ComputedField) -> bool:
-    if _computed_active_resolver is None:
-        return True
-    try:
-        return bool(_computed_active_resolver(cf.owner_slug))
-    except Exception:
-        return False
-
-
-def inactive_computed_fields(object_type: str) -> Set[str]:
-    """Names of registered computed fields whose owner is currently inactive."""
-    return {
-        cf.name
-        for (otype, _), cf in _computed_fields.items()
-        if otype == object_type and not _computed_field_active(cf)
-    }
-
-
-def requested_computed_fields(
-    fields_spec: Optional[str], object_type: str
-) -> List[ComputedField]:
-    """Active computed fields named in ``fields_spec`` (empty for presets)."""
-    if not fields_spec or fields_spec in _PRESET_NAMES:
-        return []
-    names = {f.strip() for f in fields_spec.split(",") if f.strip()}
-    return [
-        cf
-        for (otype, name), cf in _computed_fields.items()
-        if otype == object_type and name in names and _computed_field_active(cf)
-    ]
-
-
 _FIELD_TAGS_BY_TYPE: Dict[str, FieldTags] = {
     "snippet": SNIPPET_FIELD_TAGS,
     "tool":    TOOL_FIELD_TAGS,
@@ -416,9 +322,7 @@ def parse_fields_spec(
     allow = {f.strip() for f in fields_spec.split(",") if f.strip()}
     if not allow:
         return _fields_with_preset(object_type, "narrow")
-    known = set(_FIELD_TAGS_BY_TYPE[object_type].keys()) - inactive_computed_fields(
-        object_type
-    )
+    known = set(_FIELD_TAGS_BY_TYPE[object_type].keys())
     unknown = allow - known
     if unknown:
         raise ValueError(

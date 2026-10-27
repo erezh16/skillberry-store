@@ -36,23 +36,3 @@ class ObjectInUseError(ValueError):
             f"{self.object_type} {self.object_uuid} cannot be deleted because the "
             f"following objects depend on it: {dep_str}"
         )
-
-
-class ToolProviderUnavailable(RuntimeError):
-    """Raised when a provider-backed tool is executed but no active plugin
-    provides its ``endpoint.provider``.
-
-    Subclasses ``RuntimeError`` so generic execution error handling still
-    catches it; the tools API maps it to 422 before that.
-    """
-
-    def __init__(self, provider: str, tool_name: str):
-        self.provider = provider
-        self.tool_name = tool_name
-        super().__init__(str(self))
-
-    def __str__(self) -> str:
-        return (
-            f"Tool '{self.tool_name}' needs provider '{self.provider}', which is not "
-            "available in this store (no active plugin provides it)."
-        )

@@ -11,9 +11,6 @@ from skillberry_store.plugins.base import PluginBase
 from skillberry_store.plugins.store_api import StoreAPI
 from skillberry_store.plugins.config import PluginConfigStore
 from skillberry_store.plugins import events as plugin_events
-from skillberry_store.modules import tool_providers
-from skillberry_store.services import field_selection
-from skillberry_store.tools.anthropic import contributions
 
 logger = logging.getLogger(__name__)
 
@@ -51,11 +48,6 @@ class PluginLoader:
         # dispatch, not captured here: plugins register their handlers inside
         # __init__, before any tenant, session or config reload exists (§5.2).
         plugin_events.set_owner_resolver(self.owner_subject)
-        # Tool providers (provider-backed tools) are visible only while their
-        # owning plugin is active, so they follow full effective enablement.
-        tool_providers.set_active_resolver(self.is_active)
-        contributions.set_active_resolver(self.is_active)
-        field_selection.set_computed_field_active_resolver(self.is_active)
     
     def discover_plugins(self) -> List[str]:
         """Discover and load all available plugins.
@@ -107,8 +99,6 @@ class PluginLoader:
                 # resolve *whose* owner tenant applies (§2.4).
                 plugin.set_store_api(self.store_api.for_plugin(entry_point.name))
 
-                self._register_extensions(plugin, entry_point.name)
-
                 # Store the plugin
                 self.plugins[entry_point.name] = plugin
                 discovered.append(entry_point.name)
@@ -129,25 +119,6 @@ class PluginLoader:
         
         return discovered
     
-    @staticmethod
-    def _register_extensions(plugin: PluginBase, slug: str) -> None:
-        """Register the core extension points a plugin declared.
-
-        Each is consulted only while the plugin is active (the resolvers set
-        in ``__init__``), so a disabled plugin's extensions are invisible.
-        """
-        for provider in plugin.tool_providers:
-            tool_providers.register_provider(provider, slug)
-        contributions.unregister_owner(slug)
-        for contributor in plugin.declared_extensions("export_contributors"):
-            contributions.register_export_contributor(contributor, slug)
-        for claimer in plugin.declared_extensions("import_claimers"):
-            contributions.register_import_claimer(claimer, slug)
-        for object_type, name, compute in plugin.declared_extensions(
-            "computed_fields"
-        ):
-            field_selection.register_computed_field(object_type, name, compute, slug)
-
     @staticmethod
     def _handler_snapshot() -> set:
         """Set of all handler callables currently in the global event registry."""

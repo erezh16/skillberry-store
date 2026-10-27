@@ -71,15 +71,14 @@ def extract_skill_name(url: str, filename: str) -> str:
     )
 
 
-def parse_skill_metadata(files: List[Dict[str, str]]) -> Optional[Dict[str, Any]]:
+def parse_skill_metadata(files: List[Dict[str, str]]) -> Optional[Dict[str, str]]:
     """Parse SKILL.md file to extract name and description from header.
 
     Args:
         files: List of file dictionaries with 'name', 'path', and 'content' keys
 
     Returns:
-        Dictionary with 'name' and 'description', plus 'metadata' when the
-        frontmatter has a ``metadata`` mapping; or None
+        Dictionary with 'name' and 'description' or None
     """
     skill_file = next((f for f in files if f["name"].upper() == "SKILL.MD"), None)
     if not skill_file:
@@ -115,22 +114,9 @@ def parse_skill_metadata(files: List[Dict[str, str]]) -> Optional[Dict[str, Any]
 
         name = str(parsed.get("name", "") or "").strip()
         description = str(parsed.get("description", "") or "").strip()
-        metadata = parsed.get("metadata")
 
         if name or description:
-            result: Dict[str, Any] = {"name": name, "description": description}
-            # Keep the frontmatter ``metadata`` mapping so a round trip is
-            # lossless (string keys and scalar values only, as frontmatter
-            # metadata is meant to be).
-            if isinstance(metadata, dict):
-                kept = {
-                    str(k): v
-                    for k, v in metadata.items()
-                    if isinstance(v, (str, int, float, bool))
-                }
-                if kept:
-                    result["metadata"] = kept
-            return result
+            return {"name": name, "description": description}
     except Exception as e:
         logger.warning(
             "Failed to parse SKILL.md frontmatter with yaml.safe_load: %s", e
@@ -547,35 +533,6 @@ def read_from_folder(folder_path: str) -> List[Dict[str, str]]:
     return files
 
 
-def _skill_root_prefix(files: List[Dict[str, str]]) -> str:
-    """The path prefix of the directory holding SKILL.md (``""`` if at root)."""
-    skill_md = next((f for f in files if f["name"].upper() == "SKILL.MD"), None)
-    if not skill_md or "/" not in skill_md["path"]:
-        return ""
-    return skill_md["path"].rsplit("/", 1)[0] + "/"
-
-
-def _apply_import_claimers(
-    files: List[Dict[str, str]],
-) -> Tuple[List[Dict[str, str]], List[Any]]:
-    """Offer the package to active import claimers; return (unclaimed, claims)."""
-    from .contributions import active_claimers, claim_import_files
-
-    if not active_claimers():
-        for f in files:
-            if f["name"].endswith(".json") and f["path"].count("/") <= 1:
-                logger.info(f"{f['name']} not claimed: no active import claimer")
-        return files, []
-    prefix = _skill_root_prefix(files)
-    by_rel = {
-        (f["path"][len(prefix) :] if f["path"].startswith(prefix) else f["path"]): f
-        for f in files
-    }
-    claims, claimed = claim_import_files({p: f["content"] for p, f in by_rel.items()})
-    unclaimed = [f for p, f in by_rel.items() if p not in claimed]
-    return unclaimed, claims
-
-
 def import_from_anthropic_skill(
     source_type: str,
     source_data: Any,
@@ -583,7 +540,6 @@ def import_from_anthropic_skill(
     treat_all_as_documents: bool = False,
     override_token: Optional[str] = None,
     anonymous: bool = False,
-    extras: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, str, List[Any], List[Any], List[str]]:
     """Import Anthropic skill from various sources.
 
@@ -593,12 +549,6 @@ def import_from_anthropic_skill(
         snippet_mode: 'file' or 'paragraph'
         treat_all_as_documents: If True, treat all files (including code) as document snippets
         override_token: Optional per-request token (X-Endpoint-Token) for 'url' imports
-        extras: Optional dict the caller passes to receive more than the
-            5-tuple. When given, active plugin import claimers are offered the
-            package first (``extras["claims"]``: list of ``(ImportClaim, slug)``;
-            claimed files are not classified further) and the frontmatter
-            ``metadata`` mapping is returned as ``extras["frontmatter_metadata"]``.
-            Callers that do not pass it keep exactly the previous behavior.
 
     Returns:
         Tuple of (skill_name, skill_description, tools, snippets, ignored_files)
@@ -650,20 +600,8 @@ def import_from_anthropic_skill(
     if not files:
         raise Exception("No files found to import")
 
-    # Generated SKILL.md sections (marked by the exporter) are re-generated on
-    # export; drop them so a re-import does not duplicate them as content.
-    from .exporter import GENERATED_BEGIN, strip_generated
-
-    for f in files:
-        if f["name"].upper() == "SKILL.MD" and GENERATED_BEGIN in f["content"]:
-            f["content"] = strip_generated(f["content"])
-
     # Step 2: Parse SKILL.md metadata if available
     skill_metadata = parse_skill_metadata(files)
-
-    if extras is not None:
-        extras["frontmatter_metadata"] = (skill_metadata or {}).get("metadata") or {}
-        files, extras["claims"] = _apply_import_claimers(files)
     if skill_metadata and skill_metadata.get("name"):
         skill_name = skill_metadata["name"]
 

@@ -15,7 +15,6 @@ from skillberry_store.utils.utils import SKILLBERRY_CONTEXT, unflatten_keys
 from skillberry_store.services.exceptions import (
     ObjectAlreadyExistsError,
     ObjectInUseError,
-    ToolProviderUnavailable,
 )
 from skillberry_store.services.tools_service import ToolsService
 
@@ -410,16 +409,12 @@ def register_tools_api(
         env_id = (
             skillberry_context.get("env_id") if skillberry_context is not None else None
         )
-        auth = request.headers.get("authorization") or ""
-        bearer = auth[7:].strip() if auth.lower().startswith("bearer ") else None
         try:
             return await service.execute(
-                uuid_or_name, parameters=parameters, env_id=env_id, bearer=bearer
+                uuid_or_name, parameters=parameters, env_id=env_id
             )
         except KeyError as e:
             raise HTTPException(status_code=404, detail=str(e))
-        except ToolProviderUnavailable as e:
-            raise HTTPException(status_code=422, detail=str(e))
         except RuntimeError as e:
             raise HTTPException(status_code=500, detail=str(e))
         except Exception as e:

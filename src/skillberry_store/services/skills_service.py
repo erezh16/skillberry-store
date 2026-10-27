@@ -898,7 +898,6 @@ class SkillsService:
             tools_service = get_service("tool")
             snippets_service = get_service("snippet")
 
-            import_extras: Dict[str, Any] = {}
             (
                 skill_name,
                 skill_description,
@@ -912,7 +911,6 @@ class SkillsService:
                 treat_all_as_documents=treat_all_as_documents,
                 override_token=override_token,
                 anonymous=anonymous,
-                extras=import_extras,
             )
 
             # Pre-allocate tool UUIDs so cross-tool deps within this batch can be
@@ -963,31 +961,6 @@ class SkillsService:
                 except Exception as e:
                     logger.error(f"Failed to create tool {tool.name}: {e}")
 
-            # Tools that a plugin's import claimer built from the files it
-            # claimed. A failure here fails the import, like a claimer error.
-            for claim, slug in import_extras.get("claims") or []:
-                for data, module_content, module_filename in claim.tools:
-                    data = dict(data)
-                    claim_tags = list(data.get("tags") or [])
-                    for tag in tags:
-                        if tag and tag not in claim_tags:
-                            claim_tags.append(tag)
-                    data["tags"] = claim_tags
-                    data.setdefault("state", "approved")
-                    content = (
-                        module_content.encode("utf-8")
-                        if isinstance(module_content, str)
-                        else module_content
-                    )
-                    created = tools_service.create(
-                        data, module_content=content, module_filename=module_filename
-                    )
-                    created_tool_uuids.append(created["uuid"])
-                    logger.info(
-                        f"Created tool '{created.get('name')}' from files claimed "
-                        f"by plugin '{slug}'"
-                    )
-
             created_snippet_uuids: List[str] = []
             for snippet in imported_snippets:
                 try:
@@ -1018,10 +991,6 @@ class SkillsService:
                     skill_tags.append(tag)
 
             skill_extra: Dict[str, Any] = {}
-            if import_extras.get("frontmatter_metadata"):
-                skill_extra["frontmatter_metadata"] = import_extras[
-                    "frontmatter_metadata"
-                ]
             if source_type == "url" and github_url:
                 origin = parse_github_origin(github_url)
                 skill_extra["origin"] = {

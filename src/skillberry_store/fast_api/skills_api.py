@@ -26,73 +26,6 @@ from skillberry_store.schemas.skill_schema import SkillSchema
 from skillberry_store.services.exceptions import ObjectInUseError
 from skillberry_store.services.skills_service import SkillsService
 
-_COMPUTED_IDENTITY_FIELDS = {"uuid", "tool_uuids"}
-
-
-def expand_computed_fields(
-    fields: Optional[str], strip: set
-) -> "tuple[Optional[str], set]":
-    """Widen an explicit ``fields`` CSV with what plugin-computed fields need.
-
-    A computed field (``field_selection.register_computed_field``) is derived
-    from the skill's ``uuid`` and ``tool_uuids``. As with ``_npx_install``, the
-    allowlist is widened on the way in and the additions stripped on the way
-    out, so the response shape stays the caller's choice.
-    """
-    from skillberry_store.services.field_selection import (
-        parse_fields_spec,
-        requested_computed_fields,
-    )
-
-    if not requested_computed_fields(fields, "skill"):
-        return fields, strip
-    allow = parse_fields_spec(fields, "skill")
-    needed = _COMPUTED_IDENTITY_FIELDS - allow
-    if not needed:
-        return fields, strip
-    return ",".join(sorted(allow | needed)), set(strip) | needed
-
-
-def attach_computed_fields(
-    service: SkillsService,
-    fields: Optional[str],
-    items: List[Any],
-    strip: Optional[set] = None,
-) -> None:
-    """Compute the requested plugin-registered fields onto each item, in place.
-
-    Runs only for active computed fields named explicitly in ``fields``; a
-    request without one does no extra work. ``strip`` keys (added only to
-    compute) are removed afterwards.
-    """
-    from skillberry_store.services.field_selection import requested_computed_fields
-    from skillberry_store.services.registry import get_service
-
-    requested = requested_computed_fields(fields, "skill")
-    if requested and items:
-        tools_service = get_service("tool")
-        cache: dict = {}
-
-        def tools_of(item):
-            out = []
-            for tool_uuid in item.get("tool_uuids") or []:
-                if tool_uuid not in cache:
-                    try:
-                        cache[tool_uuid] = tools_service.get(tool_uuid, fields="full")
-                    except KeyError:
-                        cache[tool_uuid] = None
-                if cache[tool_uuid] is not None:
-                    out.append(cache[tool_uuid])
-            return out
-
-        for item in items:
-            tools = tools_of(item)
-            for cf in requested:
-                item[cf.name] = cf.compute(item, tools)
-    for item in items:
-        for key in strip or set():
-            item.pop(key, None)
-
 
 def _auth_exception_to_http(exc: ReauthRequired) -> HTTPException:
     """Translate a forced-reauthentication exception into a 401 HTTPException.
@@ -250,9 +183,6 @@ def register_skills_api(
             # ambient subject, neither of which the service layer has
             # (docs/design/npx.md §4.3.5).
             service_fields, strip = expand_npx_fields(fields, npx_agent)
-            service_fields, computed_strip = expand_computed_fields(
-                service_fields, set()
-            )
             result = service.list_all(
                 fields=service_fields,
                 search=search,
@@ -263,7 +193,6 @@ def register_skills_api(
                 offset=offset,
             )
             items = result["items"] if isinstance(result, dict) else result
-            attach_computed_fields(service, fields, items, strip=computed_strip)
             attach_npx_fields(
                 request, service, fields, items, strip=strip, agent=npx_agent
             )
@@ -333,11 +262,7 @@ def register_skills_api(
         """
         try:
             service_fields, strip = expand_npx_fields(fields, npx_agent)
-            service_fields, computed_strip = expand_computed_fields(
-                service_fields, set()
-            )
             skill = service.get(uuid_or_name, fields=service_fields)
-            attach_computed_fields(service, fields, [skill], strip=computed_strip)
             attach_npx_fields(
                 request, service, fields, [skill], strip=strip, agent=npx_agent
             )
