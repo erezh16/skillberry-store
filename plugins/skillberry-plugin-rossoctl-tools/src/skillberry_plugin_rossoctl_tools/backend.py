@@ -78,19 +78,29 @@ class RossoctlBackend:
         clock: Callable[[], float] = time.monotonic,
     ):
         env = os.environ
-        self.base_url = (base_url if base_url is not None else env.get("ROSSOCTL_BACKEND_URL", "")).rstrip("/")
-        self.client_id = client_id if client_id is not None else env.get("ROSSOCTL_CLIENT_ID", "")
+        self.base_url = (
+            base_url if base_url is not None else env.get("ROSSOCTL_BACKEND_URL", "")
+        ).rstrip("/")
+        self.client_id = (
+            client_id if client_id is not None else env.get("ROSSOCTL_CLIENT_ID", "")
+        )
         self.client_secret = (
-            client_secret if client_secret is not None else env.get("ROSSOCTL_CLIENT_SECRET", "")
+            client_secret
+            if client_secret is not None
+            else env.get("ROSSOCTL_CLIENT_SECRET", "")
         )
         self.token_endpoint = (
-            token_endpoint if token_endpoint is not None else env.get("ROSSOCTL_TOKEN_ENDPOINT", "")
+            token_endpoint
+            if token_endpoint is not None
+            else env.get("ROSSOCTL_TOKEN_ENDPOINT", "")
         )
         if allowed_namespaces is None:
             raw = env.get("ROSSOCTL_ALLOWED_NAMESPACES", "")
             allowed_namespaces = [n.strip() for n in raw.split(",") if n.strip()]
         self.allowed_namespaces = allowed_namespaces
-        self.timeout = float(timeout if timeout is not None else env.get("ROSSOCTL_TIMEOUT", "30"))
+        self.timeout = float(
+            timeout if timeout is not None else env.get("ROSSOCTL_TIMEOUT", "30")
+        )
         self._transport = transport
         self._clock = clock
         self._token: Optional[str] = None
@@ -172,22 +182,35 @@ class RossoctlBackend:
                 async with self._client() as client:
                     resp = await client.request(method, url, headers=headers, **kwargs)
             except httpx.TimeoutException as e:
-                raise RossoctlUnavailable(f"rossoctl backend timed out: {method} {path}") from e
+                raise RossoctlUnavailable(
+                    f"rossoctl backend timed out: {method} {path}"
+                ) from e
             except httpx.HTTPError as e:
                 raise RossoctlUnavailable(f"rossoctl backend unreachable: {e}") from e
-            if resp.status_code == 401 and attempt == 0 and not bearer and self.uses_client_credentials:
-                logger.info("rossoctl backend returned 401; refreshing the service token")
+            if (
+                resp.status_code == 401
+                and attempt == 0
+                and not bearer
+                and self.uses_client_credentials
+            ):
+                logger.info(
+                    "rossoctl backend returned 401; refreshing the service token"
+                )
                 self._token = None
                 continue
             break
         if resp.status_code in (401, 403):
-            raise RossoctlForbidden(f"rossoctl backend refused {method} {path}: {_detail(resp)}")
+            raise RossoctlForbidden(
+                f"rossoctl backend refused {method} {path}: {_detail(resp)}"
+            )
         if resp.status_code == 404:
             raise RossoctlNotFound(_detail(resp) or f"{path} not found")
         if resp.status_code in (502, 503, 504):
             raise RossoctlUnavailable(_detail(resp) or f"HTTP {resp.status_code}")
         if resp.status_code >= 400:
-            err = RossoctlError(f"rossoctl backend HTTP {resp.status_code}: {_detail(resp)}")
+            err = RossoctlError(
+                f"rossoctl backend HTTP {resp.status_code}: {_detail(resp)}"
+            )
             err.status_code = resp.status_code
             raise err
         return resp.json() if resp.content else None
@@ -197,18 +220,30 @@ class RossoctlBackend:
         validate_label(name, "tool name")
         return f"/tools/{quote(namespace)}/{quote(name)}{suffix}"
 
-    async def list_tools(self, namespace: str, bearer: Optional[str] = None) -> List[Dict[str, Any]]:
+    async def list_tools(
+        self, namespace: str, bearer: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         self.check_namespace(namespace)
-        body = await self._request("GET", "/tools", params={"namespace": namespace}, bearer=bearer)
+        body = await self._request(
+            "GET", "/tools", params={"namespace": namespace}, bearer=bearer
+        )
         return list((body or {}).get("items") or [])
 
-    async def get_tool(self, namespace: str, name: str, bearer: Optional[str] = None) -> Dict[str, Any]:
+    async def get_tool(
+        self, namespace: str, name: str, bearer: Optional[str] = None
+    ) -> Dict[str, Any]:
         self.check_namespace(namespace)
-        return await self._request("GET", self._path(namespace, name), bearer=bearer) or {}
+        return (
+            await self._request("GET", self._path(namespace, name), bearer=bearer) or {}
+        )
 
-    async def connect(self, namespace: str, name: str, bearer: Optional[str] = None) -> List[Dict[str, Any]]:
+    async def connect(
+        self, namespace: str, name: str, bearer: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         self.check_namespace(namespace)
-        body = await self._request("POST", self._path(namespace, name, "/connect"), bearer=bearer)
+        body = await self._request(
+            "POST", self._path(namespace, name, "/connect"), bearer=bearer
+        )
         return list((body or {}).get("tools") or [])
 
     async def invoke(

@@ -37,16 +37,28 @@ def test_token_refreshed_once_on_401(backend, fake):
 
 
 def test_persistent_401_is_forbidden(fake):
-    b = RossoctlBackend(base_url=BACKEND, client_id="", client_secret="", token_endpoint="",
-                        allowed_namespaces=[], transport=fake.transport())
+    b = RossoctlBackend(
+        base_url=BACKEND,
+        client_id="",
+        client_secret="",
+        token_endpoint="",
+        allowed_namespaces=[],
+        transport=fake.transport(),
+    )
     with pytest.raises(RossoctlForbidden):
         run(b.list_tools("team1"))
 
 
 def test_no_credentials_sends_no_auth_header():
     fake = FakeRossoctl(require_auth=False)
-    b = RossoctlBackend(base_url=BACKEND, client_id="", client_secret="", token_endpoint="",
-                        allowed_namespaces=[], transport=fake.transport())
+    b = RossoctlBackend(
+        base_url=BACKEND,
+        client_id="",
+        client_secret="",
+        token_endpoint="",
+        allowed_namespaces=[],
+        transport=fake.transport(),
+    )
     assert run(b.list_tools("team1"))
     assert fake.requests[0]["auth"] is None
     assert {r["host"] for r in fake.requests} == {"rossoctl-backend.test"}
@@ -76,8 +88,14 @@ def test_names_are_validated_before_any_call(backend, fake):
 
 
 def test_allowed_namespaces(fake):
-    b = RossoctlBackend(base_url=BACKEND, client_id="", client_secret="", token_endpoint="",
-                        allowed_namespaces=["team2"], transport=fake.transport())
+    b = RossoctlBackend(
+        base_url=BACKEND,
+        client_id="",
+        client_secret="",
+        token_endpoint="",
+        allowed_namespaces=["team2"],
+        transport=fake.transport(),
+    )
     with pytest.raises(ValueError, match="not allowed"):
         run(b.list_tools("team1"))
     assert fake.requests == []
@@ -91,7 +109,9 @@ def test_unconfigured_backend():
 
 
 def test_invoke_returns_result(backend):
-    result = run(backend.invoke("team1", "weather-tool", "get_weather", {"city": "Boston"}))
+    result = run(
+        backend.invoke("team1", "weather-tool", "get_weather", {"city": "Boston"})
+    )
     assert result["isError"] is False
     assert "52" in result["content"][0]["text"]
 

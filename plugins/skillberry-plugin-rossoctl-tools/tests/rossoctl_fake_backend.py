@@ -66,13 +66,27 @@ class FakeRossoctl:
             "team1/reservation-tool": {
                 "port": 8000,
                 "mcp": [
-                    {"name": "search_restaurants", "description": "Search restaurants.", "input_schema": SEARCH_SCHEMA},
-                    {"name": "place_reservation", "description": "Book a table.", "input_schema": BOOK_SCHEMA},
+                    {
+                        "name": "search_restaurants",
+                        "description": "Search restaurants.",
+                        "input_schema": SEARCH_SCHEMA,
+                    },
+                    {
+                        "name": "place_reservation",
+                        "description": "Book a table.",
+                        "input_schema": BOOK_SCHEMA,
+                    },
                 ],
             },
             "team1/other-search": {
                 "port": 9090,
-                "mcp": [{"name": "search_restaurants", "description": "Another search.", "input_schema": SEARCH_SCHEMA}],
+                "mcp": [
+                    {
+                        "name": "search_restaurants",
+                        "description": "Another search.",
+                        "input_schema": SEARCH_SCHEMA,
+                    }
+                ],
             },
             "team1/unreachable-tool": {"port": 8000, "mcp": None},
         }
@@ -112,7 +126,9 @@ class FakeRossoctl:
     def _tool(self, ns, name):
         tool = self.tools.get(f"{ns}/{name}")
         if tool is None:
-            raise HTTPException(status_code=404, detail=f"Tool '{name}' not found in namespace '{ns}'")
+            raise HTTPException(
+                status_code=404, detail=f"Tool '{name}' not found in namespace '{ns}'"
+            )
         return tool
 
     def _build(self) -> FastAPI:
@@ -125,12 +141,20 @@ class FakeRossoctl:
         @app.middleware("http")
         async def record(request, call_next):
             fake.http_requests.append(
-                {"method": request.method, "path": request.url.path, "auth": request.headers.get("authorization")}
+                {
+                    "method": request.method,
+                    "path": request.url.path,
+                    "auth": request.headers.get("authorization"),
+                }
             )
             return await call_next(request)
 
         @app.post("/realms/rossoctl/protocol/openid-connect/token")
-        async def token(grant_type: str = Form(...), client_id: str = Form(...), client_secret: str = Form(...)):
+        async def token(
+            grant_type: str = Form(...),
+            client_id: str = Form(...),
+            client_secret: str = Form(...),
+        ):
             if grant_type != "client_credentials" or client_secret != "s3cret":
                 raise HTTPException(status_code=401, detail="invalid_client")
             fake.tokens_issued += 1
@@ -139,14 +163,25 @@ class FakeRossoctl:
             return {"access_token": tok, "expires_in": 300, "token_type": "Bearer"}
 
         @app.get("/api/v1/tools")
-        async def list_tools(namespace: str = "default", authorization: str = Header(None)):
+        async def list_tools(
+            namespace: str = "default", authorization: str = Header(None)
+        ):
             fake._check_auth(authorization)
             items = []
             for key in sorted(fake.tools):
                 ns, name = key.split("/")
                 if ns == namespace:
-                    items.append({"name": name, "namespace": ns, "description": "", "status": "Ready",
-                                  "labels": {"rossoctl.io/type": "tool"}, "createdAt": None, "workloadType": "deployment"})
+                    items.append(
+                        {
+                            "name": name,
+                            "namespace": ns,
+                            "description": "",
+                            "status": "Ready",
+                            "labels": {"rossoctl.io/type": "tool"},
+                            "createdAt": None,
+                            "workloadType": "deployment",
+                        }
+                    )
             return {"items": items}
 
         @app.get("/api/v1/tools/{ns}/{name}")
@@ -159,8 +194,14 @@ class FakeRossoctl:
                 "status": {},
                 "readyStatus": "Ready",
                 "workloadType": "deployment",
-                "service": {"name": f"{name}-mcp", "type": "ClusterIP", "clusterIP": "10.0.0.1",
-                            "ports": [{"name": "http", "port": tool["port"], "protocol": "TCP"}]},
+                "service": {
+                    "name": f"{name}-mcp",
+                    "type": "ClusterIP",
+                    "clusterIP": "10.0.0.1",
+                    "ports": [
+                        {"name": "http", "port": tool["port"], "protocol": "TCP"}
+                    ],
+                },
             }
 
         @app.post("/api/v1/tools/{ns}/{name}/connect")
@@ -168,23 +209,70 @@ class FakeRossoctl:
             fake._check_auth(authorization)
             tool = fake._tool(ns, name)
             if tool["mcp"] is None:
-                raise HTTPException(status_code=502, detail=f"Failed to connect to MCP server at http://{name}-mcp")
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Failed to connect to MCP server at http://{name}-mcp",
+                )
             return {"tools": tool["mcp"]}
 
         @app.post("/api/v1/tools/{ns}/{name}/invoke")
-        async def invoke(ns: str, name: str, request: Request, authorization: str = Header(None)):
+        async def invoke(
+            ns: str, name: str, request: Request, authorization: str = Header(None)
+        ):
             fake._check_auth(authorization)
             tool = fake._tool(ns, name)
             if tool["mcp"] is None:
-                raise HTTPException(status_code=502, detail=f"Failed to connect to MCP server at http://{name}-mcp")
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Failed to connect to MCP server at http://{name}-mcp",
+                )
             body = await request.json()
             args = body.get("arguments") or {}
             if body["tool_name"] == "get_weather":
                 if args.get("city") == "Atlantis":
-                    return {"result": {"content": [{"type": "text", "text": "City Atlantis not found"}], "isError": True}}
-                return {"result": {"content": [{"type": "text", "text": json.dumps({"temperature": 52, "weathercode": 53})}], "isError": False}}
+                    return {
+                        "result": {
+                            "content": [
+                                {"type": "text", "text": "City Atlantis not found"}
+                            ],
+                            "isError": True,
+                        }
+                    }
+                return {
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json.dumps(
+                                    {"temperature": 52, "weathercode": 53}
+                                ),
+                            }
+                        ],
+                        "isError": False,
+                    }
+                }
             if body["tool_name"] == "search_restaurants":
-                return {"result": {"content": [{"type": "text", "text": json.dumps([{"name": "Trattoria di Mare"}, {"name": "Bella Napoli"}])}], "isError": False}}
-            return {"result": {"content": [{"type": "text", "text": "ok"}], "isError": False}}
+                return {
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json.dumps(
+                                    [
+                                        {"name": "Trattoria di Mare"},
+                                        {"name": "Bella Napoli"},
+                                    ]
+                                ),
+                            }
+                        ],
+                        "isError": False,
+                    }
+                }
+            return {
+                "result": {
+                    "content": [{"type": "text", "text": "ok"}],
+                    "isError": False,
+                }
+            }
 
         return app

@@ -60,13 +60,25 @@ def _param_names(schema: Dict[str, Any]) -> List[str]:
     """Schema properties usable as keyword parameters (others go through **kwargs)."""
     reserved = {"_cli"}
     out = []
-    for prop in (schema.get("properties") or {}):
-        if isinstance(prop, str) and _IDENT.match(prop) and not keyword.iskeyword(prop) and prop not in reserved:
+    for prop in schema.get("properties") or {}:
+        if (
+            isinstance(prop, str)
+            and _IDENT.match(prop)
+            and not keyword.iskeyword(prop)
+            and prop not in reserved
+        ):
             out.append(prop)
     return out
 
 
-_ANNOTATIONS = {"string": "str", "integer": "int", "number": "float", "boolean": "bool", "array": "list", "object": "dict"}
+_ANNOTATIONS = {
+    "string": "str",
+    "integer": "int",
+    "number": "float",
+    "boolean": "bool",
+    "array": "list",
+    "object": "dict",
+}
 
 
 def _json_type(info: Any) -> Optional[str]:
@@ -83,11 +95,15 @@ def _doc_text(text: Any) -> str:
     return "".join(ch for ch in flat if ch.isprintable())[:300]
 
 
-def build_spec(meta: Dict[str, Any], schema: Dict[str, Any], description: str) -> Dict[str, Any]:
+def build_spec(
+    meta: Dict[str, Any], schema: Dict[str, Any], description: str
+) -> Dict[str, Any]:
     for key in ("tool", "namespace"):
         if not isinstance(meta.get(key), str) or not _LABEL.match(meta[key]):
             raise ValueError(f"invalid {key}: {meta.get(key)!r}")
-    if not isinstance(meta.get("mcp_tool_name"), str) or not _MCP_NAME.match(meta["mcp_tool_name"]):
+    if not isinstance(meta.get("mcp_tool_name"), str) or not _MCP_NAME.match(
+        meta["mcp_tool_name"]
+    ):
         raise ValueError(f"invalid mcp_tool_name: {meta.get('mcp_tool_name')!r}")
     port = meta.get("port", 8000)
     if not isinstance(port, int) or isinstance(port, bool) or not 0 < port < 65536:
@@ -106,23 +122,30 @@ def build_spec(meta: Dict[str, Any], schema: Dict[str, Any], description: str) -
         "read_only": bool(meta.get("read_only")),
         "description": description or "",
         "input_schema": schema or {"type": "object", "properties": {}},
-        "input_schema_sha256": meta.get("input_schema_sha256") or canonical_schema_sha256(schema or {}),
+        "input_schema_sha256": meta.get("input_schema_sha256")
+        or canonical_schema_sha256(schema or {}),
     }
 
 
-def render(function_name: str, meta: Dict[str, Any], schema: Dict[str, Any], description: str) -> str:
+def render(
+    function_name: str, meta: Dict[str, Any], schema: Dict[str, Any], description: str
+) -> str:
     """The module source for one proxy tool."""
     if not _IDENT.match(function_name) or keyword.iskeyword(function_name):
         raise ValueError(f"invalid function name: {function_name!r}")
     spec = build_spec(meta, schema, description)
-    spec_json = json.dumps(spec, ensure_ascii=True, sort_keys=True).replace("'", "\\u0027")
+    spec_json = json.dumps(spec, ensure_ascii=True, sort_keys=True).replace(
+        "'", "\\u0027"
+    )
     params = _param_names(spec["input_schema"])
     props = spec["input_schema"].get("properties") or {}
     required = set(spec["input_schema"].get("required") or [])
     # Annotations and defaults let core's importer rebuild the same params on
     # re-import. _cli is keyword-only, so that parser (positional args) skips it.
     sig_parts = []
-    for p in [p for p in params if p in required] + [p for p in params if p not in required]:
+    for p in [p for p in params if p in required] + [
+        p for p in params if p not in required
+    ]:
         ann = _ANNOTATIONS.get(_json_type(props.get(p)) or "", "")
         ann = f": {ann}" if ann else ""
         sig_parts.append(f"{p}{ann}" if p in required else f"{p}{ann} = None")
@@ -134,11 +157,16 @@ def render(function_name: str, meta: Dict[str, Any], schema: Dict[str, Any], des
     if params:
         doc.append("Args:")
         for p in params:
-            d = _doc_text((props.get(p) or {}).get("description") or "") or f"The {p} argument."
+            d = (
+                _doc_text((props.get(p) or {}).get("description") or "")
+                or f"The {p} argument."
+            )
             doc.append(f"    {p}: {d}")
         doc.append("")
     doc.append("Returns:")
-    doc.append(f"    The result of MCP tool {spec['mcp_tool_name']} of rossoctl tool {spec['tool']}.")
+    doc.append(
+        f"    The result of MCP tool {spec['mcp_tool_name']} of rossoctl tool {spec['tool']}."
+    )
     docstring = "\n".join(("    " + line) if line else "" for line in doc).lstrip()
     return (
         "#!/usr/bin/env python3\n"
@@ -149,7 +177,7 @@ def render(function_name: str, meta: Dict[str, Any], schema: Dict[str, Any], des
         f"    _SPEC = _json.loads(r'''{spec_json}''')\n"
         f"{collect}"
         f"{_RUNTIME}"
-        "\n\nif __name__ == \"__main__\":\n"
+        '\n\nif __name__ == "__main__":\n'
         f"    {function_name}({''.join(p + '=None, ' for p in params if p in required)}_cli=True)\n"
     )
 

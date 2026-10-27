@@ -100,7 +100,9 @@ def served_fake(fake, monkeypatch):
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
-    server = uvicorn.Server(uvicorn.Config(fake.app, host="127.0.0.1", port=port, log_level="warning"))
+    server = uvicorn.Server(
+        uvicorn.Config(fake.app, host="127.0.0.1", port=port, log_level="warning")
+    )
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
     deadline = time.time() + 15
@@ -110,9 +112,11 @@ def served_fake(fake, monkeypatch):
     monkeypatch.setenv("ROSSOCTL_BACKEND_URL", base)
     monkeypatch.setenv("ROSSOCTL_CLIENT_ID", "skillberry-store-tools")
     monkeypatch.setenv("ROSSOCTL_CLIENT_SECRET", "s3cret")
-    monkeypatch.setenv("ROSSOCTL_TOKEN_ENDPOINT", f"{base}/realms/rossoctl/protocol/openid-connect/token")
+    monkeypatch.setenv(
+        "ROSSOCTL_TOKEN_ENDPOINT",
+        f"{base}/realms/rossoctl/protocol/openid-connect/token",
+    )
     monkeypatch.setenv("EXECUTE_PYTHON_LOCALLY", "true")
     yield base
     server.should_exit = True
     thread.join(timeout=5)
-

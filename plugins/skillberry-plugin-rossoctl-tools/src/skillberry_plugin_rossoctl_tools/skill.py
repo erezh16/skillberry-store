@@ -22,7 +22,9 @@ END = "<!-- rossoctl-tools:end -->"
 def meta(tool: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """The plugin metadata of a proxy tool, or None for any other tool."""
     m = (tool.get("extra") or {}).get("rossoctl")
-    return m if isinstance(m, dict) and m.get("tool") and m.get("mcp_tool_name") else None
+    return (
+        m if isinstance(m, dict) and m.get("tool") and m.get("mcp_tool_name") else None
+    )
 
 
 def proxy_tools(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -34,7 +36,9 @@ def required_tools(tools: List[Dict[str, Any]]) -> List[str]:
     return sorted({meta(t)["tool"] for t in proxy_tools(tools)})
 
 
-def skill_required_tools(skill: Dict[str, Any], tools: List[Dict[str, Any]]) -> List[str]:
+def skill_required_tools(
+    skill: Dict[str, Any], tools: List[Dict[str, Any]]
+) -> List[str]:
     recorded = ((skill.get("extra") or {}).get("rossoctl") or {}).get("required_tools")
     if isinstance(recorded, list) and recorded:
         return sorted({str(t) for t in recorded})
@@ -47,7 +51,13 @@ def tools_json(tools: List[Dict[str, Any]]) -> str:
     for t in proxy_tools(tools):
         m = meta(t)
         entry = by_tool.setdefault(
-            m["tool"], {"tool": m["tool"], "port": m.get("port", 8000), "path": m.get("path", "/mcp"), "mcp_tools": []}
+            m["tool"],
+            {
+                "tool": m["tool"],
+                "port": m.get("port", 8000),
+                "path": m.get("path", "/mcp"),
+                "mcp_tools": [],
+            },
         )
         if m.get("gateway_prefix"):
             entry["gateway_prefix"] = m["gateway_prefix"]
@@ -96,7 +106,11 @@ def tools_section(tools: List[Dict[str, Any]]) -> str:
     ]
     for t in sorted(proxies, key=lambda x: meta(x)["mcp_tool_name"]):
         m = meta(t)
-        gw = f"`{m['gateway_prefix']}{m['mcp_tool_name']}`" if m.get("gateway_prefix") else "—"
+        gw = (
+            f"`{m['gateway_prefix']}{m['mcp_tool_name']}`"
+            if m.get("gateway_prefix")
+            else "—"
+        )
         effect = "read-only" if m.get("read_only") else "**changes state**"
         lines.append(f"| `{m['mcp_tool_name']}` | {gw} | {_arg_list(t)} | {effect} |")
     lines += [
@@ -115,7 +129,9 @@ def with_tools_section(instructions: str, section: str) -> str:
     if BEGIN in text and END in text:
         start = text.index(BEGIN)
         end = text.index(END) + len(END)
-        text = (text[:start].rstrip("\n") + "\n\n" + text[end:].lstrip("\n")).strip("\n")
+        text = (text[:start].rstrip("\n") + "\n\n" + text[end:].lstrip("\n")).strip(
+            "\n"
+        )
     if not section:
         return text + ("\n" if text else "")
     return (text.rstrip("\n") + "\n\n" if text.strip() else "") + section

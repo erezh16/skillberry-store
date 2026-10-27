@@ -93,6 +93,10 @@ All decisions taken in r8, numbered for reference. The implementation follows th
 | D16 | **Credential:** client-credentials (`ROSSOCTL_CLIENT_ID/SECRET/TOKEN_ENDPOINT`), or none when rossoctl runs without auth. Deployment: existing chart keys (`skillberryStore.extraEnv`, `apiOAuthSecret`). | No chart change (P-1). |
 | D17 | **Stage 2 (promoting store code tools to rossoctl tools) is deferred.** The r6 approach remains valid: existing `POST /tools` and a store-owned runner. | Out of option 0's scope. |
 | D18 | **The demo runs against unmodified rossoctl `main`**, and is scripted in the plugin's tests. | It proves D1. |
+| D19 | **The r4 rossoctl branch is retired.** The local `rossoctl-skills` branch of the fork is reset to `main`; the r4 commits are kept on `rossoctl-skills-r4-archive`. The remote fork is unchanged until the owner approves a push. | D1. Nothing is lost, and nothing changes on a shared remote without consent. |
+| D20 | **The r4 `rossoctl/examples` commit** (Claude Code skill linking, the `run_skill_script` tool) stays on a local branch. It isn't part of option 0. It's the starting point for pitch rung 1. | Option 0 needs no agent change. |
+| D21 | **`generic_agent`'s MCP client (`langchain-mcp-adapters`) is a plugin dev dependency.** The e2e test uses it to prove the recipe's wiring works with the real agent's client, and it skips without it. | The strongest check available without an LLM. |
+| D22 | **The instructions in the demo skill name MCP tools**, not scripts. The generated Tools section mentions the scripts for script-capable agents. | Option 0's agent path is MCP. |
 
 ## 5. skillberry-store
 

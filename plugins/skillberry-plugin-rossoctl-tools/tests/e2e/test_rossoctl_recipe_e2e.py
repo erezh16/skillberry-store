@@ -32,7 +32,11 @@ def _free_port():
 def _serve(mcp, port):
     import uvicorn
 
-    server = uvicorn.Server(uvicorn.Config(mcp.streamable_http_app(), host="127.0.0.1", port=port, log_level="warning"))
+    server = uvicorn.Server(
+        uvicorn.Config(
+            mcp.streamable_http_app(), host="127.0.0.1", port=port, log_level="warning"
+        )
+    )
     t = threading.Thread(target=server.run, daemon=True)
     t.start()
     deadline = time.time() + 15
@@ -56,14 +60,28 @@ def tool_pods():
 
     @reservations.tool()
     def search_restaurants(city: str, cuisine: str = "", party_size: int = 2) -> str:
-        return json.dumps([{"id": "rest_001", "name": "Trattoria di Mare", "city": city}])
+        return json.dumps(
+            [{"id": "rest_001", "name": "Trattoria di Mare", "city": city}]
+        )
 
     @reservations.tool()
-    def place_reservation(restaurant_id: str, date_time: str, party_size: int, name: str, phone: str, email: str) -> str:
-        return json.dumps({"confirmation_code": "RES001000", "restaurant_id": restaurant_id})
+    def place_reservation(
+        restaurant_id: str,
+        date_time: str,
+        party_size: int,
+        name: str,
+        phone: str,
+        email: str,
+    ) -> str:
+        return json.dumps(
+            {"confirmation_code": "RES001000", "restaurant_id": restaurant_id}
+        )
 
     ports = {"weather-tool": _free_port(), "reservation-tool": _free_port()}
-    servers = [_serve(weather, ports["weather-tool"]), _serve(reservations, ports["reservation-tool"])]
+    servers = [
+        _serve(weather, ports["weather-tool"]),
+        _serve(reservations, ports["reservation-tool"]),
+    ]
     yield ports
     for server, t in servers:
         server.should_exit = True
@@ -80,32 +98,54 @@ def _local(url, ports):
 def recipe_and_package(store_client):
     body = {
         "namespace": "team1",
-        "tools": [{"name": "weather-tool", "read_only": ["get_weather"]}, {"name": "reservation-tool"}],
-        "skill": {"name": "night-out-planner", "description": "Plan an evening.", "instructions": "# Night-out planner\n"},
+        "tools": [
+            {"name": "weather-tool", "read_only": ["get_weather"]},
+            {"name": "reservation-tool"},
+        ],
+        "skill": {
+            "name": "night-out-planner",
+            "description": "Plan an evening.",
+            "instructions": "# Night-out planner\n",
+        },
     }
-    assert store_client.post("/plugins/rossoctl-tools/import", json=body).status_code == 200
-    r = store_client.post("/plugins/rossoctl-tools/recipe", json={"skill": "night-out-planner", "namespace": "team1"})
+    assert (
+        store_client.post("/plugins/rossoctl-tools/import", json=body).status_code
+        == 200
+    )
+    r = store_client.post(
+        "/plugins/rossoctl-tools/recipe",
+        json={"skill": "night-out-planner", "namespace": "team1"},
+    )
     assert r.status_code == 200, r.text
     z = store_client.get("/skills/night-out-planner/export-anthropic")
     assert z.status_code == 200
     return r.json(), zipfile.ZipFile(io.BytesIO(z.content))
 
 
-def test_generic_agent_mcp_client_sees_and_calls_the_tools(recipe_and_package, tool_pods):
-    adapters = pytest.importorskip("langchain_mcp_adapters.client", reason="generic_agent's MCP client (dev extra)")
+def test_generic_agent_mcp_client_sees_and_calls_the_tools(
+    recipe_and_package, tool_pods
+):
+    adapters = pytest.importorskip(
+        "langchain_mcp_adapters.client", reason="generic_agent's MCP client (dev extra)"
+    )
     MultiServerMCPClient = adapters.MultiServerMCPClient
 
     recipe, _ = recipe_and_package
     env = {e["name"]: e["value"] for e in recipe["request"]["envVars"]}
     urls = [_local(u, tool_pods) for u in env["MCP_URLS"].split(",")]
     client = MultiServerMCPClient(
-        {f"mcp{i}": {"url": u, "transport": env["MCP_TRANSPORT"], "timeout": 60} for i, u in enumerate(urls, 1)}
+        {
+            f"mcp{i}": {"url": u, "transport": env["MCP_TRANSPORT"], "timeout": 60}
+            for i, u in enumerate(urls, 1)
+        }
     )
 
     async def go():
         tools = {t.name: t for t in await client.get_tools()}
         assert {"get_weather", "search_restaurants", "place_reservation"} <= set(tools)
-        found = await tools["search_restaurants"].ainvoke({"city": "Boston", "cuisine": "Italian"})
+        found = await tools["search_restaurants"].ainvoke(
+            {"city": "Boston", "cuisine": "Italian"}
+        )
         weather = await tools["get_weather"].ainvoke({"city": "Boston"})
         return json.dumps(found, default=str), json.dumps(weather, default=str)
 
@@ -126,15 +166,38 @@ def test_exported_proxies_run_as_scripts(recipe_and_package, tool_pods, tmp_path
     def run(script, *args, extra=None):
         return subprocess.run(
             [sys.executable, "-I", str(root / "scripts" / script), *args],
-            capture_output=True, text=True, timeout=60, env={**env, **(extra or {})},
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env={**env, **(extra or {})},
         )
 
     r = run("search_restaurants.py", "--city", "Boston", "--cuisine", "Italian")
     assert r.returncode == 0, r.stderr
     assert json.loads(r.stdout)[0]["name"] == "Trattoria di Mare"
-    r = run("place_reservation.py", "--restaurant_id", "rest_001", "--date_time", "2026-10-28T19:30:00",
-            "--party_size", "4", "--name", "Ada", "--phone", "555", "--email", "ada@example.com")
+    r = run(
+        "place_reservation.py",
+        "--restaurant_id",
+        "rest_001",
+        "--date_time",
+        "2026-10-28T19:30:00",
+        "--party_size",
+        "4",
+        "--name",
+        "Ada",
+        "--phone",
+        "555",
+        "--email",
+        "ada@example.com",
+    )
     assert r.returncode == 0, r.stderr
     assert json.loads(r.stdout)["confirmation_code"] == "RES001000"
-    r = run("get_weather.py", "--city", "Boston", extra={"ROSSOCTL_TOOL_WEATHER_TOOL_URL": f"http://127.0.0.1:{_free_port()}/mcp"})
+    r = run(
+        "get_weather.py",
+        "--city",
+        "Boston",
+        extra={
+            "ROSSOCTL_TOOL_WEATHER_TOOL_URL": f"http://127.0.0.1:{_free_port()}/mcp"
+        },
+    )
     assert r.returncode == 3

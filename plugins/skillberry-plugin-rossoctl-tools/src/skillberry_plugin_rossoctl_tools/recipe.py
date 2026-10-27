@@ -10,10 +10,18 @@ import os
 import shlex
 from typing import Any, Dict, List, Optional
 
-from .backend import RossoctlBackend, RossoctlError, RossoctlNotFound, service_port, validate_label
+from .backend import (
+    RossoctlBackend,
+    RossoctlError,
+    RossoctlNotFound,
+    service_port,
+    validate_label,
+)
 
 DEFAULT_AGENT_IMAGE = "ghcr.io/rossoctl/examples/generic_agent:latest"
-DEFAULT_GATEWAY_URL = "http://mcp-gateway-istio.gateway-system.svc.cluster.local:8080/mcp"
+DEFAULT_GATEWAY_URL = (
+    "http://mcp-gateway-istio.gateway-system.svc.cluster.local:8080/mcp"
+)
 MODES = ("direct", "gateway")
 
 
@@ -22,12 +30,21 @@ def tool_url(tool: str, namespace: str, port: int, path: str = "/mcp") -> str:
 
 
 async def preflight(
-    backend: RossoctlBackend, namespace: str, tools: List[str], bearer: Optional[str] = None
+    backend: RossoctlBackend,
+    namespace: str,
+    tools: List[str],
+    bearer: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Per required tool: present, ready, port, url (D7)."""
     out = []
     for tool in tools:
-        entry: Dict[str, Any] = {"tool": tool, "present": False, "ready": False, "port": None, "url": None}
+        entry: Dict[str, Any] = {
+            "tool": tool,
+            "present": False,
+            "ready": False,
+            "port": None,
+            "url": None,
+        }
         try:
             detail = await backend.get_tool(namespace, tool, bearer=bearer)
         except RossoctlNotFound:
@@ -81,7 +98,9 @@ def agent_request(
         "workloadType": "deployment",
         "skills": [skill_name],
         "envVars": env,
-        "servicePorts": [{"name": "http", "port": 8080, "targetPort": 8000, "protocol": "TCP"}],
+        "servicePorts": [
+            {"name": "http", "port": 8080, "targetPort": 8000, "protocol": "TCP"}
+        ],
         "authBridgeEnabled": True,
     }
 
@@ -96,8 +115,12 @@ def cli_command(req: Dict[str, Any]) -> str:
     ]
     for ev in req["envVars"]:
         parts.append(f"--envVar {shlex.quote(ev['name'] + '=' + ev['value'])}")
-    parts.append("--envVar LLM_API_BASE=<url> --envVar LLM_MODEL=<model> --envVar LLM_API_KEY=<key>")
-    parts.append(f"--additionalParameterJSON {shlex.quote(json.dumps({'skills': req['skills']}))}")
+    parts.append(
+        "--envVar LLM_API_BASE=<url> --envVar LLM_MODEL=<model> --envVar LLM_API_KEY=<key>"
+    )
+    parts.append(
+        f"--additionalParameterJSON {shlex.quote(json.dumps({'skills': req['skills']}))}"
+    )
     return " \\\n  ".join(parts)
 
 

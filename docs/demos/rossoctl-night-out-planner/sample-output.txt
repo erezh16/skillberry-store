@@ -43,7 +43,7 @@ MCP tools the agent sees: ['cancel_reservation', 'check_availability', 'get_weat
 search_restaurants -> ['Trattoria di Mare']
 19:00 available: [True] | free dinner: ['18:30', '19:00', '20:00', '20:30']
 place_reservation -> confirmation RES001000 status confirmed
-get_weather -> {"time": "2026-10-27T09:30", "interval": 900, "temperature": 45.4, "windspeed": 7.6, "winddirection": 19, "is_day": 0, "
+get_weather -> {"time": "2026-10-27T09:45", "interval": 900, "temperature": 44.8, "windspeed": 7.2, "winddirection": 19, "is_day": 0, "
 
 [1m== 10. Portability: the recipe for team2 reports what is missing before anything is created[0m
 team2 ok: False | missing: ['reservation-tool'] | MCP_URLS: ['http://weather-tool-mcp.team2.svc.cluster.local:18001/mcp']
